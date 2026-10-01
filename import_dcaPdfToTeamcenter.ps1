@@ -1,31 +1,25 @@
 param(
-  [string]$SearchRoot = "C:\DCA",
+  [string]$SearchRoot = "C:\VAULT_ROOT",
 
   [string]$SourceCode,
 
   [string]$ItemName,
 
-  # Nome do vault no SolidWorks PDM. Pode ser substituido por DCA_VAULT_NAME.
-  [string]$VaultName = "DCA",
+  [string]$VaultName = "VAULT_NAME",
 
-  # Caminho para Interop.EdmLib.dll. Pode ser substituido por DCA_PDM_LIB.
-  [string]$PdmLibraryPath = "<PDM_INTEROP_EDMLIB_DLL_PATH>",
+  [string]$PdmLibraryPath = "C:\PATH\TO\Interop.EdmLib.dll",
 
-  # Arquivo de credencial Export-Clixml. Pode ser substituido por DCA_VAULT_CREDENTIAL.
+  # Export-Clixml credential file. Can be overridden with DCA_VAULT_CREDENTIAL.
   [string]$VaultCredentialPath = "<VAULT_CREDENTIAL_CLIXML_PATH>",
 
-  # Enumera arquivos locais sem usar a API do PDM.
+  # Enumerates local files without using the PDM API.
   [switch]$NoVaultApi,
 
-  # Apenas pesquisa; nao conecta ao Teamcenter nem cria objetos.
-  [switch]$Preview,
-
-  # Exibe diagnosticos tecnicos.
-  [switch]$Details
+  # Search only; does not connect to Teamcenter or create objects.
+  [switch]$Preview
 )
 
 $ErrorActionPreference = "Stop"
-$script:ShowDetails = [bool]$Details
 $script:DcaVault = $null
 $script:DcaVaultTried = $false
 
@@ -52,7 +46,7 @@ $teamcenterFunctionsPath =
 Join-Path $PSScriptRoot "functions\teamcenter_functions.ps1"
 
 if (-not (Test-Path -LiteralPath $teamcenterFunctionsPath -PathType Leaf)) {
-  Write-Host "[ERROR] Arquivo do helper nao encontrado:" -ForegroundColor Red
+  Write-Host "[ERROR] Helper file not found:" -ForegroundColor Red
   Write-Host $teamcenterFunctionsPath -ForegroundColor Red
   exit 1
 }
@@ -76,7 +70,7 @@ foreach ($requiredFunction in $requiredFunctions) {
 
   if ($null -eq $loadedFunction) {
     Write-Host (
-      "[ERROR] A funcao '$requiredFunction' nao foi carregada de " +
+      "[ERROR] Function '$requiredFunction' was not loaded from " +
       "'$teamcenterFunctionsPath'."
     ) -ForegroundColor Red
     exit 1
@@ -87,13 +81,37 @@ function Write-Section {
 
   param(
     [Parameter(Mandatory = $true)]
-    [string]$Title
+    [string]$Title,
+
+    [switch]$NoLeadingBlank
   )
 
-  Write-Host ""
-  Write-Host ("=" * 60) -ForegroundColor White
-  Write-Host " $Title" -ForegroundColor White
-  Write-Host ("=" * 60) -ForegroundColor White
+  if (-not $NoLeadingBlank) {
+    Write-AnimatedLine ""
+  }
+  Write-AnimatedLine ("+" + ("-" * 68) + "+") -Color Gray
+  Write-AnimatedLine ("| {0,-66} |" -f $Title) -Color White
+  Write-AnimatedLine ("+" + ("-" * 68) + "+") -Color Gray
+}
+
+function Write-AnimatedLine {
+
+  param(
+    [Parameter(Mandatory = $true)]
+    [AllowEmptyString()]
+    [string]$Message,
+
+    [System.ConsoleColor]$Color = [System.ConsoleColor]::Gray,
+
+    [ValidateRange(0, 500)]
+    [int]$DelayMilliseconds = 30
+  )
+
+  Write-Host $Message -ForegroundColor $Color
+
+  if ($DelayMilliseconds -gt 0) {
+    Start-Sleep -Milliseconds $DelayMilliseconds
+  }
 }
 
 function Write-Success {
@@ -103,7 +121,7 @@ function Write-Success {
     [string]$Message
   )
 
-  Write-Host "  [OK] $Message" -ForegroundColor Green
+  Write-AnimatedLine "  [OK] $Message" -Color Green
 }
 
 function Write-Failure {
@@ -113,7 +131,7 @@ function Write-Failure {
     [string]$Message
   )
 
-  Write-Host "  [ERROR] $Message" -ForegroundColor Red
+  Write-AnimatedLine "  [ERROR] $Message" -Color Red
 }
 
 function Write-Warn {
@@ -123,7 +141,7 @@ function Write-Warn {
     [string]$Message
   )
 
-  Write-Host "  [WARNING] $Message" -ForegroundColor Yellow
+  Write-AnimatedLine "  [WARNING] $Message" -Color Yellow
 }
 
 function Write-Info {
@@ -133,14 +151,54 @@ function Write-Info {
     [string]$Message
   )
 
-  if (-not $script:ShowDetails) {
-    return
-  }
-
-  Write-Host "  -> $Message" -ForegroundColor Gray
+  Write-AnimatedLine "  $Message" -Color Gray
 }
 
-# A API do PDM pode retornar arquivos do servidor que nao estao no cache local.
+function Show-DcaConfigurationWarnings {
+
+  $warnings = [System.Collections.Generic.List[string]]::new()
+
+  if ($SearchRoot -eq "C:\VAULT_ROOT") {
+    $warnings.Add(
+      "SearchRoot is still set to 'C:\VAULT_ROOT'. Configure the local vault path."
+    )
+  }
+
+  if ($VaultName -eq "VAULT_NAME") {
+    $warnings.Add(
+      "VaultName is still set to 'VAULT_NAME'. Configure the PDM vault name."
+    )
+  }
+
+  if ($PdmLibraryPath -eq "C:\PATH\TO\Interop.EdmLib.dll") {
+    $warnings.Add(
+      "PdmLibraryPath is still a placeholder. Configure the Interop.EdmLib.dll path."
+    )
+  }
+
+  if ($VaultCredentialPath -eq "<VAULT_CREDENTIAL_CLIXML_PATH>") {
+    $warnings.Add(
+      "VaultCredentialPath is still a placeholder. Configure a credential file or use automatic PDM login."
+    )
+  }
+
+  foreach ($teamcenterWarning in @(Get-TeamcenterConfigurationWarnings)) {
+    $warnings.Add([string]$teamcenterWarning)
+  }
+
+  if ($warnings.Count -gt 0) {
+    Write-AnimatedLine ""
+    Write-Section -Title "CONFIGURATION WARNINGS"
+
+    foreach ($warning in $warnings) {
+      Write-Warn $warning
+    }
+
+    Write-AnimatedLine ""
+  }
+}
+
+# The PDM API may return files from the server that are not in the local cache.
 function Get-DcaVault {
 
   if ($NoVaultApi) {
@@ -167,8 +225,8 @@ function Get-DcaVault {
       -not (Test-Path -LiteralPath $PdmLibraryPath -PathType Leaf)
     ) {
       throw (
-        "Interop.EdmLib.dll nao encontrada em '$PdmLibraryPath'. " +
-        "Informe -PdmLibraryPath (mesmo valor de `$pdmLibraryPath do PDMtoPLM)."
+        "Interop.EdmLib.dll not found at '$PdmLibraryPath'. " +
+        "Specify -PdmLibraryPath with the value used by PDMtoPLM."
       )
     }
 
@@ -186,7 +244,7 @@ function Get-DcaVault {
       $credential = Import-Clixml -LiteralPath $VaultCredentialPath
 
       if ($null -eq $credential) {
-        throw "O arquivo de credencial do vault nao pode ser lido."
+        throw "The vault credential file could not be read."
       }
 
       $securePassword = $credential.SenhaCriptografada | ConvertTo-SecureString
@@ -201,26 +259,22 @@ function Get-DcaVault {
     }
     else {
 
-      Write-Info "Credencial do vault nao informada. Tentando login automatico."
-
       $vault.LoginAuto($VaultName, 0)
     }
 
     if (-not $vault.IsLoggedIn) {
-      throw "Nao foi possivel autenticar no vault '$VaultName'."
+      throw "Could not authenticate to the vault '$VaultName'."
     }
 
     $script:DcaVault = $vault
-
-    Write-Info "API do PDM conectada ao vault '$VaultName'."
 
     return $vault
   }
   catch {
 
     Write-Warn (
-      "API do PDM indisponivel: $($_.Exception.Message) " +
-      "Usando apenas o sistema de arquivos."
+      "The PDM API is unavailable: $($_.Exception.Message) " +
+      "Using only the file system."
     )
 
     return $null
@@ -235,7 +289,7 @@ function Get-DcaVault {
   }
 }
 
-# Pesquisa o vault pelo nome e retorna PDFs para filtragem posterior.
+# Searches the vault by name and returns PDFs for later filtering.
 function Search-DcaVaultPdfEntries {
 
   param(
@@ -251,8 +305,6 @@ function Search-DcaVaultPdfEntries {
   if ($likePattern -notmatch "[%_]") {
     $likePattern = "%$likePattern%"
   }
-
-  Write-Info "Padrao enviado ao vault: [$likePattern]"
 
   $search = $Vault.CreateSearch()
   $search.FileName = $likePattern
@@ -318,7 +370,7 @@ function Get-DcaDiskPdfEntries {
   return $entries.ToArray()
 }
 
-# Garante que o PDF selecionado esteja disponivel no cache local do PDM.
+# Ensures that the selected PDF is available in the local PDM cache.
 function Confirm-DcaLocalPdf {
 
   param(
@@ -333,21 +385,21 @@ function Confirm-DcaLocalPdf {
   $vault = $script:DcaVault
 
   if (-not $Entry.FromVault -or $null -eq $vault) {
-    throw "PDF nao encontrado no disco: '$($Entry.FullName)'."
+    throw "PDF not found on disk: '$($Entry.FullName)'."
   }
 
-  Write-Info "PDF fora do cache local. Baixando do vault..."
+  Write-Info "Downloading the PDF from the vault..."
 
   $parentFolder = $null
 
   $pdmFile = $vault.GetFileFromPath($Entry.FullName, [ref]$parentFolder)
 
   if ($null -eq $pdmFile) {
-    throw "Nao foi possivel obter o arquivo no vault."
+    throw "Could not retrieve the file from the vault."
   }
 
   if ($null -eq $parentFolder) {
-    throw "Nao foi possivel obter a pasta do arquivo no vault."
+    throw "Could not retrieve the file folder from the vault."
   }
 
   $fileVersion = 0
@@ -358,39 +410,80 @@ function Confirm-DcaLocalPdf {
   $localCachePath = $pdmFile.GetLocalPath($parentFolder.ID)
 
   if (-not (Test-Path -LiteralPath $localCachePath -PathType Leaf)) {
-    throw "O arquivo nao foi encontrado no cache local do PDM: '$localCachePath'."
+    throw "The file was not found in the local PDM cache: '$localCachePath'."
   }
 
   return $localCachePath
 }
 
-# Extrai o codigo de uma norma a partir do nome descritivo do PDF.
+# Extracts a standard code from the descriptive PDF name.
 function Get-NormaCodeFromText {
 
   param(
     [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
     [string]$Text
   )
 
-  $trimmedText = $Text.Trim()
+  $trimmedText =
+  $Text.Trim()
 
-  if ($trimmedText -notmatch '\s') {
+  $code =
+  $null
 
-    return [PSCustomObject]@{
-      Code = $trimmedText
-      Title = $null
-      Parsed = $true
+  $title =
+  $null
+
+  $patterns =
+  @(
+    # AMS A 21180 A
+    '^(?<Code>AMS\s+[A-Z]\s+\d+[A-Z0-9-]*(?:\s+[A-Z])?)(?:\s+-?\s*(?<Title>.*))?$',
+
+    # AMS STD 1595
+    '^(?<Code>AMS\s+STD\s+\d+[A-Z0-9-]*)(?:\s+-?\s*(?<Title>.*))?$',
+
+    # AMS M 3171 and AMS S5000
+    '^(?<Code>AMS\s+[A-Z]\s*\d+[A-Z0-9-]*)(?:\s+-?\s*(?<Title>.*))?$',
+
+    # AMS-QQ-N-290, AMS-STD-2175, AMS-C-26074
+    '^(?<Code>AMS(?:-[A-Z0-9]+)+)(?:\s+-?\s*(?<Title>.*))?$',
+
+    # AMS 2759-3, AMS 2440C, AMS 2248
+    '^(?<Code>AMS\s+\d+[A-Z]?(?:-\d+)?)(?:\s+-?\s*(?<Title>.*))?$',
+
+    # AMS2470, AMS2773, AMS5659
+    '^(?<Code>AMS\d+[A-Z]?(?:-\d+)?)(?:\s+-?\s*(?<Title>.*))?$'
+  )
+
+  foreach ($pattern in $patterns) {
+
+    if ($trimmedText -notmatch $pattern) {
+      continue
     }
-  }
 
-  $normaPattern =
-  '^(?<Code>[A-Za-z]{2,}[ -]?[A-Za-z]{0,3}\d[\w./-]*)(?:\s+(?<Title>\S.*))?$'
+    $code =
+    $Matches["Code"].Trim()
 
-  if ($trimmedText -match $normaPattern) {
+    if ($Matches.ContainsKey("Title")) {
+
+      $title =
+      [string]$Matches["Title"]
+
+      if (-not [string]::IsNullOrWhiteSpace($title)) {
+
+        $title =
+        $title.Trim(
+          " ",
+          "-",
+          ",",
+          "."
+        )
+      }
+    }
 
     return [PSCustomObject]@{
-      Code = $Matches["Code"].Trim()
-      Title = [string]$Matches["Title"]
+      Code = $code
+      Title = $title
       Parsed = $true
     }
   }
@@ -401,7 +494,6 @@ function Get-NormaCodeFromText {
     Parsed = $false
   }
 }
-
 function ConvertFrom-PdfFileName {
 
   param(
@@ -423,16 +515,29 @@ function ConvertFrom-PdfFileName {
 
   $codeParsed = $true
 
+  $documentTitle =
+  $null
+
   if ($DocumentType -eq "NormaExterna") {
 
-    $normaInfo = Get-NormaCodeFromText -Text $sourceCodeText
-    $sourceCodeText = $normaInfo.Code
-    $codeParsed = $normaInfo.Parsed
+    $normaInfo =
+    Get-NormaCodeFromText `
+      -Text $sourceCodeText
+
+    $sourceCodeText =
+    $normaInfo.Code
+
+    $documentTitle =
+    $normaInfo.Title
+
+    $codeParsed =
+    $normaInfo.Parsed
   }
 
   return [PSCustomObject]@{
     SourceCode = $sourceCodeText
     ClientRevision = $clientRevision
+    DocumentTitle = $documentTitle
     CodeParsed = $codeParsed
   }
 }
@@ -466,26 +571,26 @@ function Select-DcaPdfByCode {
   )
 
   if (-not (Test-Path -LiteralPath $FolderPath -PathType Container)) {
-    throw "Vault DCA nao encontrado em '$FolderPath'."
+    throw "Vault root not found at '$FolderPath'."
   }
 
   $searchPattern = $Code.Trim()
 
   if ([string]::IsNullOrWhiteSpace($searchPattern)) {
-    throw "O codigo de pesquisa ficou vazio."
+    throw "The search code is empty."
   }
 
   $usesWildcard =
   $searchPattern.IndexOf("*") -ge 0 -or
   $searchPattern.IndexOf("?") -ge 0
 
-  Write-Host ""
+  Write-AnimatedLine ""
 
   if ($usesWildcard) {
-    Write-Host "  -> Pesquisando com o padrao: [$searchPattern]" -ForegroundColor Gray
+    Write-Info "Searching by pattern: [$searchPattern]"
   }
   else {
-    Write-Host "  -> Pesquisando o codigo exato: [$searchPattern]" -ForegroundColor Gray
+    Write-Info "Searching by exact code: [$searchPattern]"
   }
 
   $rootFolders =
@@ -493,7 +598,7 @@ function Select-DcaPdfByCode {
 
   $documentationFolder =
   $rootFolders |
-    Where-Object { $_.Name -like "Documenta*" } |
+    Where-Object { $_.Name -like "DOCUMENTATION*" } |
     Select-Object -First 1
 
   if ($null -eq $documentationFolder) {
@@ -501,28 +606,28 @@ function Select-DcaPdfByCode {
     $visibleFolderNames = @($rootFolders | ForEach-Object { $_.Name })
 
     throw (
-      "A pasta de documentacao nao foi encontrada em '$FolderPath'. " +
-      "Pastas visiveis: " + ($visibleFolderNames -join ", ")
+      "The documentation folder was not found at '$FolderPath'. " +
+      "Folders visiveis: " + ($visibleFolderNames -join ", ")
     )
   }
 
-  Write-Host "  -> Pasta localizada: $($documentationFolder.FullName)" -ForegroundColor DarkGray
+  Write-Info "Documentation folder found."
 
   $categoryDefinitions = @(
     [PSCustomObject]@{
-      FolderName = "Desenhos Originais"
+      FolderName = "ORIGINAL_DRAWINGS"
       DocumentType = "Original"
-      DisplayName = "DCA Desenho Original"
+      DisplayName = "Original Drawing"
     },
     [PSCustomObject]@{
-      FolderName = "FP - Ficha de Processo (PDF)"
+      FolderName = "PROCESS_DOCUMENTS"
       DocumentType = "Processo"
-      DisplayName = "DCA Processo"
+      DisplayName = "Process Document"
     },
     [PSCustomObject]@{
-      FolderName = "Normas Externas"
+      FolderName = "EXTERNAL_STANDARDS"
       DocumentType = "NormaExterna"
-      DisplayName = "DCA Norma Externa"
+      DisplayName = "Externall Standard"
     }
   )
 
@@ -539,7 +644,7 @@ function Select-DcaPdfByCode {
       Select-Object -First 1
 
     if ($null -eq $categoryFolder) {
-      Write-Warn "Pasta nao encontrada: $($categoryDefinition.FolderName)"
+      Write-Warn "Folder not found: $($categoryDefinition.FolderName)"
       continue
     }
 
@@ -557,34 +662,30 @@ function Select-DcaPdfByCode {
     $visibleSubfolderNames = @($documentationSubfolders | ForEach-Object { $_.Name })
 
     throw (
-      "Nenhuma pasta permitida foi encontrada em " +
-      "'$($documentationFolder.FullName)'. Pastas visiveis: " +
+      "No supported folder was found in " +
+      "'$($documentationFolder.FullName)'. Folders visiveis: " +
       ($visibleSubfolderNames -join ", ")
     )
   }
 
   $matchingFiles = [System.Collections.Generic.List[object]]::new()
 
-  # Uma unica busca no servidor (API do PDM); depois separa por categoria.
+  # A single server search (PDM API); results are then split by category.
   $apiEntries = $null
   $vault = Get-DcaVault
 
   if ($null -ne $vault) {
 
-    Write-Host "  -> Pesquisando no vault (pode demorar)..." -ForegroundColor DarkGray
+    Write-Info "Querying the vault..."
 
     try {
       $apiEntries = @(Search-DcaVaultPdfEntries -Vault $vault -SearchText $searchPattern)
-
-      if ($apiEntries.Count -gt 0) {
-        Write-Info "Exemplo de caminho retornado: $($apiEntries[0].FullName)"
-      }
     }
     catch {
 
       Write-Warn (
-        "A busca pela API do PDM falhou: $($_.Exception.Message) " +
-        "Usando o sistema de arquivos."
+        "The PDM API search failed: $($_.Exception.Message) " +
+        "Using the file system."
       )
 
       $apiEntries = $null
@@ -594,8 +695,6 @@ function Select-DcaPdfByCode {
   $separator = [string][System.IO.Path]::DirectorySeparatorChar
 
   foreach ($searchFolder in $searchFolders) {
-
-    $sourceLabel = "disco"
 
     if ($null -ne $apiEntries) {
 
@@ -610,11 +709,10 @@ function Select-DcaPdfByCode {
           Sort-Object FullName
       )
 
-      $sourceLabel = "API do PDM"
     }
     else {
 
-      Write-Host "  -> Lendo $($searchFolder.DisplayName) em disco..." -ForegroundColor DarkGray
+      Write-Info ("Querying {0}..." -f $searchFolder.DisplayName)
 
       $pdfEntries =
       @(
@@ -623,15 +721,10 @@ function Select-DcaPdfByCode {
       )
     }
 
-    Write-Host (
-      "  -> $($searchFolder.DisplayName): " +
-      "$($pdfEntries.Count) PDF(s) candidato(s) [$sourceLabel]"
-    ) -ForegroundColor DarkGray
-
     if ($pdfEntries.Count -eq 0 -and $null -eq $apiEntries) {
       Write-Warn (
-        "Nenhum PDF em disco e a API do PDM nao foi usada. " +
-        "O conteudo pode existir so no servidor do PDM."
+        "No PDF was found on disk and the PDM API was not used. " +
+        "The content may exist only on the PDM server."
       )
     }
 
@@ -658,6 +751,7 @@ function Select-DcaPdfByCode {
           File = $pdfEntry
           SourceCode = $parsedName.SourceCode
           ClientRevision = $parsedName.ClientRevision
+          DocumentTitle = $parsedName.DocumentTitle
           DocumentType = $searchFolder.DocumentType
           TypeDisplayName = $searchFolder.DisplayName
           CodeParsed = $parsedName.CodeParsed
@@ -669,12 +763,13 @@ function Select-DcaPdfByCode {
   [int]$matchCount = $matchingFiles.Count
 
   if ($matchCount -eq 0) {
-    throw "Nenhum PDF foi encontrado para a pesquisa '$searchPattern'."
+    throw "No PDF was found for the search '$searchPattern'."
   }
 
-  Write-Host ""
-  Write-Host "PDFs encontrados para '$searchPattern':" -ForegroundColor Cyan
-  Write-Host ""
+  Write-AnimatedLine ""
+  Write-AnimatedLine ("  SEARCH RESULTS  ({0} found)" -f $matchCount) -Color White
+  Write-AnimatedLine ("  Search: {0}" -f $searchPattern) -Color Gray
+  Write-AnimatedLine ("  " + ("-" * 72)) -Color DarkGray
 
   for ($index = 0; $index -lt $matchCount; $index++) {
 
@@ -683,39 +778,46 @@ function Select-DcaPdfByCode {
     $revisionDisplay = [string]$currentMatch.ClientRevision
 
     if ([string]::IsNullOrWhiteSpace($revisionDisplay)) {
-      $revisionDisplay = "nao informada"
+      $revisionDisplay = "not provided"
     }
 
-    Write-Host "  [$number] $($currentMatch.File.Name)" -ForegroundColor White
-    Write-Host "      Caminho: $($currentMatch.File.FullName)" -ForegroundColor Gray
-    Write-Host "      Codigo: [$($currentMatch.SourceCode)]" -ForegroundColor DarkGray
-    Write-Host "      Revisao: [$revisionDisplay]" -ForegroundColor DarkGray
-    Write-Host "      Tipo: [$($currentMatch.TypeDisplayName)]" -ForegroundColor DarkGray
-    Write-Host ""
+    $nameDisplay = [string]$currentMatch.DocumentTitle
+
+    if ([string]::IsNullOrWhiteSpace($nameDisplay)) {
+      $nameDisplay = "not provided"
+    }
+
+    Write-AnimatedLine ("  [{0}] {1}" -f $number, $currentMatch.File.Name) -Color White
+    Write-AnimatedLine ("       Type:     {0}" -f $currentMatch.TypeDisplayName) -Color White
+    Write-AnimatedLine ("       Code:   {0}" -f $currentMatch.SourceCode) -Color Gray
+    Write-AnimatedLine ("       Name:     {0}" -f $nameDisplay) -Color Gray
+    Write-AnimatedLine ("       Revision:  {0}" -f $revisionDisplay) -Color Gray
+    Write-AnimatedLine ("       Location:    {0}" -f $currentMatch.File.FullName) -Color DarkGray
+    Write-AnimatedLine ""
   }
 
   if ($matchCount -eq 1) {
-    Write-Success "O unico PDF encontrado foi selecionado automaticamente."
+    Write-Success "The only matching PDF was selected automatically."
     return $matchingFiles[0]
   }
 
   while ($true) {
 
-    $selectionText = Read-Host "Digite o numero do PDF desejado (1 ate $matchCount)"
+    $selectionText = Read-Host "Enter the desired PDF number (1 to $matchCount)"
     $selectedNumber = 0
 
     $validNumber =
     [System.Int32]::TryParse($selectionText, [ref]$selectedNumber)
 
     if (-not $validNumber -or $selectedNumber -lt 1 -or $selectedNumber -gt $matchCount) {
-      Write-Host "Opcao invalida. Digite um numero entre 1 e $matchCount." -ForegroundColor Yellow
+      Write-Warn "Invalid option. Enter a number between 1 and $matchCount."
       continue
     }
 
     $selectedFile = $matchingFiles[$selectedNumber - 1]
 
-    Write-Host ""
-    Write-Success "PDF selecionado: $($selectedFile.File.FullName)"
+    Write-AnimatedLine ""
+    Write-Success "Selected PDF: $($selectedFile.File.FullName)"
 
     return $selectedFile
   }
@@ -734,20 +836,20 @@ function Copy-PdfToTemporaryFolder {
   )
 
   if (-not (Test-Path -LiteralPath $SourcePdfPath -PathType Leaf)) {
-    throw "PDF de origem nao encontrado: $SourcePdfPath"
+    throw "Source PDF not found: $SourcePdfPath"
   }
 
   $sourceFile = Get-Item -LiteralPath $SourcePdfPath -ErrorAction Stop
 
   if ($sourceFile.Extension -ine ".pdf") {
-    throw "O arquivo de origem nao possui extensao PDF."
+    throw "The source file does not have a PDF extension."
   }
 
   if ($sourceFile.Length -le 0) {
-    throw "O PDF de origem esta vazio."
+    throw "The source PDF is empty."
   }
 
-  $temporaryFolder = "C:\Temp\DCAtoPLM"
+  $temporaryFolder = Join-Path $env:TEMP "DCAtoPLM"
 
   if (-not (Test-Path -LiteralPath $temporaryFolder -PathType Container)) {
     $null = New-Item -Path $temporaryFolder -ItemType Directory -Force -ErrorAction Stop
@@ -760,21 +862,19 @@ function Copy-PdfToTemporaryFolder {
     Remove-Item -LiteralPath $temporaryPdfPath -Force -ErrorAction Stop
   }
 
-  Write-Info "Copiando PDF para pasta temporaria..."
-  Write-Info "Origem: $SourcePdfPath"
-  Write-Info "Destino: $temporaryPdfPath"
+  Write-Info "Preparing the PDF for import..."
 
   Copy-Item -LiteralPath $SourcePdfPath -Destination $temporaryPdfPath -Force -ErrorAction Stop
 
   if (-not (Test-Path -LiteralPath $temporaryPdfPath -PathType Leaf)) {
-    throw "O PDF nao foi criado na pasta temporaria."
+    throw "The PDF was not created in the temporary folder."
   }
 
   $temporaryFile = Get-Item -LiteralPath $temporaryPdfPath -ErrorAction Stop
 
   if ($temporaryFile.Length -ne $sourceFile.Length) {
     throw (
-      "O tamanho da copia temporaria e diferente do original. " +
+      "The temporary copy size differs from the original. " +
       "Original: $($sourceFile.Length) bytes. " +
       "Copia: $($temporaryFile.Length) bytes."
     )
@@ -793,7 +893,7 @@ function Copy-PdfToTemporaryFolder {
     )
 
     if ($stream.Length -le 0) {
-      throw "A copia temporaria do PDF esta vazia."
+      throw "The temporary PDF copy is empty."
     }
   }
   finally {
@@ -802,68 +902,112 @@ function Copy-PdfToTemporaryFolder {
     }
   }
 
-  Write-Success "PDF copiado e validado na pasta temporaria."
-  Write-Info "Tamanho: $($temporaryFile.Length) bytes"
-
+  Write-Success "PDF copied and validated in the temporary folder."
   return $temporaryFile.FullName
 }
 
 function Invoke-DcaMain {
 
-  Write-Section -Title "ETAPA 1/3 - INFORMACOES DO ITEM"
+  Show-DcaConfigurationWarnings
+
+  Write-Section -Title "STAGE 1/3 - ENTER SEARCH" -NoLeadingBlank
 
   $searchPattern = $SourceCode
 
   if ([string]::IsNullOrWhiteSpace($searchPattern)) {
-    $searchPattern = Read-Host "Digite o codigo para pesquisar; use * para busca parcial"
+    $searchPattern = Read-Host "Enter the item code to search; use * for partial search"
   }
 
   if ([string]::IsNullOrWhiteSpace($searchPattern)) {
-    throw "Codigo do item nao informado."
+    throw "Item code not provided."
   }
-
-  $itemNameText = $ItemName
-
-  if ([string]::IsNullOrWhiteSpace($itemNameText)) {
-    $itemNameText = Read-Host "Digite o nome do item"
-  }
-
-  if ([string]::IsNullOrWhiteSpace($itemNameText)) {
-    throw "Nome do item nao informado."
-  }
-
-  $itemNameText = $itemNameText.Trim()
 
   $rootPath = $SearchRoot
 
   if ([string]::IsNullOrWhiteSpace($rootPath)) {
-    $rootPath = "C:\DCA"
+    $rootPath = "C:\VAULT_ROOT"
   }
 
-  Write-Section -Title "ETAPA 2/3 - LOCALIZAR PDF"
+  Write-Section -Title "STAGE 2/3 - SELECT DOCUMENT"
 
   $selectedPdf = Select-DcaPdfByCode -FolderPath $rootPath -Code $searchPattern
 
   if ($null -eq $selectedPdf) {
-    throw "Nenhum PDF foi selecionado para a pesquisa '$searchPattern'."
+    throw "No PDF was selected for the search '$searchPattern'."
   }
 
-  $documentType = [string]$selectedPdf.DocumentType
-  $itemCodeFromFile = [string]$selectedPdf.SourceCode
+  $documentType =
+  [string]$selectedPdf.DocumentType
 
-  # Norma Externa: se o codigo nao pode ser extraido do nome, confirmar.
-  if ($documentType -eq "NormaExterna" -and -not $selectedPdf.CodeParsed) {
+  $itemCodeFromFile =
+  [string]$selectedPdf.SourceCode
+
+  $documentTitle =
+  [string]$selectedPdf.DocumentTitle
+
+  $itemNameText = $ItemName
+
+  if (
+    $documentType -eq "NormaExterna" -and
+    -not [string]::IsNullOrWhiteSpace(
+      $documentTitle
+    )
+  ) {
+
+    $itemNameText =
+    $documentTitle.Trim()
+  }
+
+  if ([string]::IsNullOrWhiteSpace($itemNameText)) {
+    $itemNameText = Read-Host "Enter the item name (required)"
+  }
+  else {
+    $displayItemName = $itemNameText
+
+    if ($displayItemName.Length -gt 30) {
+      $displayItemName = $displayItemName.Substring(0, 30) + "..."
+    }
+
+    $typedItemName =
+    Read-Host "Change the item name? (Enter keeps '$displayItemName')"
+
+    if (-not [string]::IsNullOrWhiteSpace($typedItemName)) {
+      $itemNameText = $typedItemName
+    }
+  }
+
+  if ([string]::IsNullOrWhiteSpace($itemNameText)) {
+    throw "Item name not provided."
+  }
+
+  $itemNameText = $itemNameText.Trim()
+
+  # If the External Standard code cannot be interpreted,
+  # the user can provide the code manually.
+  if (
+    $documentType -eq "NormaExterna" -and
+    -not $selectedPdf.CodeParsed
+  ) {
 
     Write-Warn (
-      "Nao foi possivel extrair o codigo da norma de: " +
+      "Could not extract the standard code from: " +
       "'$($selectedPdf.File.BaseName)'."
     )
 
     $typedCode =
-    Read-Host "Digite o codigo da norma (Enter usa o nome completo)"
+    Read-Host (
+      "Enter the standard code " +
+      "(Press Enter to use the complete name)"
+    )
 
-    if (-not [string]::IsNullOrWhiteSpace($typedCode)) {
-      $itemCodeFromFile = $typedCode.Trim()
+    if (
+      -not [string]::IsNullOrWhiteSpace(
+        $typedCode
+      )
+    ) {
+
+      $itemCodeFromFile =
+      $typedCode.Trim()
     }
   }
 
@@ -874,49 +1018,49 @@ function Invoke-DcaMain {
     if ($documentType -eq "NormaExterna") {
 
       $clientRevision = "000"
-      Write-Host "  -> Revisao inicial da Norma Externa: [000]" -ForegroundColor Gray
+      Write-Info "Initial External Standard revision: [000]"
     }
     else {
 
-      $clientRevision = Read-Host "Digite a Revisao Cliente (Original: B ou BA4; Processo: BA4)"
+      $clientRevision = Read-Host "Enter the Client Revision (Original: B or BA4; Process: BA4)"
 
       if ([string]::IsNullOrWhiteSpace($clientRevision)) {
-        throw "Revisao Cliente nao informada."
+        throw "Client Revision not provided."
       }
     }
   }
 
   $clientRevision = $clientRevision.Trim().ToUpper()
 
-  Write-Host ""
-  Write-Host "Resumo do que sera criado:" -ForegroundColor Cyan
-  Write-Host "  Tipo:    $($selectedPdf.TypeDisplayName) [$documentType]" -ForegroundColor Gray
-  Write-Host "  Codigo:  $itemCodeFromFile" -ForegroundColor Gray
-  Write-Host "  Revisao: $clientRevision" -ForegroundColor Gray
-  Write-Host "  Nome:    $itemNameText" -ForegroundColor Gray
-  Write-Host "  Arquivo: $($selectedPdf.File.FullName)" -ForegroundColor Gray
+  Write-AnimatedLine ""
+  Write-Info "Creation summary:"
+  Write-AnimatedLine "  Type:    $($selectedPdf.TypeDisplayName) [$documentType]" -Color Gray
+  Write-AnimatedLine "  Code:  $itemCodeFromFile" -Color Gray
+  Write-AnimatedLine "  Revision: $clientRevision" -Color Gray
+  Write-AnimatedLine "  Name:    $itemNameText" -Color Gray
+  Write-AnimatedLine "  File: $($selectedPdf.File.FullName)" -Color Gray
 
   if ($Preview) {
 
-    Write-Host ""
-    Write-Success "Preview apenas. Nada foi criado no Teamcenter."
+    Write-AnimatedLine ""
+    Write-Success "Preview only. Nothing was created in Teamcenter."
 
     return 0
   }
 
   $null = Connect-Teamcenter
 
-  Write-Section -Title "ETAPA 3/3 - CRIAR ITEM E IMPORTAR PDF"
+  Write-Section -Title "STAGE 3/3 - CREATE ITEM AND IMPORT DOCUMENT"
 
-  Write-Host ""
-  Write-Host "ATENCAO: esta etapa vai criar itens reais no Teamcenter." -ForegroundColor Yellow
+  Write-AnimatedLine ""
+  Write-Warn "This stage will create actual items in Teamcenter."
 
-  $confirmation = Read-Host "Digite SIM para continuar ou pressione Enter para abortar"
+  $confirmation = Read-Host "Enter YES to continue or press Enter to abort"
 
-  if ($confirmation -ne "sim") {
+  if ($confirmation -notmatch "^(?i:yes)$") {
 
-    Write-Host ""
-    Write-Host "Abortado pelo usuario. Nenhum item foi criado." -ForegroundColor Yellow
+    Write-AnimatedLine ""
+    Write-Warn "Aborted by the user. No item was created."
 
     return 0
   }
@@ -933,14 +1077,16 @@ function Invoke-DcaMain {
       -DocumentType $documentType
 
     if ($null -eq $teamcenterDestination) {
-      throw "New-DcaTeamcenterItem nao retornou resultado para '$itemCodeFromFile'."
+      throw "New-DcaTeamcenterItem did not return result for '$itemCodeFromFile'."
     }
 
     $createdCode = [string]$teamcenterDestination.Code
 
     if ([string]::IsNullOrWhiteSpace($createdCode)) {
-      throw "O codigo criado nao foi retornado."
+      throw "The created code was not returned."
     }
+
+    Write-Success "Created item: $createdCode"
 
     $teamcenterItem = $teamcenterDestination.Item
 
@@ -949,10 +1095,8 @@ function Invoke-DcaMain {
     }
 
     if ($null -eq $teamcenterItem) {
-      throw "O Item criado nao foi retornado para '$createdCode'."
+      throw "The created item was not returned for '$createdCode'."
     }
-
-    Write-Info "Tipo do Item retornado: $($teamcenterItem.GetType().FullName)"
 
     $teamcenterRevision = $teamcenterDestination.Revision
 
@@ -962,7 +1106,7 @@ function Invoke-DcaMain {
 
     if ($null -eq $teamcenterRevision) {
 
-      Write-Info "Revisao nao retornada diretamente. Consultando pelo Item..."
+      Write-Info "Locating the item revision..."
 
       $teamcenterRevision = Get-TeamcenterRevision -Item $teamcenterItem
 
@@ -972,17 +1116,15 @@ function Invoke-DcaMain {
     }
 
     if ($null -eq $teamcenterRevision) {
-      throw "A revisao do Teamcenter nao foi encontrada para '$createdCode'."
+      throw "The Teamcenter revision was not found for '$createdCode'."
     }
 
     $revisionTypeName = $teamcenterRevision.GetType().FullName
 
-    Write-Info "Tipo da revisao para importar o PDF: $revisionTypeName"
-
     if ($revisionTypeName -notmatch "ItemRevision") {
       throw (
-        "O objeto retornado nao e uma revisao valida. " +
-        "Tipo recebido: '$revisionTypeName'."
+        "The returned object is not a valid revision. " +
+        "Type received: '$revisionTypeName'."
       )
     }
 
@@ -994,38 +1136,33 @@ function Invoke-DcaMain {
       -ItemCode $createdCode
 
     if ([string]::IsNullOrWhiteSpace($temporaryPdfPath)) {
-      throw "Copy-PdfToTemporaryFolder nao retornou o caminho do PDF temporario."
+      throw "Copy-PdfToTemporaryFolder did not return the temporary PDF path."
     }
 
-    Write-Info "Importando PDF no Teamcenter..."
+    Write-Info "Importing the PDF into Teamcenter..."
 
-    $importResult =
+    $null =
     Import-TeamcenterPdf `
       -Revision $teamcenterRevision `
       -ItemCode $createdCode `
       -FilePath $temporaryPdfPath
 
-    Write-Success "PDF importado: $createdCode"
+    Write-Success "PDF imported: $createdCode"
 
-    if ($null -eq $importResult) {
-      Write-Info "ImportarPDF retornou NULL, mas nao gerou excecao."
-    }
-    else {
-      Write-Info "Resultado da importacao: $importResult"
-    }
   }
   catch {
 
     Write-Failure $_.Exception.Message
 
-    Write-Section -Title "RESULTADO"
-    Write-Failure "$itemCodeFromFile -> FALHOU (item no Teamcenter: $createdCode)"
+    Write-Section -Title "RESULT"
+    Write-Failure "$itemCodeFromFile -> FAILED (item in Teamcenter: $createdCode)"
 
     return 1
   }
 
-  Write-Section -Title "RESULTADO"
-  Write-Success "$itemCodeFromFile -> $createdCode"
+  Write-Section -Title "RESULT"
+  Write-Success "$itemCodeFromFile -> $createdCode - $itemNameText"
+  Write-Success "Item imported to Teamcenter."
 
   return 0
 }
@@ -1038,10 +1175,6 @@ try {
 catch {
 
   Write-Failure $_.Exception.Message
-
-  if ($script:ShowDetails) {
-    Write-Host $_.ScriptStackTrace -ForegroundColor DarkGray
-  }
 
   $exitCode = 1
 }

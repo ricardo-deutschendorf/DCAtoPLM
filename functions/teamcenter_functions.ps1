@@ -2,36 +2,21 @@ $script:ImporterAssembly = $null
 $script:TeamcenterSession = $null
 $script:TeamcenterFunctions = $null
 
-function Write-TeamcenterDetail {
-
-  param(
-    [Parameter(Mandatory = $true)]
-    [string]$Message
-  )
-
-  if (-not $script:ShowDetails) {
-    return
-  }
-
-  Write-Host "  -> $Message" -ForegroundColor Gray
-}
-
 function Confirm-TeamcenterImporter {
 
-  $importerExecutablePath = "C:\Temp\ImportarGD\Importar GD.exe"
+  $importerExecutablePath = "C:\PATH\TO\Importar GD.exe"
 
   if (-not (Test-Path -LiteralPath $importerExecutablePath -PathType Leaf)) {
-    throw "Importar GD nao encontrado em '$importerExecutablePath'."
+    throw "Import GD not found at '$importerExecutablePath'."
   }
 
   return $importerExecutablePath
 }
 
-# Configure localmente ou use DCA_TC_URL, DCA_TC_USER e DCA_TC_PASSWORD.
-# Uma senha placeholder sera solicitada no console.
+# Configure locally or use DCA_TC_URL, DCA_TC_USER, and DCA_TC_PASSWORD.
 function Get-TeamcenterSettings {
 
-  $teamcenterServerUrl = "<TEAMCENTER_URL>"
+  $teamcenterServerUrl = "<TEAMCENTER_SERVER_URL>"
   $teamcenterUser = "<TEAMCENTER_USER>"
   $teamcenterPassword = "<TEAMCENTER_PASSWORD>"
 
@@ -49,21 +34,21 @@ function Get-TeamcenterSettings {
 
   if ($teamcenterServerUrl -like "<*>") {
     throw (
-      "A URL do Teamcenter ainda e um placeholder. Edite " +
-      "Get-TeamcenterSettings ou defina DCA_TC_URL."
+      "The URL in Teamcenter is still a placeholder. Edit " +
+      "Get-TeamcenterSettings or set DCA_TC_URL."
     )
   }
 
   if ($teamcenterUser -like "<*>") {
     throw (
-      "O usuario do Teamcenter ainda e um placeholder. Edite " +
-      "Get-TeamcenterSettings ou defina DCA_TC_USER."
+      "The user in Teamcenter is still a placeholder. Edit " +
+      "Get-TeamcenterSettings or set DCA_TC_USER."
     )
   }
 
   if ($teamcenterPassword -like "<*>") {
 
-    $securePassword = Read-Host "Senha do Teamcenter para '$teamcenterUser'" -AsSecureString
+    $securePassword = Read-Host "Password in Teamcenter for '$teamcenterUser'" -AsSecureString
     $credential = New-Object System.Net.NetworkCredential("", $securePassword)
     $teamcenterPassword = $credential.Password
   }
@@ -75,6 +60,48 @@ function Get-TeamcenterSettings {
   }
 }
 
+function Get-TeamcenterConfigurationWarnings {
+
+  $warnings = [System.Collections.Generic.List[string]]::new()
+
+  if (
+    [string]::IsNullOrWhiteSpace($env:DCA_TC_URL) -or
+    $env:DCA_TC_URL -like "<*>"
+  ) {
+    $warnings.Add(
+      "DCA_TC_URL must be configured with the Teamcenter server URL."
+    )
+  }
+
+  if (
+    [string]::IsNullOrWhiteSpace($env:DCA_TC_USER) -or
+    $env:DCA_TC_USER -like "<*>"
+  ) {
+    $warnings.Add(
+      "DCA_TC_USER must be configured with the Teamcenter user."
+    )
+  }
+
+  if (
+    [string]::IsNullOrWhiteSpace($env:DCA_TC_PASSWORD) -or
+    $env:DCA_TC_PASSWORD -like "<*>"
+  ) {
+    $warnings.Add(
+      "DCA_TC_PASSWORD must be configured, or entered when requested."
+    )
+  }
+
+  if (
+    -not (Test-Path -LiteralPath "C:\PATH\TO\Importar GD.exe" -PathType Leaf)
+  ) {
+    $warnings.Add(
+      "The Import GD.exe path must be configured in Confirm-TeamcenterImporter."
+    )
+  }
+
+  return $warnings.ToArray()
+}
+
 function Connect-Teamcenter {
 
   $importerExecutablePath = Confirm-TeamcenterImporter
@@ -84,21 +111,21 @@ function Connect-Teamcenter {
   [System.Reflection.Assembly]::LoadFrom($importerExecutablePath)
 
   if ($null -eq $script:ImporterAssembly) {
-    throw "Nao foi possivel carregar o Importar GD."
+    throw "Could not load the Import GD."
   }
 
   $sessionType =
   $script:ImporterAssembly.GetType("Teamcenter.ClientX.Session")
 
   if ($null -eq $sessionType) {
-    throw "Tipo Teamcenter.ClientX.Session nao encontrado."
+    throw "Type Teamcenter.ClientX.Session not found."
   }
 
   $script:TeamcenterSession =
   [System.Activator]::CreateInstance($sessionType, @($settings.Url))
 
   if ($null -eq $script:TeamcenterSession) {
-    throw "A sessao do Teamcenter retornou NULL."
+    throw "The Teamcenter session returned NULL."
   }
 
   $authenticatedUser =
@@ -111,14 +138,14 @@ function Connect-Teamcenter {
   )
 
   if ($null -eq $authenticatedUser) {
-    throw "O login do Teamcenter retornou NULL."
+    throw "The Teamcenter login returned NULL."
   }
 
   $script:TeamcenterFunctions =
   $script:ImporterAssembly.GetType("ImportarGD.Controller.Functions")
 
   if ($null -eq $script:TeamcenterFunctions) {
-    throw "ImportarGD.Controller.Functions nao encontrado."
+    throw "ImportarGD.Controller.Functions not found."
   }
 
   return $script:TeamcenterSession
@@ -138,8 +165,8 @@ function Get-TeamcenterMethod {
 
   if ($null -eq $script:TeamcenterFunctions) {
     throw (
-      "As funcoes do Teamcenter nao foram carregadas. " +
-      "Execute Connect-Teamcenter primeiro."
+      "The functions in Teamcenter not were loaded. " +
+      "Run Connect-Teamcenter first."
     )
   }
 
@@ -153,8 +180,8 @@ function Get-TeamcenterMethod {
 
   if ($null -eq $method) {
     throw (
-      "Metodo '$MethodName' com $ParameterCount parametro(s) " +
-      "nao foi encontrado no Importar GD."
+      "Method '$MethodName' with $ParameterCount parameter(s) " +
+      "was not found in Import GD."
     )
   }
 
@@ -165,8 +192,8 @@ function Get-TeamcenterConnection {
 
   if ($null -eq $script:ImporterAssembly) {
     throw (
-      "O assembly do Importar GD nao foi carregado. " +
-      "Execute Connect-Teamcenter primeiro."
+      "The Import GD assembly was not loaded. " +
+      "Run Connect-Teamcenter first."
     )
   }
 
@@ -174,19 +201,19 @@ function Get-TeamcenterConnection {
   $script:ImporterAssembly.GetType("Teamcenter.ClientX.Session")
 
   if ($null -eq $sessionType) {
-    throw "Tipo Teamcenter.ClientX.Session nao encontrado."
+    throw "Type Teamcenter.ClientX.Session not found."
   }
 
   $getConnectionMethod = $sessionType.GetMethod("getConnection")
 
   if ($null -eq $getConnectionMethod) {
-    throw "Metodo Session.getConnection nao encontrado."
+    throw "Method Session.getConnection not found."
   }
 
   $connection = $getConnectionMethod.Invoke($null, @())
 
   if ($null -eq $connection) {
-    throw "A conexao SOA do Teamcenter retornou NULL."
+    throw "The Teamcenter SOA connection returned NULL."
   }
 
   return $connection
@@ -214,7 +241,7 @@ function Get-TeamcenterDataManagementService {
     Select-Object -First 1
 
   if ($null -eq $serviceType) {
-    throw "Tipo DataManagementService nao encontrado."
+    throw "Type DataManagementService not found."
   }
 
   $getServiceMethod =
@@ -226,13 +253,13 @@ function Get-TeamcenterDataManagementService {
     Select-Object -First 1
 
   if ($null -eq $getServiceMethod) {
-    throw "Metodo DataManagementService.getService nao encontrado."
+    throw "Method DataManagementService.getService not found."
   }
 
   $service = $getServiceMethod.Invoke($null, @($connection))
 
   if ($null -eq $service) {
-    throw "DataManagementService retornou NULL."
+    throw "DataManagementService returned NULL."
   }
 
   return $service
@@ -246,7 +273,7 @@ function Get-TeamcenterRevision {
   )
 
   if ($null -eq $Item) {
-    throw "O item do Teamcenter nao foi fornecido."
+    throw "The Teamcenter item was not provided."
   }
 
   $getRevisionMethod =
@@ -273,15 +300,15 @@ function Import-TeamcenterPdf {
   )
 
   if ($null -eq $Revision) {
-    throw "A revisao do item '$ItemCode' nao foi fornecida."
+    throw "The item revision '$ItemCode' was not provided."
   }
 
   if (-not (Test-Path -LiteralPath $FilePath -PathType Leaf)) {
-    throw "PDF nao encontrado em '$FilePath'."
+    throw "PDF not found at '$FilePath'."
   }
 
   if ([System.IO.Path]::GetExtension($FilePath) -ine ".pdf") {
-    throw "O arquivo informado nao possui extensao PDF."
+    throw "The specified file does not have a PDF extension."
   }
 
   $revisionBaseObject = $Revision.PSObject.BaseObject
@@ -292,21 +319,15 @@ function Import-TeamcenterPdf {
 
   $revisionTypeName = $Revision.GetType().FullName
 
-  Write-TeamcenterDetail "Tipo recebido por ImportarPDF: [$revisionTypeName]"
-
   if ($revisionTypeName -notmatch "ItemRevision") {
     throw (
-      "A revisao recebida nao e um ItemRevision valido. " +
-      "Tipo recebido: '$revisionTypeName'."
+      "The received revision is not a valid ItemRevision. " +
+      "Type received: '$revisionTypeName'."
     )
   }
 
   $importMethod =
   Get-TeamcenterMethod -MethodName "ImportarPDF" -ParameterCount 5
-
-  Write-TeamcenterDetail "Executando ImportarPDF."
-  Write-TeamcenterDetail "Item: $ItemCode"
-  Write-TeamcenterDetail "Arquivo: $FilePath"
 
   $invokeArguments = New-Object "System.Object[]" 5
   $invokeArguments[0] = [string]$ItemCode
@@ -334,7 +355,7 @@ function Import-TeamcenterPdf {
       }
 
       throw (
-        "Falha ao importar o PDF para '$ItemCode': " +
+        "Failed to import the PDF to '$ItemCode': " +
         $realException.Message
       )
     }
@@ -371,8 +392,8 @@ function Get-TeamcenterServiceErrors {
     Select-Object -First 1
 
   if ($null -eq $sizeMethod -or $null -eq $getErrorMethod) {
-    # A API desta versao nao expoe os metodos esperados.
-    # A excecao original do CreateObjects (se houver) ja e propagada.
+    # This version API does not expose the expected methods.
+    # The original CreateObjects exception, if any, is already propagated.
     return $errorMessages.ToArray()
   }
 
@@ -409,7 +430,7 @@ function Get-TeamcenterServiceErrors {
   return $errorMessages.ToArray()
 }
 
-# Separa um valor como "BA4" em revisao cliente "B" e formato "A4".
+# Splits a value such as "BA4" into client revision "B" and format "A4".
 function Get-DcaClientRevisionInfo {
 
   param(
@@ -432,7 +453,7 @@ function Get-DcaClientRevisionInfo {
   }
 }
 
-# Mapeia cada tipo de documento para objetos e propriedades do Teamcenter.
+# Maps each document type to Teamcenter objects and properties.
 function Get-DcaTypeConfiguration {
 
   param(
@@ -447,24 +468,24 @@ function Get-DcaTypeConfiguration {
     $info = Get-DcaClientRevisionInfo -ClientRevision $ClientRevision
 
     if ([string]::IsNullOrWhiteSpace($info.Revision)) {
-      throw "ClientRevision ficou vazia para '$DocumentType'."
+      throw "ClientRevision ficou empty for '$DocumentType'."
     }
 
     if ($info.Revision.Length -gt 2) {
       throw (
-        "Revisao Cliente '$($info.Revision)' possui " +
-        "$($info.Revision.Length) caracteres. " +
-        "O Teamcenter permite no maximo 2."
+        "Client Revision '$($info.Revision)' has " +
+        "$($info.Revision.Length) characters. " +
+        "Teamcenter allows a maximum of 2 characters."
       )
     }
 
     return [PSCustomObject]@{
-      ItemType = "GD5_DCA_DESENHO"
-      RevisionType = "GD5_DCA_DESENHORevision"
-      ClientProperty = "gd5client"
-      ClientValue = "Collins"
+      ItemType = "ITEM_TYPE_ORIGINAL_DRAWING"
+      RevisionType = "REVISION_TYPE_ORIGINAL_DRAWING"
+      ClientProperty = "CLIENT_PROPERTY"
+      ClientValue = "CLIENT_NAME"
       TeamcenterRevisionId = $info.Revision
-      RevisionProperties = @{ "gd5revcliente" = $info.Revision }
+      RevisionProperties = @{ "CLIENT_REVISION_PROPERTY" = $info.Revision }
       Paper = $info.Paper
     }
   }
@@ -473,23 +494,23 @@ function Get-DcaTypeConfiguration {
 
     $processValue = ([string]$ClientRevision).Trim().ToUpper()
 
-    if ($processValue -notmatch '^(?<Client>[A-Z0-9-]{1,2})(?<Internal>\d)$') {
+    if ($processValue -notmatch '^(?<Client>[A-Z0-9-]{1,2})(?<Internall>\d)$') {
       throw (
-        "A revisao '$processValue' nao segue o padrao de DCA Processo " +
-        "(1 ou 2 caracteres de revisao cliente + 1 digito interno, " +
-        "ex.: BA4, AA4, --4)."
+        "The revision '$processValue' does not follow the DCA Process pattern " +
+        "(1 or 2 client revision characters plus 1 internal digit, " +
+        "e.g.: BA4, AA4, --4)."
       )
     }
 
     return [PSCustomObject]@{
-      ItemType = "GD5_DCA_PROCESSO"
-      RevisionType = "GD5_DCA_PROCESSORevision"
-      ClientProperty = "gd5client"
-      ClientValue = "Collins"
+      ItemType = "ITEM_TYPE_PROCESS"
+      RevisionType = "REVISION_TYPE_PROCESS"
+      ClientProperty = "CLIENT_PROPERTY"
+      ClientValue = "CLIENT_NAME"
       TeamcenterRevisionId = $processValue
       RevisionProperties = @{
-        "gd5revcliente" = $Matches["Client"]
-        "gd5revinterna" = $Matches["Internal"]
+        "CLIENT_REVISION_PROPERTY" = $Matches["Client"]
+        "INTERNAL_REVISION_PROPERTY" = $Matches["Internal"]
       }
       Paper = $null
     }
@@ -498,17 +519,17 @@ function Get-DcaTypeConfiguration {
   if ($DocumentType -eq "NormaExterna") {
 
     return [PSCustomObject]@{
-      ItemType = "GD5_DCA_NORMA"
-      RevisionType = "GD5_DCA_NORMARevision"
-      ClientProperty = "gd5client"
-      ClientValue = "Collins"
-      TeamcenterRevisionId = "000"
+      ItemType = "ITEM_TYPE_EXTERNAL_STANDARD"
+      RevisionType = "REVISION_TYPE_EXTERNAL_STANDARD"
+      ClientProperty = "CLIENT_PROPERTY"
+      ClientValue = "CLIENT_NAME"
+      TeamcenterRevisionId = "DEFAULT_REVISION"
       RevisionProperties = @{}
       Paper = $null
     }
   }
 
-  throw "Tipo de documento nao suportado: '$DocumentType'."
+  throw "Document type not supported: '$DocumentType'."
 }
 
 function New-DcaCreateInputObject {
@@ -527,7 +548,7 @@ function New-DcaCreateInputObject {
   $inputObject = [System.Activator]::CreateInstance($InputType)
 
   if ($null -eq $inputObject) {
-    throw "Nao foi possivel criar o CreateInput de '$BoName'."
+    throw "Could not create the CreateInput for '$BoName'."
   }
 
   $inputObject.BoName = $BoName
@@ -635,17 +656,17 @@ function New-DcaTeamcenterItem {
   )
 
   $duplicatePattern =
-  '(?i)already exists|ja existe|duplicate|not unique|is not unique'
+  '(?i)already exists|already exists|duplicate|not unique|is not unique'
 
   $sourceCodeClean = $SourceCode.Trim().ToUpper()
   $itemNameClean = $ItemName.Trim()
 
   if ([string]::IsNullOrWhiteSpace($sourceCodeClean)) {
-    throw "SourceCode ficou vazio."
+    throw "SourceCode ficou empty."
   }
 
   if ([string]::IsNullOrWhiteSpace($itemNameClean)) {
-    throw "ItemName ficou vazio."
+    throw "ItemName ficou empty."
   }
 
   $typeConfiguration =
@@ -661,25 +682,7 @@ function New-DcaTeamcenterItem {
   $revisionExtraProperties = $typeConfiguration.RevisionProperties
 
   if ([string]::IsNullOrWhiteSpace($teamcenterRevisionId)) {
-    throw "Revision ID ficou vazio para '$DocumentType'."
-  }
-
-  Write-TeamcenterDetail "Tipo selecionado pela pasta: [$DocumentType]"
-  Write-TeamcenterDetail "Item BoName: [$itemType]"
-  Write-TeamcenterDetail "Revision BoName: [$revisionType]"
-  Write-TeamcenterDetail "Valor original do PDF: [$ClientRevision]"
-  Write-TeamcenterDetail "Revision ID: [$teamcenterRevisionId]"
-
-  foreach ($extraKey in $revisionExtraProperties.Keys) {
-    Write-TeamcenterDetail "Propriedade da revisao: [$extraKey = $($revisionExtraProperties[$extraKey])]"
-  }
-
-  if ($revisionExtraProperties.Count -eq 0) {
-    Write-TeamcenterDetail "Revisao Cliente: [nao utilizada por este tipo]"
-  }
-
-  if (-not [string]::IsNullOrWhiteSpace($typeConfiguration.Paper)) {
-    Write-TeamcenterDetail "Formato identificado: [$($typeConfiguration.Paper)]"
+    throw "Revision ID is empty for '$DocumentType'."
   }
 
   $dataManagementService = Get-TeamcenterDataManagementService
@@ -693,19 +696,19 @@ function New-DcaTeamcenterItem {
     Select-Object -First 1
 
   if ($null -eq $createObjectsMethod) {
-    throw "Metodo CreateObjects nao encontrado."
+    throw "Method CreateObjects not found."
   }
 
   $createInArrayType = $createObjectsMethod.GetParameters()[0].ParameterType
 
   if (-not $createInArrayType.IsArray) {
-    throw "O parametro de CreateObjects nao e um array."
+    throw "The CreateObjects parameter is not an array."
   }
 
   $createInType = $createInArrayType.GetElementType()
 
   if ($null -eq $createInType) {
-    throw "Tipo CreateIn nao identificado."
+    throw "Type CreateIn not identified."
   }
 
   $createInputField =
@@ -717,18 +720,16 @@ function New-DcaTeamcenterItem {
   )
 
   if ($null -eq $createInputField) {
-    throw "Campo Data nao encontrado em CreateIn."
+    throw "Data field not found in CreateIn."
   }
 
   $createInputType = $createInputField.FieldType
 
   if ($null -eq $createInputType) {
-    throw "Tipo do CreateInput nao identificado."
+    throw "CreateInput type not identified."
   }
 
   $candidateCode = $sourceCodeClean
-  Write-TeamcenterDetail "Criando item DCA: $candidateCode"
-
     $revisionProperties = @{
       "item_revision_id" = $teamcenterRevisionId
       "object_name" = $itemNameClean
@@ -771,7 +772,7 @@ function New-DcaTeamcenterItem {
     $createIn = [System.Activator]::CreateInstance($createInType)
 
     if ($null -eq $createIn) {
-      throw "Nao foi possivel criar createIn."
+      throw "Could not create createIn."
     }
 
     $createIn.ClientId = [string]"CreateDcaItem"
@@ -784,31 +785,25 @@ function New-DcaTeamcenterItem {
     $revisionSent = $createInSent.Data.CompoundCreateInput["revision"].GetValue(0)
 
     if ($null -eq $revisionSent) {
-      throw "revisionSent ficou NULL."
+      throw "revisionSent was NULL."
     }
-
-    Write-TeamcenterDetail "Item BoName: [$($createInSent.Data.BoName)]"
-    Write-TeamcenterDetail "Item ID: [$($createInSent.Data.StringProps['item_id'])]"
-    Write-TeamcenterDetail "Item Name: [$($createInSent.Data.StringProps['object_name'])]"
-    Write-TeamcenterDetail "Revision BoName: [$($revisionSent.BoName)]"
-    Write-TeamcenterDetail "Revision ID: [$($revisionSent.StringProps['item_revision_id'])]"
 
     foreach ($extraKey in $revisionExtraProperties.Keys) {
 
       if ([string]::IsNullOrWhiteSpace([string]$revisionSent.StringProps[$extraKey])) {
-        throw "A propriedade '$extraKey' ficou vazia na revisao."
+        throw "A property '$extraKey' is empty in the revision."
       }
     }
 
     if ($revisionSent.StringProps.ContainsKey("sequence_id")) {
-      throw "sequence_id nao deve ser enviado."
+      throw "sequence_id must not be sent."
     }
 
     if (
       $DocumentType -eq "NormaExterna" -and
-      $revisionSent.StringProps.ContainsKey("gd5revcliente")
+      $revisionSent.StringProps.ContainsKey("CLIENT_REVISION_PROPERTY")
     ) {
-      throw "gd5revcliente nao deve ser enviado para '$DocumentType'."
+      throw "CLIENT_REVISION_PROPERTY must not be sent for '$DocumentType'."
     }
 
     $invokeArguments = New-Object "System.Object[]" 1
@@ -829,14 +824,14 @@ function New-DcaTeamcenterItem {
       $errorMessage = $realException.Message
 
       if ($errorMessage -match $duplicatePattern) {
-        throw "O item '$candidateCode' ja existe no Teamcenter."
+        throw "The item '$candidateCode' already exists in Teamcenter."
       }
 
-      throw "Falha ao executar CreateObjects para '$candidateCode': $errorMessage"
+      throw "Failure while running CreateObjects for '$candidateCode': $errorMessage"
     }
 
     if ($null -eq $createResponse) {
-      throw "CreateObjects retornou NULL."
+      throw "CreateObjects returned NULL."
     }
 
     $serviceData = $createResponse.ServiceData
@@ -847,10 +842,10 @@ function New-DcaTeamcenterItem {
       $joinedErrors = $serviceErrors -join " | "
 
       if ($joinedErrors -match $duplicatePattern) {
-        throw "O item '$candidateCode' ja existe no Teamcenter."
+        throw "The item '$candidateCode' already exists in Teamcenter."
       }
 
-      throw "O Teamcenter rejeitou a criacao: $joinedErrors"
+      throw "Teamcenter rejected the creation: $joinedErrors"
     }
 
     $createdObjects =
@@ -874,8 +869,8 @@ function New-DcaTeamcenterItem {
 
     if ($null -eq $createdItem) {
       throw (
-        "CreateObjects nao retornou o Item criado. " +
-        "Objetos retornados: $($createdObjects.Count)."
+        "CreateObjects did not return the created item. " +
+        "Objetos returneds: $($createdObjects.Count)."
       )
     }
 
@@ -893,20 +888,6 @@ function New-DcaTeamcenterItem {
         $createdRevision = $revisionBaseObject
       }
     }
-
-    Write-TeamcenterDetail "Tipo do Item retornado: [$($createdItem.GetType().FullName)]"
-
-    if ($null -ne $createdRevision) {
-      Write-TeamcenterDetail "Tipo da revisao retornada: [$($createdRevision.GetType().FullName)]"
-    }
-    else {
-      Write-Host (
-        "  [WARNING] A revisao nao veio no retorno. " +
-        "Ela sera consultada pelo Item."
-      ) -ForegroundColor Yellow
-    }
-
-    Write-Host "  [OK] Item criado: $candidateCode" -ForegroundColor Green
 
     return [PSCustomObject]@{
       Code = $candidateCode
