@@ -165,7 +165,7 @@ function Get-TeamcenterMethod {
 
   if ($null -eq $script:TeamcenterFunctions) {
     throw (
-      "The functions in Teamcenter not were loaded. " +
+      "The Teamcenter functions were not loaded. " +
       "Run Connect-Teamcenter first."
     )
   }
@@ -468,7 +468,7 @@ function Get-DcaTypeConfiguration {
     $info = Get-DcaClientRevisionInfo -ClientRevision $ClientRevision
 
     if ([string]::IsNullOrWhiteSpace($info.Revision)) {
-      throw "ClientRevision ficou empty for '$DocumentType'."
+      throw "ClientRevision is empty for '$DocumentType'."
     }
 
     if ($info.Revision.Length -gt 2) {
@@ -494,7 +494,7 @@ function Get-DcaTypeConfiguration {
 
     $processValue = ([string]$ClientRevision).Trim().ToUpper()
 
-    if ($processValue -notmatch '^(?<Client>[A-Z0-9-]{1,2})(?<Internall>\d)$') {
+    if ($processValue -notmatch '^(?<Client>[A-Z0-9-]{1,2})\d$') {
       throw (
         "The revision '$processValue' does not follow the DCA Process pattern " +
         "(1 or 2 client revision characters plus 1 internal digit, " +
@@ -656,17 +656,17 @@ function New-DcaTeamcenterItem {
   )
 
   $duplicatePattern =
-  '(?i)already exists|already exists|duplicate|not unique|is not unique'
+  '(?i)already exists|duplicate|not unique'
 
   $sourceCodeClean = $SourceCode.Trim().ToUpper()
   $itemNameClean = $ItemName.Trim()
 
   if ([string]::IsNullOrWhiteSpace($sourceCodeClean)) {
-    throw "SourceCode ficou empty."
+    throw "SourceCode is empty."
   }
 
   if ([string]::IsNullOrWhiteSpace($itemNameClean)) {
-    throw "ItemName ficou empty."
+    throw "ItemName is empty."
   }
 
   $typeConfiguration =

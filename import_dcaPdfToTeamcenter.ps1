@@ -35,12 +35,8 @@ if (-not [string]::IsNullOrWhiteSpace($env:DCA_VAULT_CREDENTIAL)) {
   $VaultCredentialPath = $env:DCA_VAULT_CREDENTIAL
 }
 
-try {
-  [Console]::InputEncoding = [System.Text.Encoding]::UTF8
-  [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-}
-catch {
-}
+[Console]::InputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 $teamcenterFunctionsPath =
 Join-Path $PSScriptRoot "functions\teamcenter_functions.ps1"
@@ -87,31 +83,24 @@ function Write-Section {
   )
 
   if (-not $NoLeadingBlank) {
-    Write-AnimatedLine ""
+    Write-Line ""
   }
-  Write-AnimatedLine ("+" + ("-" * 68) + "+") -Color Gray
-  Write-AnimatedLine ("| {0,-66} |" -f $Title) -Color White
-  Write-AnimatedLine ("+" + ("-" * 68) + "+") -Color Gray
+  Write-Line ("+" + ("-" * 68) + "+") -Color Gray
+  Write-Line ("| {0,-66} |" -f $Title) -Color White
+  Write-Line ("+" + ("-" * 68) + "+") -Color Gray
 }
 
-function Write-AnimatedLine {
+function Write-Line {
 
   param(
     [Parameter(Mandatory = $true)]
     [AllowEmptyString()]
     [string]$Message,
 
-    [System.ConsoleColor]$Color = [System.ConsoleColor]::Gray,
-
-    [ValidateRange(0, 500)]
-    [int]$DelayMilliseconds = 30
+    [System.ConsoleColor]$Color = [System.ConsoleColor]::Gray
   )
 
   Write-Host $Message -ForegroundColor $Color
-
-  if ($DelayMilliseconds -gt 0) {
-    Start-Sleep -Milliseconds $DelayMilliseconds
-  }
 }
 
 function Write-Success {
@@ -121,7 +110,7 @@ function Write-Success {
     [string]$Message
   )
 
-  Write-AnimatedLine "  [OK] $Message" -Color Green
+  Write-Line "  [OK] $Message" -Color Green
 }
 
 function Write-Failure {
@@ -131,7 +120,7 @@ function Write-Failure {
     [string]$Message
   )
 
-  Write-AnimatedLine "  [ERROR] $Message" -Color Red
+  Write-Line "  [ERROR] $Message" -Color Red
 }
 
 function Write-Warn {
@@ -141,7 +130,7 @@ function Write-Warn {
     [string]$Message
   )
 
-  Write-AnimatedLine "  [WARNING] $Message" -Color Yellow
+  Write-Line "  [WARNING] $Message" -Color Yellow
 }
 
 function Write-Info {
@@ -151,7 +140,7 @@ function Write-Info {
     [string]$Message
   )
 
-  Write-AnimatedLine "  $Message" -Color Gray
+  Write-Line "  $Message" -Color Gray
 }
 
 function Show-DcaConfigurationWarnings {
@@ -187,14 +176,14 @@ function Show-DcaConfigurationWarnings {
   }
 
   if ($warnings.Count -gt 0) {
-    Write-AnimatedLine ""
+    Write-Line ""
     Write-Section -Title "CONFIGURATION WARNINGS"
 
     foreach ($warning in $warnings) {
       Write-Warn $warning
     }
 
-    Write-AnimatedLine ""
+    Write-Line ""
   }
 }
 
@@ -584,7 +573,7 @@ function Select-DcaPdfByCode {
   $searchPattern.IndexOf("*") -ge 0 -or
   $searchPattern.IndexOf("?") -ge 0
 
-  Write-AnimatedLine ""
+  Write-Line ""
 
   if ($usesWildcard) {
     Write-Info "Searching by pattern: [$searchPattern]"
@@ -607,7 +596,7 @@ function Select-DcaPdfByCode {
 
     throw (
       "The documentation folder was not found at '$FolderPath'. " +
-      "Folders visiveis: " + ($visibleFolderNames -join ", ")
+      "Visible folders: " + ($visibleFolderNames -join ", ")
     )
   }
 
@@ -627,7 +616,7 @@ function Select-DcaPdfByCode {
     [PSCustomObject]@{
       FolderName = "EXTERNAL_STANDARDS"
       DocumentType = "NormaExterna"
-      DisplayName = "Externall Standard"
+      DisplayName = "External Standard"
     }
   )
 
@@ -663,14 +652,14 @@ function Select-DcaPdfByCode {
 
     throw (
       "No supported folder was found in " +
-      "'$($documentationFolder.FullName)'. Folders visiveis: " +
+      "'$($documentationFolder.FullName)'. Visible folders: " +
       ($visibleSubfolderNames -join ", ")
     )
   }
 
   $matchingFiles = [System.Collections.Generic.List[object]]::new()
 
-  # A single server search (PDM API); results are then split by category.
+  # Search the server once, then split results by category.
   $apiEntries = $null
   $vault = Get-DcaVault
 
@@ -766,10 +755,10 @@ function Select-DcaPdfByCode {
     throw "No PDF was found for the search '$searchPattern'."
   }
 
-  Write-AnimatedLine ""
-  Write-AnimatedLine ("  SEARCH RESULTS  ({0} found)" -f $matchCount) -Color White
-  Write-AnimatedLine ("  Search: {0}" -f $searchPattern) -Color Gray
-  Write-AnimatedLine ("  " + ("-" * 72)) -Color DarkGray
+  Write-Line ""
+  Write-Line ("  SEARCH RESULTS  ({0} found)" -f $matchCount) -Color White
+  Write-Line ("  Search: {0}" -f $searchPattern) -Color Gray
+  Write-Line ("  " + ("-" * 72)) -Color DarkGray
 
   for ($index = 0; $index -lt $matchCount; $index++) {
 
@@ -787,13 +776,13 @@ function Select-DcaPdfByCode {
       $nameDisplay = "not provided"
     }
 
-    Write-AnimatedLine ("  [{0}] {1}" -f $number, $currentMatch.File.Name) -Color White
-    Write-AnimatedLine ("       Type:     {0}" -f $currentMatch.TypeDisplayName) -Color White
-    Write-AnimatedLine ("       Code:   {0}" -f $currentMatch.SourceCode) -Color Gray
-    Write-AnimatedLine ("       Name:     {0}" -f $nameDisplay) -Color Gray
-    Write-AnimatedLine ("       Revision:  {0}" -f $revisionDisplay) -Color Gray
-    Write-AnimatedLine ("       Location:    {0}" -f $currentMatch.File.FullName) -Color DarkGray
-    Write-AnimatedLine ""
+    Write-Line ("  [{0}] {1}" -f $number, $currentMatch.File.Name) -Color White
+    Write-Line ("       Type:     {0}" -f $currentMatch.TypeDisplayName) -Color White
+    Write-Line ("       Code:   {0}" -f $currentMatch.SourceCode) -Color Gray
+    Write-Line ("       Name:     {0}" -f $nameDisplay) -Color Gray
+    Write-Line ("       Revision:  {0}" -f $revisionDisplay) -Color Gray
+    Write-Line ("       Location:    {0}" -f $currentMatch.File.FullName) -Color DarkGray
+    Write-Line ""
   }
 
   if ($matchCount -eq 1) {
@@ -816,7 +805,7 @@ function Select-DcaPdfByCode {
 
     $selectedFile = $matchingFiles[$selectedNumber - 1]
 
-    Write-AnimatedLine ""
+    Write-Line ""
     Write-Success "Selected PDF: $($selectedFile.File.FullName)"
 
     return $selectedFile
@@ -876,7 +865,7 @@ function Copy-PdfToTemporaryFolder {
     throw (
       "The temporary copy size differs from the original. " +
       "Original: $($sourceFile.Length) bytes. " +
-      "Copia: $($temporaryFile.Length) bytes."
+      "Copy: $($temporaryFile.Length) bytes."
     )
   }
 
@@ -1032,17 +1021,17 @@ function Invoke-DcaMain {
 
   $clientRevision = $clientRevision.Trim().ToUpper()
 
-  Write-AnimatedLine ""
+  Write-Line ""
   Write-Info "Creation summary:"
-  Write-AnimatedLine "  Type:    $($selectedPdf.TypeDisplayName) [$documentType]" -Color Gray
-  Write-AnimatedLine "  Code:  $itemCodeFromFile" -Color Gray
-  Write-AnimatedLine "  Revision: $clientRevision" -Color Gray
-  Write-AnimatedLine "  Name:    $itemNameText" -Color Gray
-  Write-AnimatedLine "  File: $($selectedPdf.File.FullName)" -Color Gray
+  Write-Line "  Type:    $($selectedPdf.TypeDisplayName) [$documentType]" -Color Gray
+  Write-Line "  Code:  $itemCodeFromFile" -Color Gray
+  Write-Line "  Revision: $clientRevision" -Color Gray
+  Write-Line "  Name:    $itemNameText" -Color Gray
+  Write-Line "  File: $($selectedPdf.File.FullName)" -Color Gray
 
   if ($Preview) {
 
-    Write-AnimatedLine ""
+    Write-Line ""
     Write-Success "Preview only. Nothing was created in Teamcenter."
 
     return 0
@@ -1052,14 +1041,14 @@ function Invoke-DcaMain {
 
   Write-Section -Title "STAGE 3/3 - CREATE ITEM AND IMPORT DOCUMENT"
 
-  Write-AnimatedLine ""
+  Write-Line ""
   Write-Warn "This stage will create actual items in Teamcenter."
 
   $confirmation = Read-Host "Enter YES to continue or press Enter to abort"
 
   if ($confirmation -notmatch "^(?i:yes)$") {
 
-    Write-AnimatedLine ""
+    Write-Line ""
     Write-Warn "Aborted by the user. No item was created."
 
     return 0
