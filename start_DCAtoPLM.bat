@@ -3,13 +3,11 @@ setlocal
 
 title DCAtoPLM
 
-echo ============================================
-echo  Criacao de item com PDF no Teamcenter
-echo ============================================
+echo [ETAPA 1/3] Informacoes do item
 echo.
 
 set "SOURCE_CODE="
-set /p "SOURCE_CODE=Digite o codigo do item: "
+set /p "SOURCE_CODE=Digite o codigo para pesquisar; use * para busca parcial: "
 
 if not defined SOURCE_CODE (
     echo.
@@ -34,11 +32,6 @@ if not defined ITEM_NAME (
 
 set "SOURCE_CODE=%SOURCE_CODE:"=%"
 set "ITEM_NAME=%ITEM_NAME:"=%"
-
-echo.
-echo Codigo: %SOURCE_CODE%
-echo Nome: %ITEM_NAME%
-echo.
 
 powershell.exe ^
     -NoProfile ^
