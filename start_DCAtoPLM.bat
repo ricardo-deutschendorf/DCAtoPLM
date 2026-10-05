@@ -1,47 +1,12 @@
 @echo off
 setlocal
 
-echo ============================================
-echo  Criacao de item com PDF no Teamcenter
-echo ============================================
-echo.
-
-set "SOURCE_CODE="
-set /p SOURCE_CODE="Digite o codigo do item: "
-
-if not defined SOURCE_CODE (
-    echo.
-    echo Nenhum codigo foi informado.
-    pause
-    exit /b 1
-)
-
-echo.
-
-set "PDF_PATH="
-set /p PDF_PATH="Digite ou arraste o PDF para esta janela: "
-
-if not defined PDF_PATH (
-    echo.
-    echo Nenhum PDF foi informado.
-    pause
-    exit /b 1
-)
-
-set "SOURCE_CODE=%SOURCE_CODE:"=%"
-set "PDF_PATH=%PDF_PATH:"=%"
-
-echo.
-echo Codigo: %SOURCE_CODE%
-echo PDF: %PDF_PATH%
-echo.
+title DCAtoPLM
 
 powershell.exe ^
     -NoProfile ^
     -ExecutionPolicy Bypass ^
-    -File "%~dp0import_dcaPdfToTeamcenter.ps1" ^
-    -SourceCode "%SOURCE_CODE%" ^
-    -PdfPath "%PDF_PATH%"
+    -File "%~dp0import_dcaPdfToTeamcenter.ps1"
 
 set "EXIT_CODE=%ERRORLEVEL%"
 
