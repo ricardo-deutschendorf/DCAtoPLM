@@ -1155,7 +1155,7 @@ function Select-DcaPdfByCode {
     $nameDisplay = [string]$currentMatch.DocumentTitle
 
     if ([string]::IsNullOrWhiteSpace($nameDisplay)) {
-      $nameDisplay = "nÃ£o informado"
+      $nameDisplay = "não informado"
     }
 
     Write-SearchResultLine ("  [{0}] {1}" -f $number, $currentMatch.File.Name) -Color White
@@ -1168,31 +1168,115 @@ function Select-DcaPdfByCode {
   }
 
   if ($matchCount -eq 1) {
+
     Write-Success "O unico PDF encontrado foi selecionado automaticamente."
+
     return $matchingFiles[0]
   }
 
   while ($true) {
 
-    $selectionText = Read-Host "Digite o numero do PDF desejado (1 ate $matchCount)"
-    $selectedNumber = 0
+    $selectionText =
+    Read-Host (
+      "Digite um ou mais numeros separados por virgula " +
+      "(exemplo: 1,2)"
+    )
 
-    $validNumber = [System.Int32]::TryParse($selectionText, [ref]$selectedNumber)
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $selectionText
+      )
+    ) {
 
-    if (-not $validNumber -or $selectedNumber -lt 1 -or $selectedNumber -gt $matchCount) {
-      Write-Warn "Opcao invalida. Digite um numero entre 1 e $matchCount."
+      Write-Warn (
+        "Nenhum numero foi informado."
+      )
+
       continue
     }
 
-    $selectedFile = $matchingFiles[$selectedNumber - 1]
+    $selectedNumbers =
+    [System.Collections.Generic.List[int]]::new()
+
+    $knownNumbers =
+    [System.Collections.Generic.HashSet[int]]::new()
+
+    $selectionIsValid =
+    $true
+
+    foreach ($selectionPart in ($selectionText -split ",")) {
+
+      $trimmedSelection =
+      ([string]$selectionPart).Trim()
+
+      $selectedNumber =
+      0
+
+      $validNumber =
+      [System.Int32]::TryParse(
+        $trimmedSelection,
+        [ref]$selectedNumber
+      )
+
+      if (
+        -not $validNumber -or
+        $selectedNumber -lt 1 -or
+        $selectedNumber -gt $matchCount
+      ) {
+
+        Write-Warn (
+          "Selecao invalida: '$trimmedSelection'. " +
+          "Digite numeros entre 1 e $matchCount."
+        )
+
+        $selectionIsValid =
+        $false
+
+        break
+      }
+
+      # Evita selecionar o mesmo resultado duas vezes.
+      if ($knownNumbers.Add($selectedNumber)) {
+
+        $selectedNumbers.Add($selectedNumber)
+      }
+    }
+
+    if (-not $selectionIsValid) {
+      continue
+    }
+
+    if ($selectedNumbers.Count -eq 0) {
+
+      Write-Warn (
+        "Nenhum resultado valido foi selecionado."
+      )
+
+      continue
+    }
+
+    $selectedFiles =
+    [System.Collections.Generic.List[object]]::new()
 
     Write-AnimatedLine ""
-    Write-Success "PDF selecionado: $($selectedFile.File.FullName)"
 
-    return $selectedFile
+    foreach ($selectedNumber in $selectedNumbers) {
+
+      $selectedFile =
+      $matchingFiles[$selectedNumber - 1]
+
+      $selectedFiles.Add($selectedFile)
+
+      Write-Success (
+        "PDF selecionado [$selectedNumber]: " +
+        $selectedFile.File.FullName
+      )
+    }
+
+    # A virgula impede que o PowerShell desmonte a colecao.
+    return $selectedFiles.ToArray()
   }
 }
-
 function Copy-PdfToTemporaryFolder {
 
   param(
@@ -1289,10 +1373,15 @@ function Get-DcaSearchCodeList {
   $codes =
   [System.Collections.Generic.List[string]]::new()
 
+  $knownCodes =
+  [System.Collections.Generic.HashSet[string]]::new(
+    [System.StringComparer]::OrdinalIgnoreCase
+  )
+
   foreach ($part in ($InputText -split ",")) {
 
     $currentCode =
-    [string]$part
+    ([string]$part).Trim()
 
     if (
       [string]::IsNullOrWhiteSpace(
@@ -1302,12 +1391,15 @@ function Get-DcaSearchCodeList {
       continue
     }
 
-    $codes.Add(
-      $currentCode.Trim()
-    )
+    # Add retorna false quando o mesmo padrao ja existe.
+    if ($knownCodes.Add($currentCode)) {
+
+      $codes.Add($currentCode)
+    }
   }
 
   if ($codes.Count -eq 0) {
+
     throw "Nenhum codigo valido foi informado."
   }
 
@@ -1366,6 +1458,11 @@ function Invoke-DcaMain {
   $selectedDocuments =
   [System.Collections.Generic.List[object]]::new()
 
+  $selectedDocumentPaths =
+  [System.Collections.Generic.HashSet[string]]::new(
+    [System.StringComparer]::OrdinalIgnoreCase
+  )
+
   $searchFailures =
   [System.Collections.Generic.List[object]]::new()
   for (
@@ -1386,13 +1483,14 @@ function Invoke-DcaMain {
     ) -ForegroundColor Cyan
 
     try {
+      $selectedPdfs =
+      @(
+        Select-DcaPdfByCode `
+          -FolderPath $rootPath `
+          -Code $currentSearchCode
+      )
 
-      $selectedPdf =
-      Select-DcaPdfByCode `
-        -FolderPath $rootPath `
-        -Code $currentSearchCode
-
-      if ($null -eq $selectedPdf) {
+      if ($selectedPdfs.Count -eq 0) {
 
         throw (
           "Nenhum PDF foi selecionado para a pesquisa " +
@@ -1400,12 +1498,45 @@ function Invoke-DcaMain {
         )
       }
 
-      $selectedDocuments.Add(
-        [PSCustomObject]@{
-          SearchText = $currentSearchCode
-          SelectedPdf = $selectedPdf
+      foreach ($selectedPdf in $selectedPdfs) {
+
+        if ($null -eq $selectedPdf) {
+          continue
         }
-      )
+
+        $selectedPath =
+        [string]$selectedPdf.File.FullName
+
+        if (
+          [string]::IsNullOrWhiteSpace(
+            $selectedPath
+          )
+        ) {
+
+          Write-Warn (
+            "O resultado selecionado nao possui caminho."
+          )
+
+          continue
+        }
+
+        if (-not $selectedDocumentPaths.Add($selectedPath)) {
+
+          Write-Warn (
+            "O PDF ja foi adicionado ao lote e sera ignorado: " +
+            $selectedPath
+          )
+
+          continue
+        }
+
+        $selectedDocuments.Add(
+          [PSCustomObject]@{
+            SearchText = $currentSearchCode
+            SelectedPdf = $selectedPdf
+          }
+        )
+      }
     }
     catch {
 
