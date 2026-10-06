@@ -3,6 +3,14 @@ setlocal
 
 title DCAtoPLM
 
+if exist "%~dp0.env" (
+    for /f "usebackq eol=# tokens=1,* delims==" %%A in ("%~dp0.env") do (
+        if not "%%A"=="" set "%%A=%%B"
+    )
+) else if exist "%~dp0DCAtoPLM.local.bat" (
+    call "%~dp0DCAtoPLM.local.bat"
+)
+
 powershell.exe ^
     -NoProfile ^
     -ExecutionPolicy Bypass ^

@@ -27,7 +27,7 @@ the following values:
 
 | What to review | Where to change it | What to configure |
 | --- | --- | --- |
-| Local vault path | `start_DCAtoPLM.bat` and `$SearchRoot` in `import_dcaPdfToTeamcenter.ps1` | Replace `C:\VAULT_ROOT` with the local folder containing the documents. |
+| Local vault path | `.env` or `$SearchRoot` in `import_dcaPdfToTeamcenter.ps1` | Set `DCA_ROOT` to the local folder containing the documents. |
 | PDM vault name | `$VaultName` in `import_dcaPdfToTeamcenter.ps1` or `DCA_VAULT_NAME` | Replace `VAULT_NAME` with the exact SolidWorks PDM vault name. |
 | PDM library | `$PdmLibraryPath` or `DCA_PDM_LIB` | Replace `C:\PATH\TO\Interop.EdmLib.dll` with the installed library path. |
 | PDM credentials | `$VaultCredentialPath` or `DCA_VAULT_CREDENTIAL` | Replace `<VAULT_CREDENTIAL_FILE>` with a protected `Export-Clixml` credential file when required. |
@@ -40,6 +40,15 @@ the following values:
 The source code intentionally contains neutral placeholders. The application
 will not work until the placeholders are replaced or the equivalent values are
 provided through environment variables and command-line parameters.
+
+### Local environment configuration
+
+The recommended way to configure a workstation without changing the source
+files is to copy `.env.example` to `.env` next to `start_DCAtoPLM.bat` and
+replace every placeholder. The launcher loads `.env` automatically when it
+exists. The `.env` file is ignored by Git and must never be committed because
+it can contain authentication values. The launcher only loads it for that
+invocation, so it does not alter the Windows environment permanently.
 
 Before a production import:
 
@@ -109,6 +118,8 @@ DCAtoPLM/
 ├── functions/
 │   └── teamcenter_functions.ps1
 ├── start_DCAtoPLM.bat
+├── .env.example              (safe template)
+├── .env                      (local, not versioned)
 └── README.md
 ```
 
@@ -116,7 +127,7 @@ DCAtoPLM/
 | --- | --- |
 | `import_dcaPdfToTeamcenter.ps1` | Main workflow, search, selection, validation, prompts, and import orchestration. |
 | `functions/teamcenter_functions.ps1` | Teamcenter connection, object creation, error handling, revision lookup, and PDF import. |
-| `start_DCAtoPLM.bat` | Recommended launcher using `C:\VAULT_ROOT` as the configured search root. |
+| `start_DCAtoPLM.bat` | Recommended launcher; loads `.env` when present. |
 
 ## Requirements
 
@@ -169,9 +180,9 @@ Run:
 start_DCAtoPLM.bat
 ```
 
-The launcher starts PowerShell with `C:\VAULT_ROOT` as the search root. The script
-requests the source code first and requests the item name after a PDF has been
-selected.
+The launcher loads the optional `.env` configuration and starts PowerShell. The
+script requests the source code first and requests the item name after a PDF has
+been selected.
 
 ### Direct PowerShell execution
 
@@ -194,7 +205,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
-| `-SearchRoot` | `string` | `C:\VAULT_ROOT` | Local root of the configured vault. |
+| `-SearchRoot` | `string` | `DCA_ROOT` | Local root of the configured vault. |
 | `-SourceCode` | `string` | Empty | Exact code or search pattern. Prompts interactively when omitted. |
 | `-ItemName` | `string` | Empty | Initial Teamcenter item name. Prompts after document selection when omitted. |
 | `-VaultName` | `string` | `VAULT_NAME` | SolidWorks PDM vault name. |
@@ -229,10 +240,8 @@ Run a preview for an external standard:
 
 ### 1. Local DCA vault path
 
-The default path is defined in two places:
-
-- `start_DCAtoPLM.bat`: change `-SearchRoot "C:\VAULT_ROOT"`.
-- `import_dcaPdfToTeamcenter.ps1`: change the default value of `$SearchRoot`.
+The recommended setting is `DCA_ROOT` in `.env`. The script also
+accepts `$SearchRoot` through the `-SearchRoot` command-line parameter.
 
 For a one-time change, prefer the command-line parameter:
 
@@ -267,7 +276,16 @@ $env:DCA_VAULT_CREDENTIAL = "C:\Secure\vault-credential.xml"
 ```
 
 The credential file should be created with `Export-Clixml` and should not be
-committed or shared between machines.
+committed or shared between machines. It can be a standard
+`PSCredential` export:
+
+```powershell
+Get-Credential | Export-Clixml -Path "C:\Secure\vault-credential.xml"
+```
+
+The same user and computer that created the file must normally be used to
+decrypt the password. If the file is absent, the script uses `LoginAuto`, which
+requires an active SolidWorks PDM login for the current Windows user.
 
 ### 4. Teamcenter connection data
 

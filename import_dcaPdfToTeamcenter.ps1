@@ -12,6 +12,8 @@ param(
 
   [string]$PdmLibraryPath = $env:DCA_PDM_LIB,
 
+  [string]$VaultCredentialPath = $env:DCA_VAULT_CREDENTIAL,
+
   [ValidateRange(0, 2000)]
   [int]$OutputDelayMilliseconds = 100,
 
@@ -22,6 +24,78 @@ param(
   [switch]$Preview
 )
 
+function Import-DcaEnvironmentFile {
+
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$FilePath
+  )
+
+  if (-not (
+      Test-Path `
+        -LiteralPath $FilePath `
+        -PathType Leaf
+    )) {
+
+    throw "Arquivo de configuracao nao encontrado: '$FilePath'."
+  }
+
+  foreach (
+    $line in Get-Content `
+      -LiteralPath $FilePath `
+      -Encoding UTF8
+  ) {
+
+    $trimmedLine =
+    $line.Trim()
+
+    if (
+      [string]::IsNullOrWhiteSpace($trimmedLine) -or
+      $trimmedLine.StartsWith("#")
+    ) {
+      continue
+    }
+
+    $separatorIndex =
+    $trimmedLine.IndexOf("=")
+
+    if ($separatorIndex -le 0) {
+      continue
+    }
+
+    $variableName =
+    $trimmedLine.Substring(
+      0,
+      $separatorIndex
+    ).Trim()
+
+    $variableValue =
+    $trimmedLine.Substring(
+      $separatorIndex + 1
+    ).Trim()
+
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $variableName
+      )
+    ) {
+      continue
+    }
+
+    [System.Environment]::SetEnvironmentVariable(
+      $variableName,
+      $variableValue,
+      [System.EnvironmentVariableTarget]::Process
+    )
+  }
+}
+$environmentFilePath =
+Join-Path `
+  -Path $PSScriptRoot `
+  -ChildPath ".env"
+
+Import-DcaEnvironmentFile `
+  -FilePath $environmentFilePath
 $ErrorActionPreference = "Stop"
 $script:DcaVault = $null
 $script:DcaVaultTried = $false
@@ -32,10 +106,6 @@ if (-not [string]::IsNullOrWhiteSpace($env:DCA_VAULT_NAME)) {
 
 if (-not [string]::IsNullOrWhiteSpace($env:DCA_PDM_LIB)) {
   $PdmLibraryPath = $env:DCA_PDM_LIB
-}
-
-if (-not [string]::IsNullOrWhiteSpace($env:DCA_VAULT_CREDENTIAL)) {
-  $VaultCredentialPath = $env:DCA_VAULT_CREDENTIAL
 }
 
 try {
@@ -208,15 +278,49 @@ function Get-DcaVault {
         throw "O arquivo de credencial do vault nao pode ser lido."
       }
 
-      $securePassword = $credential.SenhaCriptografada | ConvertTo-SecureString
+      $credentialUser = $null
+      $securePassword = $null
+
+      if ($credential -is [System.Management.Automation.PSCredential]) {
+        $credentialUser = $credential.UserName
+        $securePassword = $credential.Password
+      }
+      elseif (
+        $credential.PSObject.Properties["Usuario"] -and
+        $credential.PSObject.Properties["SenhaCriptografada"]
+      ) {
+        $credentialUser = [string]$credential.Usuario
+        $securePassword = $credential.SenhaCriptografada | ConvertTo-SecureString
+      }
+      else {
+        throw (
+          "O arquivo de credencial do vault deve ser um PSCredential " +
+          "ou conter as propriedades Usuario e SenhaCriptografada."
+        )
+      }
+
+      if ([string]::IsNullOrWhiteSpace($credentialUser)) {
+        throw "O usuario do vault nao foi encontrado no arquivo de credencial."
+      }
 
       $passwordPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePassword)
 
       $plainTextPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($passwordPointer)
 
-      $vault.Login($credential.Usuario, $plainTextPassword, $VaultName)
+      $vault.Login($credentialUser, $plainTextPassword, $VaultName)
     }
     else {
+
+      if (
+        -not [string]::IsNullOrWhiteSpace($VaultCredentialPath) -and
+        $VaultCredentialPath -notlike "<*>" -and
+        -not (Test-Path -LiteralPath $VaultCredentialPath -PathType Leaf)
+      ) {
+        Write-Warn (
+          "Arquivo de credencial do vault nao encontrado em " +
+          "'$VaultCredentialPath'. Tentando LoginAuto."
+        )
+      }
 
       $vault.LoginAuto($VaultName, 0)
     }
@@ -232,8 +336,9 @@ function Get-DcaVault {
   catch {
 
     Write-Warn (
-      "API do PDM indisponivel: $($_.Exception.Message) " +
-      "Usando apenas o sistema de arquivos."
+      "Falha no login do vault '$VaultName': $($_.Exception.Message) " +
+      "Usando apenas o sistema de arquivos. Verifique o nome do vault, " +
+      "o login do PDM e DCA_VAULT_CREDENTIAL."
     )
 
     return $null
@@ -276,7 +381,9 @@ function Search-DcaVaultPdfEntries {
     $resultName = [string]$currentResult.Name
 
     if (
-      [string]::IsNullOrWhiteSpace($resultName) -or
+      -not [string]::IsNullOrWhiteSpace(
+        $resultName
+      ) -and
       $resultName.EndsWith(
         ".pdf",
         [System.StringComparison]::OrdinalIgnoreCase
@@ -492,8 +599,7 @@ function Get-NormaCodeFromText {
     $knownPrefixes |
       Sort-Object {
       $_.Length
-    } -Descending |
-      Select-Object -Unique
+    } -Descending
   )
 
   # Special AMS patterns.
@@ -626,14 +732,9 @@ function Get-NormaCodeFromText {
     if ($normalizedText -notmatch $pattern) {
       continue
     }
-
     $code = [string]$Matches["Code"]
 
-    if (
-      -not [string]::IsNullOrWhiteSpace(
-        $code
-      )
-    ) {
+    if ([string]::IsNullOrWhiteSpace($code)) {
       continue
     }
 
@@ -1177,7 +1278,41 @@ function Copy-PdfToTemporaryFolder {
   Write-Success "PDF copiado e validado na pasta temporaria."
   return $temporaryFile.FullName
 }
+function Get-DcaSearchCodeList {
 
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$InputText
+  )
+
+  $codes =
+  [System.Collections.Generic.List[string]]::new()
+
+  foreach ($part in ($InputText -split ",")) {
+
+    $currentCode =
+    [string]$part
+
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $currentCode
+      )
+    ) {
+      continue
+    }
+
+    $codes.Add(
+      $currentCode.Trim()
+    )
+  }
+
+  if ($codes.Count -eq 0) {
+    throw "Nenhum codigo valido foi informado."
+  }
+
+  return $codes.ToArray()
+}
 function Invoke-DcaMain {
 
   Write-Section -Title "Informe o que deseja pesquisar" -NoLeadingBlank
@@ -1190,155 +1325,307 @@ function Invoke-DcaMain {
     throw "DCA_ROOT or -SearchRoot must be configured."
   }
 
-  while ($true) {
+  $searchInput =
+  [string]$SourceCode
 
-    if ([string]::IsNullOrWhiteSpace($searchPattern)) {
-      $searchPattern = Read-Host "Digite o codigo para pesquisar; use * para busca parcial"
-    }
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $searchInput
+    )
+  ) {
 
-    if ([string]::IsNullOrWhiteSpace($searchPattern)) {
-      Write-Warn "Codigo do item nao informado. Digite outro codigo."
-      continue
-    }
+    $searchInput =
+    Read-Host (
+      "Digite um ou mais codigos separados por virgula; " +
+      "use * para busca parcial"
+    )
+  }
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $searchInput
+    )
+  ) {
+
+    throw "Nenhum codigo de pesquisa foi informado."
+  }
+
+  $requestedCodes =
+  @(
+    Get-DcaSearchCodeList `
+      -InputText $searchInput
+  )
+
+  Write-Host ""
+
+  Write-Host (
+    "  Codigo(s) informado(s): " +
+    $requestedCodes.Count
+  ) -ForegroundColor Gray
+
+  $selectedDocuments =
+  [System.Collections.Generic.List[object]]::new()
+
+  $searchFailures =
+  [System.Collections.Generic.List[object]]::new()
+  for (
+    $searchIndex = 0
+    $searchIndex -lt $requestedCodes.Count
+    $searchIndex++
+  ) {
+
+    $currentSearchCode =
+    [string]$requestedCodes[$searchIndex]
+
+    Write-Host ""
+
+    Write-Host (
+      "Preparando pesquisa " +
+      "[$($searchIndex + 1)/$($requestedCodes.Count)]: " +
+      "$currentSearchCode"
+    ) -ForegroundColor Cyan
 
     try {
-      $selectedPdf = Select-DcaPdfByCode `
+
+      $selectedPdf =
+      Select-DcaPdfByCode `
         -FolderPath $rootPath `
-        -Code $searchPattern
+        -Code $currentSearchCode
 
       if ($null -eq $selectedPdf) {
-        throw "Nenhum PDF foi selecionado para a pesquisa '$searchPattern'."
+
+        throw (
+          "Nenhum PDF foi selecionado para a pesquisa " +
+          "'$currentSearchCode'."
+        )
       }
 
-      break
+      $selectedDocuments.Add(
+        [PSCustomObject]@{
+          SearchText = $currentSearchCode
+          SelectedPdf = $selectedPdf
+        }
+      )
     }
     catch {
 
-      if ($_.Exception.Message -notmatch '^Nenhum PDF foi encontrado') {
-        throw
-      }
+      $searchFailures.Add(
+        [PSCustomObject]@{
+          SearchText = $currentSearchCode
+          ErrorMessage = $_.Exception.Message
+        }
+      )
 
-      Write-Warn $_.Exception.Message
-      Write-AnimatedLine ""
-      Write-Info "Informe outro codigo para pesquisar."
-      $searchPattern = $null
+      Write-Warn (
+        "Falha na pesquisa '$currentSearchCode': " +
+        $_.Exception.Message
+      )
     }
   }
 
-  Write-Section -Title "Escolha o documento"
+  if ($selectedDocuments.Count -eq 0) {
+    throw "Nenhum documento foi selecionado para importacao."
+  }
 
-  $documentType = [string]$selectedPdf.DocumentType
+  $preparedDocuments =
+  [System.Collections.Generic.List[object]]::new()
 
-  $itemCodeFromFile = [string]$selectedPdf.SourceCode
-
-  $documentTitle = [string]$selectedPdf.DocumentTitle
-
-  $itemNameText = $ItemName
-
-  if (
-    $documentType -eq "NormaExterna" -and
-    -not [string]::IsNullOrWhiteSpace(
-      $documentTitle
-    )
+  for (
+    $documentIndex = 0
+    $documentIndex -lt $selectedDocuments.Count
+    $documentIndex++
   ) {
 
-    $itemNameText = $documentTitle.Trim()
-  }
+    $selection =
+    $selectedDocuments[$documentIndex]
 
-  if ([string]::IsNullOrWhiteSpace($itemNameText)) {
-    $itemNameText = Read-Host "Digite o nome do item (obrigatorio)"
-  }
-  else {
-    $displayItemName = $itemNameText
+    $selectedPdf =
+    $selection.SelectedPdf
 
-    if ($displayItemName.Length -gt 30) {
-      $displayItemName = $displayItemName.Substring(0, 30) + "..."
-    }
+    $documentType =
+    [string]$selectedPdf.DocumentType
 
-    $typedItemName = Read-Host "Deseja alterar o nome do item? (Enter mantÃ©m '$displayItemName')"
+    $itemCodeFromFile =
+    [string]$selectedPdf.SourceCode
 
-    if (-not [string]::IsNullOrWhiteSpace($typedItemName)) {
-      $itemNameText = $typedItemName
-    }
-  }
-
-  if ([string]::IsNullOrWhiteSpace($itemNameText)) {
-    throw "Nome do item nao informado."
-  }
-
-  $itemNameText = $itemNameText.Trim()
-
-  if (
-    $documentType -eq "NormaExterna" -and
-    -not $selectedPdf.CodeParsed
-  ) {
-
-    Write-Warn (
-      "Nao foi possivel extrair o codigo da norma de: " +
-      "'$($selectedPdf.File.BaseName)'."
-    )
-
-    $typedCode = Read-Host (
-      "Digite o codigo da norma " +
-      "(Enter usa o nome completo)"
-    )
+    $documentTitle =
+    [string]$selectedPdf.DocumentTitle
 
     if (
-      -not [string]::IsNullOrWhiteSpace(
-        $typedCode
+      $documentType -eq "NormaExterna" -and
+      -not $selectedPdf.CodeParsed
+    ) {
+
+      Write-Warn (
+        "Nao foi possivel extrair o codigo da norma de " +
+        "'$($selectedPdf.File.BaseName)'."
+      )
+
+      $typedCode =
+      Read-Host (
+        "Digite o codigo da norma " +
+        "(Enter usa o nome completo)"
+      )
+
+      if (
+        -not [string]::IsNullOrWhiteSpace(
+          $typedCode
+        )
+      ) {
+
+        $itemCodeFromFile =
+        $typedCode.Trim()
+      }
+    }
+
+    $clientRevision =
+    [string]$selectedPdf.ClientRevision
+
+    Write-Host ""
+    Write-Host (
+      "Preparando documento " +
+      "[$($documentIndex + 1)/$($selectedDocuments.Count)]: " +
+      "$itemCodeFromFile"
+    ) -ForegroundColor Cyan
+
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $clientRevision
       )
     ) {
 
-      $itemCodeFromFile = $typedCode.Trim()
-    }
-  }
+      if ($documentType -eq "NormaExterna") {
 
-  $clientRevision = [string]$selectedPdf.ClientRevision
+        $clientRevision =
+        "000"
 
-  if ($documentType -eq "NormaExterna") {
-
-    if ([string]::IsNullOrWhiteSpace($clientRevision)) {
-      $clientRevision = "000"
-      Write-Info "Revisao inicial da Norma Externa: [000]"
-    }
-  }
-  else {
-
-    while ($true) {
-
-      if ([string]::IsNullOrWhiteSpace($clientRevision)) {
-        $clientRevision = Read-Host "Digite a Revisao Cliente (Original: B ou BA4; Processo: BA4)"
+        Write-Host (
+          "  Revisao inicial da Norma Externa: [000]"
+        ) -ForegroundColor Gray
       }
+      else {
 
-      if ([string]::IsNullOrWhiteSpace($clientRevision)) {
-        Write-Warn "Revisao Cliente nao informada. Digite uma revisao valida."
-        continue
-      }
-
-      $clientRevision = $clientRevision.Trim().ToUpper()
-
-      try {
-        $null = Get-DcaTypeConfiguration `
-          -DocumentType $documentType `
-          -ClientRevision $clientRevision
-
-        break
-      }
-      catch {
-        Write-Warn $_.Exception.Message
-        $clientRevision = $null
+        $clientRevision =
+        Read-Host (
+          "Digite a Revisao Cliente para '$itemCodeFromFile' " +
+          "(Original: B ou BA4; Processo: BA4)"
+        )
       }
     }
+
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $clientRevision
+      )
+    ) {
+
+      Write-Warn (
+        "Revisao nao informada para '$itemCodeFromFile'. " +
+        "O documento sera ignorado."
+      )
+
+      continue
+    }
+
+    $clientRevision =
+    $clientRevision.Trim().ToUpper()
+
+    $itemNameText =
+    [string]$ItemName
+
+    if (
+      $documentType -eq "NormaExterna" -and
+      -not [string]::IsNullOrWhiteSpace(
+        $documentTitle
+      )
+    ) {
+
+      $itemNameText =
+      $documentTitle.Trim()
+    }
+
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $itemNameText
+      )
+    ) {
+
+      $itemNameText =
+      Read-Host (
+        "Digite o nome do item '$itemCodeFromFile' " +
+        "(obrigatorio)"
+      )
+    }
+
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $itemNameText
+      )
+    ) {
+
+      Write-Warn (
+        "Nome nao informado para '$itemCodeFromFile'. " +
+        "O documento sera ignorado."
+      )
+
+      continue
+    }
+
+    $preparedDocuments.Add(
+      [PSCustomObject]@{
+        SearchText = $selection.SearchText
+        SelectedPdf = $selectedPdf
+        ItemCode = $itemCodeFromFile
+        ItemName = $itemNameText.Trim()
+        ClientRevision = $clientRevision
+        DocumentType = $documentType
+        DisplayType = $selectedPdf.TypeDisplayName
+      }
+    )
   }
 
-  Write-AnimatedLine ""
-  Write-Info "Resumo do que sera criado:"
-  Write-AnimatedLine "  Tipo:    $($selectedPdf.TypeDisplayName) [$documentType]" -Color Gray
-  Write-AnimatedLine "  Codigo:  $itemCodeFromFile" -Color Gray
-  Write-AnimatedLine "  Revisao: $clientRevision" -Color Gray
-  Write-AnimatedLine "  Nome:    $itemNameText" -Color Gray
-  Write-AnimatedLine "  Arquivo: $($selectedPdf.File.FullName)" -Color Gray
+  if ($preparedDocuments.Count -eq 0) {
+    throw "Nenhum documento ficou pronto para importacao."
+  }
+  Write-Section -Title "Resumo do lote"
 
+  Write-Host ""
+
+  for (
+    $index = 0
+    $index -lt $preparedDocuments.Count
+    $index++
+  ) {
+
+    $document =
+    $preparedDocuments[$index]
+
+    Write-Host (
+      "  [$($index + 1)] $($document.ItemCode)"
+    ) -ForegroundColor White
+
+    Write-Host (
+      "       Tipo:    " +
+      "$($document.DisplayType) [$($document.DocumentType)]"
+    ) -ForegroundColor Gray
+
+    Write-Host (
+      "       Revisao: " +
+      $document.ClientRevision
+    ) -ForegroundColor Gray
+
+    Write-Host (
+      "       Nome:    " +
+      $document.ItemName
+    ) -ForegroundColor Gray
+
+    Write-Host (
+      "       Arquivo: " +
+      $document.SelectedPdf.File.FullName
+    ) -ForegroundColor DarkGray
+
+    Write-Host ""
+  }
   if ($Preview) {
 
     Write-AnimatedLine ""
@@ -1347,19 +1634,25 @@ function Invoke-DcaMain {
     return 0
   }
 
-  $null = Connect-Teamcenter
+  $null =
+  Connect-Teamcenter
+
+  # ====================================================
+  # Confirmacao adicional para ambiente de processo
+  # ====================================================
 
   if (
     $script:TeamcenterEnvironment -eq "Processo"
   ) {
 
-    Write-Host ""
-    Write-Host (
-      "  [ATENCAO] Voce esta conectado ao " +
-      "Teamcenter de PROCESSO."
-    ) -ForegroundColor Yellow
+    Write-AnimatedLine ""
 
-    $productionConfirmation = Read-Host (
+    Write-Warn (
+      "Voce esta conectado ao Teamcenter de PROCESSO."
+    )
+
+    $productionConfirmation =
+    Read-Host (
       "Digite PROCESSO para confirmar a criacao " +
       "no servidor normal"
     )
@@ -1368,125 +1661,422 @@ function Invoke-DcaMain {
       $productionConfirmation.Trim() -cne "PROCESSO"
     ) {
 
-      Write-Host ""
-      Write-Host (
+      Write-AnimatedLine ""
+
+      Write-Warn (
         "Operacao cancelada. Nenhum item foi criado."
-      ) -ForegroundColor Yellow
+      )
 
       return 0
     }
   }
 
-  Write-Section -Title "Criar item e importar documento"
+  # ====================================================
+  # Confirmacao geral do lote
+  # ====================================================
+
+  Write-Section `
+    -Title "Criar itens e importar documentos"
 
   Write-AnimatedLine ""
-  Write-Warn "Esta etapa vai criar itens reais no Teamcenter."
 
-  $confirmation = Read-Host "Digite SIM para continuar ou pressione Enter para abortar"
+  Write-Warn (
+    "Esta etapa vai criar $($preparedDocuments.Count) " +
+    "item(ns) real(is) no Teamcenter."
+  )
 
-  if ($confirmation -ne "sim") {
+  $confirmation =
+  Read-Host (
+    "Digite SIM para continuar ou pressione Enter para abortar"
+  )
+
+  if (
+    $confirmation.Trim() -ine "SIM"
+  ) {
 
     Write-AnimatedLine ""
-    Write-Warn "Abortado pelo usuario. Nenhum item foi criado."
+
+    Write-Warn (
+      "Abortado pelo usuario. Nenhum item foi criado."
+    )
 
     return 0
   }
 
-  $createdCode = $null
+  # ====================================================
+  # Executar o lote
+  # ====================================================
 
-  try {
+  $batchResults =
+  [System.Collections.Generic.List[object]]::new()
 
-    $teamcenterDestination = New-DcaTeamcenterItem `
-      -SourceCode $itemCodeFromFile `
-      -ItemName $itemNameText `
-      -ClientRevision $clientRevision `
-      -DocumentType $documentType
+  for (
+    $index = 0
+    $index -lt $preparedDocuments.Count
+    $index++
+  ) {
 
-    if ($null -eq $teamcenterDestination) {
-      throw "New-DcaTeamcenterItem nao retornou resultado para '$itemCodeFromFile'."
-    }
+    $document =
+    $preparedDocuments[$index]
 
-    $createdCode = [string]$teamcenterDestination.Code
+    $createdCode =
+    $null
 
-    if ([string]::IsNullOrWhiteSpace($createdCode)) {
-      throw "O codigo criado nao foi retornado."
-    }
+    $itemCreated =
+    $false
 
-    Write-Success "Item criado: $createdCode"
+    $pdfImported =
+    $false
 
-    $teamcenterItem = $teamcenterDestination.Item
+    Write-AnimatedLine ""
 
-    if ($null -ne $teamcenterItem) {
-      $teamcenterItem = $teamcenterItem.PSObject.BaseObject
-    }
+    Write-Info (
+      "Importando [$($index + 1)/$($preparedDocuments.Count)]: " +
+      $document.ItemCode
+    )
 
-    if ($null -eq $teamcenterItem) {
-      throw "O Item criado nao foi retornado para '$createdCode'."
-    }
+    try {
 
-    $teamcenterRevision = $teamcenterDestination.Revision
+      # ==================================================
+      # 1. Criar Item e revisao
+      # ==================================================
 
-    if ($null -ne $teamcenterRevision) {
-      $teamcenterRevision = $teamcenterRevision.PSObject.BaseObject
-    }
+      $teamcenterDestination =
+      New-DcaTeamcenterItem `
+        -SourceCode $document.ItemCode `
+        -ItemName $document.ItemName `
+        -ClientRevision $document.ClientRevision `
+        -DocumentType $document.DocumentType
 
-    if ($null -eq $teamcenterRevision) {
+      if ($null -eq $teamcenterDestination) {
 
-      Write-Info "Localizando a revisao do item..."
+        throw (
+          "New-DcaTeamcenterItem nao retornou resultado " +
+          "para '$($document.ItemCode)'."
+        )
+      }
 
-      $teamcenterRevision = Get-TeamcenterRevision -Item $teamcenterItem
+      $createdCode =
+      [string]$teamcenterDestination.Code
+
+      if (
+        [string]::IsNullOrWhiteSpace(
+          $createdCode
+        )
+      ) {
+
+        throw "O codigo criado nao foi retornado."
+      }
+
+      $itemCreated =
+      $true
+
+      Write-Success (
+        "Item criado: $createdCode"
+      )
+
+      # ==================================================
+      # 2. Obter o Item criado
+      # ==================================================
+
+      $teamcenterItem =
+      $teamcenterDestination.Item
+
+      if ($null -ne $teamcenterItem) {
+
+        $teamcenterItem =
+        $teamcenterItem.PSObject.BaseObject
+      }
+
+      if ($null -eq $teamcenterItem) {
+
+        throw (
+          "O Item criado nao foi retornado para " +
+          "'$createdCode'."
+        )
+      }
+
+      # ==================================================
+      # 3. Obter a revisao criada
+      # ==================================================
+
+      $teamcenterRevision =
+      $teamcenterDestination.Revision
 
       if ($null -ne $teamcenterRevision) {
-        $teamcenterRevision = $teamcenterRevision.PSObject.BaseObject
+
+        $teamcenterRevision =
+        $teamcenterRevision.PSObject.BaseObject
       }
-    }
 
-    if ($null -eq $teamcenterRevision) {
-      throw "A revisao do Teamcenter nao foi encontrada para '$createdCode'."
-    }
+      if ($null -eq $teamcenterRevision) {
 
-    $revisionTypeName = $teamcenterRevision.GetType().FullName
+        Write-Info (
+          "Localizando a revisao do item..."
+        )
 
-    if ($revisionTypeName -notmatch "ItemRevision") {
-      throw (
-        "O objeto retornado nao e uma revisao valida. " +
-        "Tipo recebido: '$revisionTypeName'."
+        $teamcenterRevision =
+        Get-TeamcenterRevision `
+          -Item $teamcenterItem
+
+        if ($null -ne $teamcenterRevision) {
+
+          $teamcenterRevision =
+          $teamcenterRevision.PSObject.BaseObject
+        }
+      }
+
+      if ($null -eq $teamcenterRevision) {
+
+        throw (
+          "A revisao do Teamcenter nao foi encontrada " +
+          "para '$createdCode'."
+        )
+      }
+
+      $revisionTypeName =
+      $teamcenterRevision.GetType().FullName
+
+      if (
+        $revisionTypeName -notmatch "ItemRevision"
+      ) {
+
+        throw (
+          "O objeto retornado nao e uma revisao valida. " +
+          "Tipo recebido: '$revisionTypeName'."
+        )
+      }
+
+      Write-Info (
+        "Revisao localizada: $revisionTypeName"
+      )
+
+      # ==================================================
+      # 4. Garantir que o PDF esteja no cache local
+      # ==================================================
+
+      $localPdfPath =
+      Confirm-DcaLocalPdf `
+        -Entry $document.SelectedPdf.File
+
+      if (
+        [string]::IsNullOrWhiteSpace(
+          $localPdfPath
+        )
+      ) {
+
+        throw (
+          "Confirm-DcaLocalPdf nao retornou o caminho " +
+          "do PDF para '$createdCode'."
+        )
+      }
+
+      if (-not (
+          Test-Path `
+            -LiteralPath $localPdfPath `
+            -PathType Leaf
+        )) {
+
+        throw (
+          "O PDF local nao foi encontrado para '$createdCode': " +
+          "'$localPdfPath'."
+        )
+      }
+
+      # ==================================================
+      # 5. Copiar o PDF para a pasta temporaria
+      # ==================================================
+
+      $temporaryPdfPath =
+      Copy-PdfToTemporaryFolder `
+        -SourcePdfPath $localPdfPath `
+        -ItemCode $createdCode
+
+      if (
+        [string]::IsNullOrWhiteSpace(
+          $temporaryPdfPath
+        )
+      ) {
+
+        throw (
+          "Copy-PdfToTemporaryFolder nao retornou " +
+          "o caminho do PDF temporario."
+        )
+      }
+
+      if (-not (
+          Test-Path `
+            -LiteralPath $temporaryPdfPath `
+            -PathType Leaf
+        )) {
+
+        throw (
+          "O PDF temporario nao existe para '$createdCode': " +
+          "'$temporaryPdfPath'."
+        )
+      }
+
+      $temporaryPdfFile =
+      Get-Item `
+        -LiteralPath $temporaryPdfPath `
+        -ErrorAction Stop
+
+      if ($temporaryPdfFile.Length -le 0) {
+
+        throw (
+          "O PDF temporario de '$createdCode' esta vazio."
+        )
+      }
+
+      Write-Info (
+        "PDF pronto para importacao: $temporaryPdfPath"
+      )
+
+      Write-Info (
+        "Tamanho do PDF: " +
+        "$($temporaryPdfFile.Length) bytes"
+      )
+
+      # ==================================================
+      # 6. Importar o PDF na revisao
+      # ==================================================
+
+      Write-Info (
+        "Importando o PDF no Teamcenter..."
+      )
+
+      $importResult =
+      Import-TeamcenterPdf `
+        -Revision $teamcenterRevision `
+        -ItemCode $createdCode `
+        -FilePath $temporaryPdfPath
+
+      # O metodo pode ser void e retornar NULL.
+      # A ausencia de excecao indica que a chamada terminou.
+      $pdfImported =
+      $true
+
+      Write-Success (
+        "PDF importado: $createdCode"
+      )
+
+      # ==================================================
+      # 7. Registrar sucesso
+      # ==================================================
+
+      $batchResults.Add(
+        [PSCustomObject]@{
+          SearchText = $document.SearchText
+          ItemCode = $document.ItemCode
+          ItemName = $document.ItemName
+          TeamcenterCode = $createdCode
+          ItemCreated = $itemCreated
+          PdfImported = $pdfImported
+          Succeeded = $true
+          ErrorMessage = $null
+        }
       )
     }
+    catch {
 
-    $localPdfPath = Confirm-DcaLocalPdf -Entry $selectedPdf.File
+      $batchResults.Add(
+        [PSCustomObject]@{
+          SearchText = $document.SearchText
+          ItemCode = $document.ItemCode
+          ItemName = $document.ItemName
+          TeamcenterCode = $createdCode
+          ItemCreated = $itemCreated
+          PdfImported = $pdfImported
+          Succeeded = $false
+          ErrorMessage = $_.Exception.Message
+        }
+      )
 
-    $temporaryPdfPath = Copy-PdfToTemporaryFolder `
-      -SourcePdfPath $localPdfPath `
-      -ItemCode $createdCode
+      Write-Failure (
+        "$($document.ItemCode): " +
+        $_.Exception.Message
+      )
 
-    if ([string]::IsNullOrWhiteSpace($temporaryPdfPath)) {
-      throw "Copy-PdfToTemporaryFolder nao retornou o caminho do PDF temporario."
+      # Uma falha nao interrompe os outros documentos.
+      continue
     }
-
-    Write-Info "Importando o PDF no Teamcenter..."
-
-    $null = Import-TeamcenterPdf `
-      -Revision $teamcenterRevision `
-      -ItemCode $createdCode `
-      -FilePath $temporaryPdfPath
-
-    Write-Success "PDF importado: $createdCode"
-
   }
-  catch {
 
-    Write-Failure $_.Exception.Message
+  # ====================================================
+  # Resumo final
+  # ====================================================
 
-    Write-Section -Title "Resumo"
-    Write-Failure "$itemCodeFromFile -> FALHOU (item no Teamcenter: $createdCode)"
+  Write-Section `
+    -Title "Resumo da importacao"
 
+  Write-AnimatedLine ""
+
+  foreach ($result in $batchResults) {
+
+    if (
+      $result.ItemCreated -and
+      $result.PdfImported
+    ) {
+
+      Write-Success (
+        "$($result.ItemCode) -> " +
+        "$($result.TeamcenterCode) - " +
+        "Item e PDF importados"
+      )
+    }
+    elseif (
+      $result.ItemCreated -and
+      -not $result.PdfImported
+    ) {
+
+      Write-Failure (
+        "$($result.ItemCode) -> Item criado, " +
+        "mas PDF nao importado: " +
+        $result.ErrorMessage
+      )
+    }
+    else {
+
+      Write-Failure (
+        "$($result.ItemCode) -> Item nao criado: " +
+        $result.ErrorMessage
+      )
+    }
+  }
+
+  $successCount =
+  @(
+    $batchResults |
+      Where-Object {
+      $_.Succeeded
+    }
+  ).Count
+
+  $failureCount =
+  @(
+    $batchResults |
+      Where-Object {
+      -not $_.Succeeded
+    }
+  ).Count
+
+  Write-AnimatedLine ""
+
+  Write-Host (
+    "  Importados: $successCount"
+  ) -ForegroundColor Green
+
+  Write-Host (
+    "  Falharam:   $failureCount"
+  ) -ForegroundColor Yellow
+
+  Write-Host (
+    "  Total:      $($batchResults.Count)"
+  ) -ForegroundColor Gray
+
+  if ($failureCount -gt 0) {
     return 1
   }
-
-  Write-Section -Title "Resumo"
-  Write-Success "$itemCodeFromFile -> $createdCode - $itemNameText"
-  Write-Success "Item importado para o Teamcenter."
 
   return 0
 }

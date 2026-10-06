@@ -23,93 +23,166 @@ function Confirm-TeamcenterImporter {
 
 function Get-TeamcenterSettings {
 
-  $teamcenterServerUrl = $env:DCA_TC_URL
+  $teamcenterEnvironment =
+  [string]$env:DCA_TC_ENV
 
-  if ([string]::IsNullOrWhiteSpace($teamcenterServerUrl)) {
-    throw "DCA_TC_URL must be configured."
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $teamcenterEnvironment
+    )
+  ) {
+
+    throw (
+      "DCA_TC_ENV nao foi configurado. " +
+      "Use Teste ou Processo."
+    )
   }
 
-  $teamcenterServerUrl = $teamcenterServerUrl.Trim()
+  $teamcenterEnvironment =
+  $teamcenterEnvironment.Trim()
 
-  # Validate the URL before identifying the environment.
-  $parsedUri = $null
+  $teamcenterServerUrl =
+  $null
 
-  $isValidUrl = [System.Uri]::TryCreate(
+  $teamcenterUser =
+  $null
+
+  $teamcenterPassword =
+  $null
+
+  switch ($teamcenterEnvironment.ToLowerInvariant()) {
+
+    "teste" {
+
+      $teamcenterEnvironment =
+      "Teste"
+
+      $teamcenterServerUrl =
+      [string]$env:DCA_TC_TEST_URL
+
+      $teamcenterUser =
+      [string]$env:DCA_TC_TEST_USER
+
+      $teamcenterPassword =
+      [string]$env:DCA_TC_TEST_PASSWORD
+    }
+
+    "processo" {
+
+      $teamcenterEnvironment =
+      "Processo"
+
+      $teamcenterServerUrl =
+      [string]$env:DCA_TC_PROCESS_URL
+
+      $teamcenterUser =
+      [string]$env:DCA_TC_PROCESS_USER
+
+      $teamcenterPassword =
+      [string]$env:DCA_TC_PROCESS_PASSWORD
+    }
+
+    default {
+
+      throw (
+        "Ambiente Teamcenter invalido: " +
+        "'$teamcenterEnvironment'. " +
+        "Use Teste ou Processo."
+      )
+    }
+  }
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $teamcenterServerUrl
+    )
+  ) {
+
+    throw (
+      "A URL do Teamcenter nao foi configurada para " +
+      "o ambiente '$teamcenterEnvironment'."
+    )
+  }
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $teamcenterUser
+    )
+  ) {
+
+    throw (
+      "O usuario do Teamcenter nao foi configurado para " +
+      "o ambiente '$teamcenterEnvironment'."
+    )
+  }
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $teamcenterPassword
+    )
+  ) {
+
+    $securePassword =
+    Read-Host (
+      "Senha do Teamcenter para '$teamcenterUser'"
+    ) -AsSecureString
+
+    $credential =
+    New-Object `
+      System.Net.NetworkCredential(
+      "",
+      $securePassword
+    )
+
+    $teamcenterPassword =
+    $credential.Password
+  }
+
+  $parsedUri =
+  $null
+
+  $validUrl =
+  [System.Uri]::TryCreate(
     $teamcenterServerUrl,
     [System.UriKind]::Absolute,
     [ref]$parsedUri
   )
 
   if (
-    -not $isValidUrl -or
+    -not $validUrl -or
     $null -eq $parsedUri
   ) {
 
     throw (
-      "A URL do Teamcenter e invalida: " +
+      "URL invalida para o ambiente " +
+      "'$teamcenterEnvironment': " +
       "'$teamcenterServerUrl'."
     )
   }
 
-  $teamcenterHost = $parsedUri.Host.ToLowerInvariant()
-
-  $teamcenterEnvironment = $null
-
-  $teamcenterUser = $null
-
-  $teamcenterPassword = $null
-
-  $teamcenterEnvironment = $env:DCA_TC_ENV
-
-  if ($teamcenterEnvironment -notin @("Teste", "Processo")) {
-    throw "DCA_TC_ENV must be Teste or Processo."
+  $expectedHost =
+  if ($teamcenterEnvironment -eq "Teste") {
+    "perto30-novo.perto.com.br"
   }
-
-  # Generic variables override the credentials configured for the environment.
-  if (
-    -not [string]::IsNullOrWhiteSpace(
-      $env:DCA_TC_USER
-    )
-  ) {
-
-    $teamcenterUser = $env:DCA_TC_USER
+  else {
+    "perto37-novo.perto.com.br"
   }
 
   if (
-    -not [string]::IsNullOrWhiteSpace(
-      $env:DCA_TC_PASSWORD
-    )
+    $parsedUri.Host -ine $expectedHost
   ) {
-
-    $teamcenterPassword = $env:DCA_TC_PASSWORD
-  }
-
-  if ([string]::IsNullOrWhiteSpace($teamcenterUser)) {
 
     throw (
-      "Usuario nao configurado para o ambiente " +
-      "'$teamcenterEnvironment'."
+      "A URL configurada nao corresponde ao ambiente. " +
+      "Ambiente: '$teamcenterEnvironment'. " +
+      "Servidor esperado: '$expectedHost'. " +
+      "Servidor recebido: '$($parsedUri.Host)'."
     )
-  }
-
-  if ([string]::IsNullOrWhiteSpace($teamcenterPassword)) {
-
-    $securePassword = Read-Host (
-      "Senha do Teamcenter para " +
-      "'$teamcenterUser'"
-    ) -AsSecureString
-
-    $credential = New-Object System.Net.NetworkCredential(
-      "",
-      $securePassword
-    )
-
-    $teamcenterPassword = $credential.Password
   }
 
   return [PSCustomObject]@{
     Url = $teamcenterServerUrl
-    Host = $teamcenterHost
+    Host = $parsedUri.Host
     Environment = $teamcenterEnvironment
     User = $teamcenterUser
     Password = $teamcenterPassword
@@ -373,35 +446,62 @@ function Import-TeamcenterPdf {
   $invokeArguments[3] = $Revision
   $invokeArguments[4] = [bool]$true
 
-  $originalConsoleOut = [Console]::Out
-  $importResult = $null
+ $importResult =
+$null
 
-  try {
+Write-Host (
+  "  Importando PDF no item '$ItemCode'..."
+) -ForegroundColor Gray
 
-    [Console]::SetOut([System.IO.TextWriter]::Null)
+Write-Host (
+  "  Arquivo: $FilePath"
+) -ForegroundColor DarkGray
 
-    try {
-      $importResult = $importMethod.Invoke($null, $invokeArguments)
-    }
-    catch {
+Write-Host (
+  "  Tipo da revisao: $revisionTypeName"
+) -ForegroundColor DarkGray
 
-      $realException = $_.Exception
+try {
 
-      while ($null -ne $realException.InnerException) {
-        $realException = $realException.InnerException
-      }
+  $importResult =
+  $importMethod.Invoke(
+    $null,
+    $invokeArguments
+  )
+}
+catch {
 
-      throw (
-        "Falha ao importar o PDF para '$ItemCode': " +
-        $realException.Message
-      )
-    }
+  $realException =
+  $_.Exception
+
+  while (
+    $null -ne $realException.InnerException
+  ) {
+
+    $realException =
+    $realException.InnerException
   }
-  finally {
-    [Console]::SetOut($originalConsoleOut)
-  }
 
-  return $importResult
+  throw (
+    "Falha ao importar o PDF para '$ItemCode': " +
+    $realException.Message
+  )
+}
+
+if ($null -eq $importResult) {
+
+  Write-Host (
+    "  [WARNING] ImportarPDF retornou NULL para '$ItemCode'."
+  ) -ForegroundColor Yellow
+}
+else {
+
+  Write-Host (
+    "  Retorno do ImportarPDF: $importResult"
+  ) -ForegroundColor DarkGray
+}
+
+return $importResult
 }
 
 function Get-TeamcenterServiceErrors {
