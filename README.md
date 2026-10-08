@@ -1,114 +1,94 @@
 # DCAtoPLM
 
-Import PDF documents from a local DCA vault into Siemens Teamcenter.
+> [!WARNING]
+>
+> Item and revision creation, batch processing, PDM search, folder search, PDF
+> preparation, and workflow triggering have been implemented. PDF import behavior
+> still depends on the installed Teamcenter integration assembly and must be
+> validated in each target environment before production use.
 
-This project was created for PDF files stored in a local vault. The source-code
-placeholders must be replaced with the values from the target company before
-use.
+Import PDF documents from a local SolidWorks PDM DCA vault into Siemens
+Teamcenter.
 
-```text
-C:\VAULT_ROOT
-```
+DCAtoPLM searches the configured documentation vault, interprets document
+metadata from PDF file names, creates the corresponding Teamcenter item and
+revision, imports the PDF, and optionally starts a Teamcenter workflow according
+to the current PDM state.
 
-The application searches the vault, lets the user select a document, creates the
-corresponding Teamcenter item and revision, and imports the selected PDF into the
-new revision.
+The application supports individual document searches, multiple searches in one
+execution, multi-selection from search results, and complete folder imports.
 
 > [!IMPORTANT]
-> The integration was developed and tested for **Siemens Teamcenter 2312**.
-> It may work with other Teamcenter versions, but compatibility with other
-> versions has not been confirmed.
+> The integration was developed for **Siemens Teamcenter 2312**.
+>
+> Other Teamcenter versions may work, but compatibility has not been confirmed.
+> Teamcenter business objects, properties, workflows, and integration assemblies
+> are environment-specific and must be reviewed before use.
 
-## Required changes before use
+---
 
-This project contains environment-specific settings. Before using it in another
-company, vault, PDM installation, or Teamcenter environment, review and update
-the following values:
+## Main features
 
-| What to review | Where to change it | What to configure |
-| --- | --- | --- |
-| Local vault path | `.env` or `$SearchRoot` in `import_dcaPdfToTeamcenter.ps1` | Set `DCA_ROOT` to the local folder containing the documents. |
-| PDM vault name | `$VaultName` in `import_dcaPdfToTeamcenter.ps1` or `DCA_VAULT_NAME` | Replace `VAULT_NAME` with the exact SolidWorks PDM vault name. |
-| PDM library | `$PdmLibraryPath` or `DCA_PDM_LIB` | Replace `C:\PATH\TO\Interop.EdmLib.dll` with the installed library path. |
-| PDM credentials | `$VaultCredentialPath` or `DCA_VAULT_CREDENTIAL` | Replace `<VAULT_CREDENTIAL_FILE>` with a protected `Export-Clixml` credential file when required. |
-| Teamcenter connection | `DCA_TC_URL`, `DCA_TC_USER`, and `DCA_TC_PASSWORD` | Replace the Teamcenter placeholders with the target URL and credentials. |
-| Teamcenter integration assembly | `Confirm-TeamcenterImporter` in `functions/teamcenter_functions.ps1` | Replace `C:\PATH\TO\Importar GD.exe` with the installed assembly path. |
-| Teamcenter business objects | `Get-DcaTypeConfiguration` in `functions/teamcenter_functions.ps1` | Replace item types, revision types, property names, client name, and default revision. |
-| Documentation folder | `Select-DcaPdfByCode` in `import_dcaPdfToTeamcenter.ps1` | Replace `DOCUMENTATION` with the parent folder used by the target vault. |
-| Document category folders | `$categoryDefinitions` in `import_dcaPdfToTeamcenter.ps1` | Replace `ORIGINAL_DRAWINGS`, `PROCESS_DOCUMENTS`, and `EXTERNAL_STANDARDS`. |
+- Search PDF documents through the SolidWorks PDM API.
+- Fall back to the local file system when the PDM API is unavailable.
+- Search partially without requiring `*`.
+- Perform exact searches using an explicit search prefix, when configured.
+- Submit multiple searches separated by commas.
+- Select multiple PDFs from the same search result.
+- Search folders throughout the complete documentation tree.
+- Search folders using `*` and `?`.
+- Select one or more folders from numbered results.
+- Import all PDFs directly contained in selected folders.
+- Prevent duplicate files from being added to the same batch.
+- Detect the document category from the source path.
+- Extract document codes, titles, and revisions from PDF file names.
+- Create Teamcenter items and first revisions.
+- Import PDFs into the corresponding Teamcenter revisions.
+- Read the current SolidWorks PDM workflow state.
+- Start Teamcenter workflows for approved or obsolete documents.
+- Continue processing the batch when an individual document fails.
+- Produce a final summary of complete, partial, and failed imports.
+- Provide a preview mode that does not change Teamcenter.
+- Provide an optional detailed output mode for troubleshooting.
 
-The source code intentionally contains neutral placeholders. The application
-will not work until the placeholders are replaced or the equivalent values are
-provided through environment variables and command-line parameters.
-
-### Local environment configuration
-
-The recommended way to configure a workstation without changing the source
-files is to copy `.env.example` to `.env` next to `start_DCAtoPLM.bat` and
-replace every placeholder. The launcher loads `.env` automatically when it
-exists. The `.env` file is ignored by Git and must never be committed because
-it can contain authentication values. The launcher only loads it for that
-invocation, so it does not alter the Windows environment permanently.
-
-Before a production import:
-
-1. Configure the environment-specific values listed above.
-2. Confirm that the account has permission to create Teamcenter items and revisions.
-3. Run the application with `-Preview`.
-4. Verify the search result, document type, item name, revision, and target configuration.
-5. Perform a real import only after the preview is correct.
-
-Never commit real passwords, tokens, credential files, or internal Teamcenter
-URLs to the repository.
-
-When the application starts, it displays a **CONFIGURATION WARNINGS** section
-for every required setting that is still using a placeholder or has not been
-configured. These warnings are intentionally shown before the search begins.
-They identify the setting to change without displaying passwords or other
-secret values.
-
-## When to use this tool
-
-Use DCAtoPLM when a PDF document already exists in the DCA vault and must be
-registered in Teamcenter as a new item and revision.
-
-The workflow is intended for these document categories:
-
-- **DCA Process** documents.
-- **DCA Original Drawing** documents.
-- **DCA External Standard** documents.
-
-The tool is useful when the source document must be found by its code, reviewed
-before import, associated with the correct Teamcenter business object, and
-attached to the created revision without manually repeating the entire process.
-
-It is not a general-purpose document migration tool. The Teamcenter business
-objects, revision rules, PDF naming conventions, and PDM folder categories are
-specific to this implementation.
-
-## What the application does
-
-1. Reads an exact code or a wildcard search pattern.
-2. Searches the PDM vault through the SolidWorks PDM API when available.
-3. Falls back to the local file system when the PDM API cannot be used.
-4. Displays matching PDF files and their metadata.
-5. Lets the user select a document when multiple files match.
-6. Determines the document type, code, title, and revision.
-7. Requests the Teamcenter item name and revision information when required.
-8. Shows a final summary before making changes.
-9. Creates the Teamcenter item and first revision.
-10. Validates and imports the PDF into the created revision.
-
-If the requested item already exists in Teamcenter, the process stops and reports
-the duplicate. It does not generate an alternative item code.
+---
 
 ## Supported document categories
 
-| Source folder | Document type | Teamcenter item | Teamcenter revision |
-| --- | --- | --- | --- |
-| `ORIGINAL_DRAWINGS` | DCA Original Drawing | `ITEM_TYPE_ORIGINAL_DRAWING` | `REVISION_TYPE_ORIGINAL_DRAWING` |
-| `PROCESS_DOCUMENTS` | DCA Process | `ITEM_TYPE_PROCESS` | `REVISION_TYPE_PROCESS` |
-| `EXTERNAL_STANDARDS` | DCA External Standard | `ITEM_TYPE_EXTERNAL_STANDARD` | `REVISION_TYPE_EXTERNAL_STANDARD` |
+| Source category | Internal document type | Purpose |
+| --- | --- | --- |
+| `Desenhos Originais` | `Original` | DCA original drawings |
+| `FP - Ficha de Processo (PDF)` | `Processo` | DCA process documents |
+| `Normas Externas` | `NormaExterna` | DCA external standards |
+
+Each category is mapped to a Teamcenter item type and revision type through
+environment variables.
+
+The mappings can be different for the test and production environments.
+
+---
+
+## Supported workflow states
+
+DCAtoPLM reads the current workflow state of each file in SolidWorks PDM.
+
+The following states can trigger Teamcenter workflows:
+
+| PDM state | Teamcenter action |
+| --- | --- |
+| `Aprovado` | Starts the workflow configured in `DCA_TC_APPROVED_WORKFLOW` |
+| `Obsoleto` | Starts the workflow configured in `DCA_TC_OBSOLETE_WORKFLOW` |
+| Any other state | Imports the item and PDF without starting a workflow |
+
+The workflow is started only after the item and PDF import steps complete
+without an exception.
+
+> [!NOTE]
+> Calling the integration assembly without an exception confirms that the workflow
+> method was requested. Final workflow behavior depends on the template and
+> handlers configured in Teamcenter.
+
+---
 
 ## Repository structure
 
@@ -118,444 +98,655 @@ DCAtoPLM/
 ├── functions/
 │   └── teamcenter_functions.ps1
 ├── start_DCAtoPLM.bat
-├── .env.example              (safe template)
-├── .env                      (local, not versioned)
+├── .env.example
+├── .env
 └── README.md
-```
 
-| File | Responsibility |
-| --- | --- |
-| `import_dcaPdfToTeamcenter.ps1` | Main workflow, search, selection, validation, prompts, and import orchestration. |
-| `functions/teamcenter_functions.ps1` | Teamcenter connection, object creation, error handling, revision lookup, and PDF import. |
-| `start_DCAtoPLM.bat` | Recommended launcher; loads `.env` when present. |
-
-## Requirements
+File	Responsibilityimport_dcaPdfToTeamcenter.ps1	Search, folder selection, PDF interpretation, batch preparation, prompts, and orchestration
+functions/teamcenter_functions.ps1	Teamcenter connection, item creation, revision lookup, PDF import, and workflow invocation
+start_DCAtoPLM.bat	Recommended Windows launcher
+.env.example	Safe configuration template
+.env	Local environment configuration, never committed
+Requirements
 
 The execution environment must provide:
 
-1. Windows PowerShell compatible with the scripts.
-2. Siemens Teamcenter 2312 access.
-3. Permission to authenticate, create items and revisions, and import PDFs.
-4. SolidWorks PDM access when vault API search is required.
-5. `Interop.EdmLib.dll` on the computer running the script.
-6. The `Importar GD.exe` Teamcenter integration assembly in the configured location.
-7. Access to the local DCA folder structure.
+Windows PowerShell compatible with the scripts.
+Siemens Teamcenter 2312 access.
+A Teamcenter account with permission to create items and revisions.
+Permission to import PDF datasets.
+Permission to start the configured workflows.
+SolidWorks PDM client access.
+Interop.EdmLib.dll.
+Access to the configured SolidWorks PDM vault.
+The compatible Teamcenter integration assembly, such as Importar GD.exe.
+Access to the local PDM cache or permission to download files into it.
 
-The project does not install external dependencies. Run it with a user account
-that has the required permissions; administrator privileges should not be
-necessary.
+Administrator privileges should not normally be required.
 
-## Expected DCA vault structure
+Expected vault structure
 
-The default search root is:
+The configured root is supplied through DCA_ROOT or -SearchRoot.
 
-```text
+Example:
+
 C:\VAULT_ROOT
-```
 
-The script looks for a documentation directory and the following categories:
 
-```text
+The script locates the documentation directory below that root:
+
 C:\VAULT_ROOT\
-└── DOCUMENTATION\
-    ├── ORIGINAL_DRAWINGS\
-    ├── PROCESS_DOCUMENTS\
-    └── EXTERNAL_STANDARDS\
-```
+└── Documentação\
+    ├── Desenhos Originais\
+    │   ├── CUSTOMER_A\
+    │   └── CUSTOMER_B\
+    │
+    ├── FP - Ficha de Processo (PDF)\
+    │   ├── CUSTOMER_A\
+    │   ├── CUSTOMER_B\
+    │   └── instructions\
+    │
+    └── Normas Externas\
+        ├── AMS\
+        ├── ASTM\
+        ├── MIL\
+        └── other standards\
 
-Subfolders are searched recursively. Only files with the `.pdf` extension are
-considered.
 
-The placeholder folder names are part of the current implementation. If the
-vault uses different names, update the folder mappings in
-`import_dcaPdfToTeamcenter.ps1` before running the tool.
+Folder searches are performed throughout the documentation tree, but only files inside a recognized category can be converted into Teamcenter objects.
 
-## Running the application
+The category determines the Teamcenter document type:
 
-### Recommended launcher
+Desenhos Originais
+    -> Original
+
+FP - Ficha de Processo (PDF)
+    -> Processo
+
+Normas Externas
+    -> NormaExterna
+
+Configuration
+
+The recommended configuration method is a local .env file.
+
+Copy:
+
+.env.example
+
+
+to:
+
+.env
+
+
+Then replace every placeholder with the appropriate value for the workstation and target environment.
+
+The .env file must not be committed because it can contain credentials, internal paths, and server addresses.
+
+Example environment configuration
+# ============================================================
+# DCA vault
+# ============================================================
+
+DCA_ROOT=C:\VAULT_ROOT
+DCA_VAULT_NAME=VAULT_NAME
+DCA_PDM_LIB=C:\Path\To\Interop.EdmLib.dll
+DCA_VAULT_CREDENTIAL=C:\Secure\vault-credential.xml
+DCA_TEMP_FOLDER=C:\Temp\DCAtoPLM
+
+# ============================================================
+# Teamcenter integration assembly
+# ============================================================
+
+DCA_IMPORTER_PATH=C:\Path\To\Importar GD.exe
+
+# ============================================================
+# Selected Teamcenter environment
+# Valid values: Teste or Processo
+# ============================================================
+
+DCA_TC_ENV=Teste
+
+# ============================================================
+# Teamcenter test environment
+# ============================================================
+
+DCA_TC_TEST_URL=<TEAMCENTER_TEST_URL>
+DCA_TC_TEST_USER=<TEAMCENTER_TEST_USER>
+DCA_TC_TEST_PASSWORD=<TEAMCENTER_TEST_PASSWORD>
+
+# ============================================================
+# Teamcenter production/process environment
+# ============================================================
+
+DCA_TC_PROCESS_URL=<TEAMCENTER_PROCESS_URL>
+DCA_TC_PROCESS_USER=<TEAMCENTER_PROCESS_USER>
+DCA_TC_PROCESS_PASSWORD=<TEAMCENTER_PROCESS_PASSWORD>
+
+# ============================================================
+# Teamcenter workflow templates
+# ============================================================
+
+DCA_TC_APPROVED_WORKFLOW=<APPROVED_WORKFLOW_TEMPLATE>
+DCA_TC_OBSOLETE_WORKFLOW=<OBSOLETE_WORKFLOW_TEMPLATE>
+
+# ============================================================
+# Test environment business objects
+# ============================================================
+
+DCA_TC_TEST_ORIGINAL_ITEM_TYPE=<ORIGINAL_ITEM_TYPE>
+DCA_TC_TEST_ORIGINAL_REVISION_TYPE=<ORIGINAL_REVISION_TYPE>
+DCA_TC_TEST_ORIGINAL_CLIENT_PROPERTY=<CLIENT_PROPERTY>
+DCA_TC_TEST_ORIGINAL_CLIENT_VALUE=<CLIENT_VALUE>
+
+DCA_TC_TEST_PROCESS_ITEM_TYPE=<PROCESS_ITEM_TYPE>
+DCA_TC_TEST_PROCESS_REVISION_TYPE=<PROCESS_REVISION_TYPE>
+DCA_TC_TEST_PROCESS_CLIENT_PROPERTY=<CLIENT_PROPERTY>
+DCA_TC_TEST_PROCESS_CLIENT_VALUE=<CLIENT_VALUE>
+
+DCA_TC_TEST_STANDARD_ITEM_TYPE=<STANDARD_ITEM_TYPE>
+DCA_TC_TEST_STANDARD_REVISION_TYPE=<STANDARD_REVISION_TYPE>
+DCA_TC_TEST_STANDARD_CLIENT_PROPERTY=<CLIENT_PROPERTY>
+DCA_TC_TEST_STANDARD_CLIENT_VALUE=<CLIENT_VALUE>
+
+# ============================================================
+# Production/process environment business objects
+# ============================================================
+
+DCA_TC_PROCESS_ORIGINAL_ITEM_TYPE=<ORIGINAL_ITEM_TYPE>
+DCA_TC_PROCESS_ORIGINAL_REVISION_TYPE=<ORIGINAL_REVISION_TYPE>
+DCA_TC_PROCESS_ORIGINAL_CLIENT_PROPERTY=<CLIENT_PROPERTY>
+DCA_TC_PROCESS_ORIGINAL_CLIENT_VALUE=<CLIENT_VALUE>
+
+DCA_TC_PROCESS_PROCESS_ITEM_TYPE=<PROCESS_ITEM_TYPE>
+DCA_TC_PROCESS_PROCESS_REVISION_TYPE=<PROCESS_REVISION_TYPE>
+DCA_TC_PROCESS_PROCESS_CLIENT_PROPERTY=<CLIENT_PROPERTY>
+DCA_TC_PROCESS_PROCESS_CLIENT_VALUE=<CLIENT_VALUE>
+
+DCA_TC_PROCESS_STANDARD_ITEM_TYPE=<STANDARD_ITEM_TYPE>
+DCA_TC_PROCESS_STANDARD_REVISION_TYPE=<STANDARD_REVISION_TYPE>
+DCA_TC_PROCESS_STANDARD_CLIENT_PROPERTY=<CLIENT_PROPERTY>
+DCA_TC_PROCESS_STANDARD_CLIENT_VALUE=<CLIENT_VALUE>
+
+Required changes before use
+
+Before using the project in another company, vault, workstation, or Teamcenter environment, review:
+
+Setting	Configuration locationLocal vault root	DCA_ROOT or -SearchRoot
+SolidWorks PDM vault name	DCA_VAULT_NAME or -VaultName
+PDM interop library	DCA_PDM_LIB or -PdmLibraryPath
+Protected PDM credential file	DCA_VAULT_CREDENTIAL or -VaultCredentialPath
+Temporary PDF directory	DCA_TEMP_FOLDER
+Teamcenter integration assembly	DCA_IMPORTER_PATH
+Teamcenter environment	DCA_TC_ENV
+Test Teamcenter connection	DCA_TC_TEST_* variables
+Production Teamcenter connection	DCA_TC_PROCESS_* variables
+Teamcenter business objects	Environment-specific item and revision variables
+Approval workflow	DCA_TC_APPROVED_WORKFLOW
+Obsolete workflow	DCA_TC_OBSOLETE_WORKFLOW
+Documentation categories	Category definitions in the main PowerShell script
+Revision rules	Get-DcaTypeConfiguration
+File-name parsing	ConvertFrom-PdfFileName and Get-NormaCodeFromText
+
+The source code intentionally avoids storing production credentials or internal company configuration.
+
+Running the application
+Recommended launcher
 
 Run:
 
-```text
 start_DCAtoPLM.bat
-```
 
-The launcher loads the optional `.env` configuration and starts PowerShell. The
-script requests the source code first and requests the item name after a PDF has
-been selected.
 
-### Direct PowerShell execution
+The launcher starts the PowerShell workflow using the local configuration.
 
-```powershell
+Direct PowerShell execution
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\import_dcaPdfToTeamcenter.ps1
-```
 
-### Execution with parameters
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File .\import_dcaPdfToTeamcenter.ps1 `
-  -SearchRoot "C:\VAULT_ROOT" `
-  -SourceCode "AMS 22*" `
-  -VaultName "DCA"
-```
-
-## Parameters
-
-| Parameter | Type | Default | Description |
-| --- | --- | --- | --- |
-| `-SearchRoot` | `string` | `DCA_ROOT` | Local root of the configured vault. |
-| `-SourceCode` | `string` | Empty | Exact code or search pattern. Prompts interactively when omitted. |
-| `-ItemName` | `string` | Empty | Initial Teamcenter item name. Prompts after document selection when omitted. |
-| `-VaultName` | `string` | `VAULT_NAME` | SolidWorks PDM vault name. |
-| `-PdmLibraryPath` | `string` | Local configuration | Path to `Interop.EdmLib.dll`. |
-| `-VaultCredentialPath` | `string` | Placeholder | Credential file exported with `Export-Clixml`. |
-| `-NoVaultApi` | `switch` | Disabled | Skips the PDM API and searches only local files. |
-| `-Preview` | `switch` | Disabled | Searches and displays the summary without connecting to Teamcenter or creating objects. |
-
-### Search examples
-
-Search for all documents beginning with `1000359`:
-
-```powershell
-.\import_dcaPdfToTeamcenter.ps1 -SourceCode "1000359*"
-```
-
-Search only files currently available on the local disk:
-
-```powershell
-.\import_dcaPdfToTeamcenter.ps1 -NoVaultApi
-```
-
-Run a preview for an external standard:
-
-```powershell
+Preview mode
 .\import_dcaPdfToTeamcenter.ps1 `
-  -SourceCode "AMS 2248" `
+  -SourceCode "AMS 22" `
   -Preview
-```
 
-## Where to change the configuration
 
-### 1. Local DCA vault path
+Preview mode performs search, selection, metadata extraction, and batch summary, but does not:
 
-The recommended setting is `DCA_ROOT` in `.env`. The script also
-accepts `$SearchRoot` through the `-SearchRoot` command-line parameter.
+connect to Teamcenter;
+create items;
+create revisions;
+copy files into the import directory;
+import PDFs;
+start workflows.
+Detailed output
+.\import_dcaPdfToTeamcenter.ps1 `
+  -SourceCode "\*SETUP*" `
+  -Preview `
+  -Details `
+  -OutputDelayMilliseconds 0
 
-For a one-time change, prefer the command-line parameter:
 
-```powershell
-.\import_dcaPdfToTeamcenter.ps1 -SearchRoot "D:\OtherVault"
-```
+-Details displays additional paths, individual document information, and diagnostic output.
 
-### 2. SolidWorks PDM vault name
+Parameters
+Parameter	Type	Default	Description-SearchRoot	string	DCA_ROOT	Root of the configured DCA vault
+-SourceCode	string	Empty	Codes, patterns, or folder searches separated by commas
+-ItemName	string	Empty	Optional initial Teamcenter item name
+-VaultName	string	DCA_VAULT_NAME	SolidWorks PDM vault name
+-PdmLibraryPath	string	DCA_PDM_LIB	Path to Interop.EdmLib.dll
+-VaultCredentialPath	string	DCA_VAULT_CREDENTIAL	Protected credential file
+-OutputDelayMilliseconds	int	100	Delay between output lines
+-NoVaultApi	switch	Disabled	Searches only locally available files
+-Details	switch	Disabled	Displays detailed search and diagnostic information
+-Preview	switch	Disabled	Prepares the batch without changing Teamcenter
+Search behavior
+Automatic partial search
 
-The placeholder vault name is `VAULT_NAME` in `import_dcaPdfToTeamcenter.ps1`:
+Code searches are partial by default.
 
-```powershell
-[string]$VaultName = "VAULT_NAME"
-```
+Entering:
 
-For a temporary override:
+AMS 22
 
-```powershell
-$env:DCA_VAULT_NAME = "VAULT_NAME"
-```
 
-The environment variable takes precedence over the script default.
+can return:
 
-### 3. PDM library and credential file
+AMS 2241
+AMS 2242
+AMS 2248
+AMS 2261
+AMS 2262
 
-Configure these values in `import_dcaPdfToTeamcenter.ps1`, or override them
-without editing the script:
 
-```powershell
-$env:DCA_PDM_LIB = "C:\Path\To\Interop.EdmLib.dll"
-$env:DCA_VAULT_CREDENTIAL = "C:\Secure\vault-credential.xml"
-```
+The user does not need to include * for standard partial searches.
 
-The credential file should be created with `Export-Clixml` and should not be
-committed or shared between machines. It can be a standard
-`PSCredential` export:
+Explicit wildcard patterns remain supported:
 
-```powershell
-Get-Credential | Export-Clixml -Path "C:\Secure\vault-credential.xml"
-```
+AMS 22*
+*2248*
+BR50??A-00
 
-The same user and computer that created the file must normally be used to
-decrypt the password. If the file is absent, the script uses `LoginAuto`, which
-requires an active SolidWorks PDM login for the current Windows user.
 
-### 4. Teamcenter connection data
+Supported wildcards:
 
-Teamcenter connection settings are read from environment variables:
+*  matches zero or more characters
+?  matches one character
 
-```powershell
-$env:DCA_TC_URL = "<TEAMCENTER_URL>"
-$env:DCA_TC_USER = "<TEAMCENTER_USER>"
-$env:DCA_TC_PASSWORD = "<TEAMCENTER_PASSWORD>"
-```
+Multiple code searches
 
-Set these values before starting the application. Do not place real passwords,
-internal URLs, tokens, or other confidential data in this README or in a
-versioned script.
+Separate searches with commas:
 
-The connection defaults and environment-variable handling are implemented in
-`functions/teamcenter_functions.ps1`, in `Get-TeamcenterSettings`. If the
-Teamcenter environment requires a different authentication setup, this is the
-primary function to update.
+1000359,1000359-2,AMS 2248
 
-### 5. Teamcenter integration executable
 
-The helper loads the Teamcenter integration assembly associated with
-`Importar GD.exe`. If the executable is installed in a different location,
-update the configured path in `functions/teamcenter_functions.ps1`.
+Each value is searched independently.
 
-This integration depends on the methods and types exposed by the installed
-assembly. Changes to that assembly may require corresponding code changes.
+Repeated search expressions are removed before execution.
 
-### 6. Document categories and business objects
+Multiple result selection
 
-The document-to-Teamcenter mapping is defined in
-`functions/teamcenter_functions.ps1`, in `Get-DcaTypeConfiguration`.
+When a search returns more than one PDF, select multiple results:
 
-Update that function if the target environment uses different:
+1,2,4
 
-- Teamcenter item types.
-- Teamcenter revision types.
-- Client properties.
-- Revision properties.
-- Default revision identifiers.
 
-## Document-specific rules
+Each selected PDF becomes an independent batch entry.
 
-### DCA Original Drawing
+Folder search
 
-Configured source folder:
+Prefix the search with \ to search for folders throughout the documentation tree.
 
-```text
-ORIGINAL_DRAWINGS\
-```
+Exact folder name
+\MIL
 
-Teamcenter configuration:
 
-- Item type: `ITEM_TYPE_ORIGINAL_DRAWING`
-- Revision type: `REVISION_TYPE_ORIGINAL_DRAWING`
-- Client property: `CLIENT_PROPERTY = CLIENT_NAME`
-- Additional property: `CLIENT_REVISION_PROPERTY`
+When a single exact folder is found, the folder can be selected automatically.
 
-The client revision can be one or two characters, such as `B` or `BA4`.
-When the value ends in `A0` through `A4`, the script separates the client
-revision from the paper format.
+Partial folder search
+\*SETUP*
 
-### DCA Process
+\Normas*
 
-Configured source folder:
+\*AEL
 
-```text
-PROCESS_DOCUMENTS\
-```
 
-Teamcenter configuration:
+The application displays matching folders with a compact summary:
 
-- Item type: `ITEM_TYPE_PROCESS`
-- Revision type: `REVISION_TYPE_PROCESS`
-- Client property: `CLIENT_PROPERTY = CLIENT_NAME`
-- Additional properties:
-  - `CLIENT_REVISION_PROPERTY`
-  - `INTERNAL_REVISION_PROPERTY`
+[1] FP - Ficha de Processo (PDF)\CUSTOMER\instructions
+    Type:       DCA Process
+    PDFs:       15
+    Approved:   3
+    Obsolete:   1
+    Other:      11
 
-The expected revision format contains one or two client-revision characters
-followed by one internal digit:
+[2] Normas Externas\External Standards A
+    Type:       DCA External Standard
+    PDFs:       28
+    Approved:   7
+    Obsolete:   4
+    Other:      17
 
-```text
+
+Folder selection supports:
+
+1
+1,2
+1-3
+T
+
+
+Where:
+
+1 selects one folder;
+1,2 selects multiple folders;
+1-3 selects a range;
+T selects all displayed folders.
+
+Only PDFs directly inside each selected folder are included. Subfolders appear as independent choices when the folder pattern also matches them.
+
+This prevents a PDF from being counted once through the parent folder and again through a matching child folder.
+
+Batch processing
+
+DCAtoPLM processes each prepared document independently.
+
+For each batch entry, the application:
+
+Creates the Teamcenter item.
+Creates or obtains the first item revision.
+Ensures the source PDF is available locally.
+Copies the PDF into the configured temporary directory.
+Validates the temporary PDF.
+Calls the Teamcenter PDF import method.
+Reads the PDM state.
+Starts the corresponding workflow when configured.
+Records the individual result.
+Continues with the next document if one document fails.
+
+A failure does not stop the remaining batch unless it occurs before any documents can be prepared.
+
+Final result states
+
+A document can finish in one of these conditions:
+
+Complete
+Item created
+PDF imported
+Workflow requested when applicable
+
+Partial
+Item created
+PDF not imported
+
+
+This condition can leave an item in Teamcenter without the associated PDF and must be reviewed manually.
+
+Failed
+Item not created
+PDF not processed
+
+
+The final summary displays the total number of successful and failed entries.
+
+Document-specific rules
+DCA Original Drawing
+
+Source category:
+
+Desenhos Originais
+
+
+Typical revision examples:
+
+B
+BA
+
+
+The current configuration validates the Teamcenter revision length. If the target Teamcenter model supports longer revisions, update the validation in:
+
+functions/teamcenter_functions.ps1
+
+
+Function:
+
+Get-DcaTypeConfiguration
+
+DCA Process
+
+Source category:
+
+FP - Ficha de Processo (PDF)
+
+
+Expected revision format:
+
+A4
 BA4
 AA4
 --4
-```
 
-For `BA4`, the complete value is used as the revision identifier, `BA` is
-stored in `gd5revcliente`, and `4` is stored in `gd5revinterna`.
 
-### DCA External Standard
+The final character represents the internal revision.
 
-Configured source folder:
+Example:
 
-```text
-EXTERNAL_STANDARDS\
-```
+BA4
 
-Teamcenter configuration:
 
-- Item type: `ITEM_TYPE_EXTERNAL_STANDARD`
-- Revision type: `REVISION_TYPE_EXTERNAL_STANDARD`
-- Client property: `CLIENT_PROPERTY = CLIENT_NAME`
-- Default revision identifier: `DEFAULT_REVISION`
+is interpreted as:
 
-The script recognizes common AMS naming patterns, including:
+Complete revision: BA4
+Client revision:   BA
+Internal revision: 4
 
-```text
+
+Text inside brackets is accepted as a revision only when it matches the valid revision format.
+
+For example:
+
+1000359-2[BA4].pdf
+
+
+is valid.
+
+Text such as:
+
+1000359-2[TEST].pdf
+
+
+is not automatically accepted as a revision.
+
+DCA External Standard
+
+Source category:
+
+Normas Externas
+
+
+External standards use revision:
+
+000
+
+
+The parser recognizes several technical code formats, including:
+
 AMS 2248
 AMS 2759-3
 AMS 2440C
 AMS-STD-2175
-AMS2470
-```
+MIL-PRF-85582
+ASTM-A123
 
-When possible, the code is separated from the title. The extracted title is
-used as the initial item name, and the user can keep it or enter another name.
 
-## Operational workflow
+When possible, the text after the code is interpreted as the document title.
 
-### Stage 1 — Enter search criteria
+Example:
 
-Enter an exact code or a pattern using `*` and `?`:
-
-```text
-1000359-2
-1000359*
-AMS 22*
-```
-
-### Stage 2 — Select the document
-
-The script:
-
-1. Locates the documentation folder.
-2. Queries the PDM vault or local disk.
-3. Filters for PDF files.
-4. Extracts code, title, and revision from the file name.
-5. Displays numbered results.
-6. Selects the PDF automatically when exactly one result is found.
-7. Requests a selection when multiple results are found.
-
-After selection:
-
-- The user can press Enter to keep a suggested item name.
-- A name is required when no name can be extracted.
-- The revision is extracted when available.
-- The revision is requested for document types that do not provide one.
-- External standards use revision `000`.
-
-### Stage 3 — Create the item and import the PDF
-
-Before changing Teamcenter, the script displays a summary and requires the
-user to type `YES`.
-
-After confirmation:
-
-1. The item and first revision are created.
-2. Duplicate items are reported and the process stops.
-3. The created revision is retrieved when necessary.
-4. The PDF is copied to a temporary directory.
-5. The temporary copy is validated.
-6. The PDF is imported into the Teamcenter revision.
-7. The result displays the created code, item name, and import confirmation.
-
-## Preview mode
-
-`-Preview` performs the search, selection, interpretation, and summary, but it
-does not:
-
-- connect to Teamcenter;
-- create an item;
-- create a revision;
-- copy the PDF for import;
-- import the document.
-
-Use preview mode before a production import to verify the vault structure,
-search pattern, document type, title, and revision interpretation.
-
-## File naming conventions
-
-For documents with a revision in the file name, the expected pattern is:
-
-```text
-CODE[REVISION].pdf
-```
-
-Examples:
-
-```text
-1000359-2[BA4].PDF
-1000359[BA4].pdf
-```
-
-External standards can contain a code followed by a title:
-
-```text
 AMS 2248 CHEMICAL CHECK ANALYSIS LIMITS.pdf
-```
 
-The script interprets the example as:
 
-```text
+is interpreted as:
+
 Code: AMS 2248
 Name: CHEMICAL CHECK ANALYSIS LIMITS
-```
 
-## Search behavior
+PDF import
 
-- `*` is converted to a multi-character search pattern.
-- `?` is converted to a single-character search pattern.
-- Exact searches are expanded to a contains-style PDM search.
-- PDM API results are used when the API is available and authenticated.
-- Local recursive enumeration is used as a fallback.
-- A file available only on the PDM server may not appear in local fallback mode.
-- A selected PDF that is not cached locally may be downloaded through PDM
-  `GetFileCopy`, when the API is available.
+Before calling the Teamcenter integration method, the script:
 
-Temporary files are stored under the current Windows user's temporary
-directory:
+Confirms the PDF is available in the local PDM cache.
+Downloads the file through PDM when necessary.
+Copies the PDF into DCA_TEMP_FOLDER.
+Confirms the temporary file exists.
+Verifies that the file is not empty.
+Verifies that the copied file size matches the source.
+Passes the PDF path and Teamcenter revision to the integration assembly.
 
-```text
-%TEMP%\DCAtoPLM
-```
+The integration currently expects a method compatible with:
 
-## Security and credentials
+ImportarPDF(
+    DatasetId,
+    DatasetRev,
+    pathArquivo,
+    ItemRevision,
+    Sobrepor
+)
 
-- Never commit passwords, tokens, credential files, or internal URLs.
-- Prefer environment variables for Teamcenter connection settings.
-- Protect `Export-Clixml` credential files with the Windows user and computer
-  that created them.
-- Do not copy credential files between machines without an approved secure
-  process.
-- Use an account with only the permissions required for this operation.
-- Review the repository before sharing it outside the authorized environment.
 
-## Error handling
+The exact behavior depends on the installed Importar GD.exe assembly.
 
-The process exits with a non-zero code when an operation fails. Common errors
-include:
+!CAUTION]TheDatasetIDandDatasetrevisionrequirementsmustbeconfirmedagainsttheintegrationassemblyusedbythetargetTeamcenterenvironment.AnincompatiblevaluecancausetheTeamcenteritemtobecreatedwithoutthePDFbeingattached.!CAUTION] The Dataset ID and Dataset revision requirements must be confirmed against the integration assembly used by the target Teamcenter environment. An incompatible value can cause the Teamcenter item to be created without the PDF being attached.
+Teamcenter workflows
 
-- DCA search root not found.
-- Documentation folder not found.
-- No supported document category found.
-- PDF not found locally or in the PDM cache.
-- PDM authentication failure.
-- Teamcenter connection or authentication failure.
-- Invalid revision for the selected document type.
-- Item already exists in Teamcenter.
-- Item or revision creation failure.
-- PDF copy, validation, or import failure.
+After a successful PDF import, DCAtoPLM can invoke:
 
-When the PDM API fails during a search, the application reports the fallback to
-the local file system. Documents that exist only on the server may be omitted.
+Start_Workflow(
+    Workflow_Template,
+    Revisions
+)
 
-## Local syntax validation
 
-Validate the PowerShell syntax without running the import workflow:
+The selected workflow depends on the PDM state:
 
-```powershell
+Aprovado -> DCA_TC_APPROVED_WORKFLOW
+Obsoleto -> DCA_TC_OBSOLETE_WORKFLOW
+
+
+Documents in states such as:
+
+Verificado
+Em verificação
+
+
+are imported without an automatic workflow unless an additional rule is implemented.
+
+The workflow template must already exist in Teamcenter and must support the revision type being submitted.
+
+Duplicate items
+
+If an item already exists in Teamcenter, the script reports the duplicate.
+
+The application does not automatically generate an alternative item code.
+
+Example:
+
+The item 'AMS 2248' already exists in Teamcenter.
+
+
+In batch mode, the duplicate is recorded as an individual failure and the application continues with the next document.
+
+Temporary files
+
+Temporary import files are stored in:
+
+DCA_TEMP_FOLDER
+
+
+Example:
+
+C:\Temp\DCAtoPLM
+
+
+The temporary PDF name is based on the Teamcenter item code.
+
+Characters that are invalid in Windows file names are replaced before the temporary path is created.
+
+PDM authentication
+
+When a credential file is configured, the script reads it using Import-Clixml.
+
+Create a protected credential file with:
+
+Get-Credential |
+  Export-Clixml -Path "C:\Secure\vault-credential.xml"
+
+
+The encrypted credential is normally tied to the Windows user and computer that created it.
+
+If no credential file is configured, the application attempts LoginAuto, which requires an active SolidWorks PDM session for the current Windows user.
+
+Teamcenter environments
+
+Two Teamcenter environments are supported:
+
+Teste
+Processo
+
+
+Select the environment through:
+
+DCA_TC_ENV=Teste
+
+
+or:
+
+DCA_TC_ENV=Processo
+
+
+When connected to the production/process environment, the application requires an additional explicit confirmation before creating items.
+
+Recommended production procedure
+
+Before running a production import:
+
+Update .env with the approved configuration.
+Confirm the selected Teamcenter environment.
+Confirm the PDM account can read and download the selected PDFs.
+Confirm the Teamcenter account can create the required item types.
+Confirm the Teamcenter account can create Dataset relations.
+Confirm the workflow templates exist.
+Run the same search with -Preview.
+Review document types, revisions, states, and extracted codes.
+Start with one controlled test document.
+Inspect the created item, revision, PDF Dataset, and workflow.
+Run a larger batch only after the controlled test succeeds.
+Security
+Never commit .env.
+Never commit passwords or access tokens.
+Never commit protected credential files.
+Never publish internal Teamcenter URLs.
+Never publish internal business object names without authorization.
+Keep Teamcenter integration assemblies outside the repository.
+Use accounts with the minimum permissions required.
+Review logs before sharing them because logs can contain internal paths, item codes, server names, and usernames.
+PowerShell syntax validation
+
+Validate both PowerShell files without running the application:
+
 $files = @(
   ".\import_dcaPdfToTeamcenter.ps1",
   ".\functions\teamcenter_functions.ps1"
 )
 
 foreach ($file in $files) {
-  $tokens = $null
-  $errors = $null
+
+  $tokens =
+  $null
+
+  $errors =
+  $null
+
   [System.Management.Automation.Language.Parser]::ParseFile(
     (Resolve-Path $file),
     [ref]$tokens,
@@ -563,34 +754,127 @@ foreach ($file in $files) {
   ) | Out-Null
 
   if ($errors.Count -gt 0) {
-    $errors | ForEach-Object { $_.Message }
+
+    Write-Host (
+      "Syntax errors in: $file"
+    ) -ForegroundColor Red
+
+    $errors |
+      ForEach-Object {
+        Write-Host (
+          "Line $($_.Extent.StartLineNumber): " +
+          $_.Message
+        ) -ForegroundColor Red
+      }
+
     exit 1
   }
 }
 
-Write-Host "PowerShell syntax OK"
-```
+Write-Host "PowerShell syntax OK" -ForegroundColor Green
 
-## Compatibility and limitations
 
-- The supported and tested Teamcenter version is Siemens Teamcenter 2312.
-- Other Teamcenter versions may work, but compatibility is not confirmed.
-- The PDM behavior depends on the installed SolidWorks PDM client and
-  `Interop.EdmLib.dll`.
-- The Teamcenter behavior depends on the installed `Importar GD.exe` assembly.
-- Business object names and properties are specific to the target Teamcenter
-  environment.
-- The application requires the DCA folder categories and file naming patterns
-  described in this document unless the source code is adapted.
+Syntax validation does not detect runtime problems such as:
 
-## Current status
+invalid Teamcenter business object names;
+missing environment variables;
+unavailable PDM APIs;
+incompatible integration assembly methods;
+invalid workflow templates;
+invalid PDF naming conventions;
+reflection errors inside the Teamcenter integration executable.
+Common errors
+Item already exists
+The item already exists in Teamcenter.
 
-The workflow supports creation and PDF import for:
 
-- DCA Process.
-- DCA Original Drawing.
-- DCA External Standard, including code and title extraction from common AMS
-  file names.
+The item code is already registered. The application does not create another code automatically.
 
-Use `-Preview` before a real import when working with a new vault, a new PDM
-client installation, or a different Teamcenter environment.
+Revision format is invalid
+The revision does not follow the DCA Process pattern.
+
+
+Check the text inside brackets in the PDF file name.
+
+PDF is not available locally
+PDF not found on disk.
+
+
+Confirm PDM authentication and local cache access.
+
+Item created, but PDF not imported
+Item created, but PDF not imported.
+
+
+Review:
+
+the ImportarPDF method signature;
+Dataset ID;
+Dataset revision;
+temporary PDF path;
+returned Teamcenter revision;
+integration assembly compatibility;
+Dataset creation permissions.
+Workflow was not started
+
+Verify:
+
+the PDM state;
+DCA_TC_APPROVED_WORKFLOW;
+DCA_TC_OBSOLETE_WORKFLOW;
+the workflow template name;
+compatibility with the submitted revision type;
+Teamcenter workflow permissions.
+Current status
+
+Implemented:
+
+ SolidWorks PDM API search.
+ Local file-system fallback.
+ Automatic partial code search.
+ Explicit wildcard search.
+ Multiple searches separated by commas.
+ Multiple PDF selection.
+ Folder search throughout the documentation tree.
+ Wildcard folder search.
+ Multiple folder selection.
+ Batch preparation.
+ Duplicate file prevention.
+ Document category detection.
+ Original Drawing item creation.
+ Process item creation.
+ External Standard item creation.
+ Revision property mapping.
+ PDM state retrieval.
+ Approval workflow invocation.
+ Obsolete workflow invocation.
+ Preview mode.
+ Detailed diagnostic mode.
+ Per-document batch error handling.
+ Confirm PDF Dataset import behavior for every configured revision type.
+ Confirm workflow completion and release-status behavior in production.
+ Add recovery mode for items created without their PDFs.
+ Add automatic detection of items that already exist and require only PDF attachment.
+ Add a final Teamcenter verification that confirms the PDF Dataset relation.
+Limitations
+The project is specific to the current DCA document model.
+Teamcenter object names and properties are environment-specific.
+The integration depends on a compatible Importar GD.exe.
+The PDM integration depends on the installed SolidWorks PDM client.
+Folder imports require recognizable document categories.
+Process and Original documents require valid revisions.
+Files with unsupported naming conventions may require manual correction or can be skipped during folder imports.
+A successful reflection call does not necessarily prove that the Dataset or workflow completed unless an explicit verification is implemented.
+Recovery of an item created without its PDF is not yet automated.
+Disclaimer
+
+This repository contains an environment-specific integration example. Before using the project in another organization:
+
+replace all placeholders;
+review security requirements;
+validate business object mappings;
+validate workflow templates;
+validate the integration assembly;
+execute controlled tests in a non-production environment.
+
+Use the project only in authorized environments and with approved credentials.

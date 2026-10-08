@@ -396,7 +396,6 @@ function Get-TeamcenterRevision {
 
 function Import-TeamcenterPdf {
 
-  # Invoke the importer method that attaches the PDF to the Teamcenter revision.
   param(
     [Parameter(Mandatory = $true)]
     $Revision,
@@ -404,6 +403,10 @@ function Import-TeamcenterPdf {
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$ItemCode,
+
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$DatasetRevision,
 
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
@@ -439,69 +442,95 @@ function Import-TeamcenterPdf {
 
   $importMethod = Get-TeamcenterMethod -MethodName "ImportarPDF" -ParameterCount 5
 
-  $invokeArguments = New-Object "System.Object[]" 5
-  $invokeArguments[0] = [string]$ItemCode
-  $invokeArguments[1] = [string]""
-  $invokeArguments[2] = [string]$FilePath
-  $invokeArguments[3] = $Revision
-  $invokeArguments[4] = [bool]$true
+  $datasetId =
+  $ItemCode.Trim()
 
- $importResult =
-$null
+  $datasetRevisionClean =
+  $DatasetRevision.Trim().ToUpperInvariant()
 
-Write-Host (
-  "  Importando PDF no item '$ItemCode'..."
-) -ForegroundColor Gray
-
-Write-Host (
-  "  Arquivo: $FilePath"
-) -ForegroundColor DarkGray
-
-Write-Host (
-  "  Tipo da revisao: $revisionTypeName"
-) -ForegroundColor DarkGray
-
-try {
-
-  $importResult =
-  $importMethod.Invoke(
-    $null,
-    $invokeArguments
-  )
-}
-catch {
-
-  $realException =
-  $_.Exception
-
-  while (
-    $null -ne $realException.InnerException
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $datasetId
+    )
   ) {
-
-    $realException =
-    $realException.InnerException
+    throw "DatasetId ficou vazio para '$ItemCode'."
   }
 
-  throw (
-    "Falha ao importar o PDF para '$ItemCode': " +
-    $realException.Message
-  )
-}
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $datasetRevisionClean
+    )
+  ) {
+    throw "DatasetRev ficou vazio para '$ItemCode'."
+  }
 
-if ($null -eq $importResult) {
+  $invokeArguments =
+  New-Object "System.Object[]" 5
 
+  $invokeArguments[0] =
+  [string]$datasetId
+
+  $invokeArguments[1] =
+  [string]$datasetRevisionClean
+
+  $invokeArguments[2] =
+  [string]$FilePath
+
+  $invokeArguments[3] =
+  $Revision
+
+  $invokeArguments[4] =
+  [bool]$true
+
+  $importResult =
   Write-Host (
-    "  [WARNING] ImportarPDF retornou NULL para '$ItemCode'."
-  ) -ForegroundColor Yellow
-}
-else {
-
-  Write-Host (
-    "  Retorno do ImportarPDF: $importResult"
+    "  Arquivo: $FilePath"
   ) -ForegroundColor DarkGray
-}
 
-return $importResult
+  Write-Host (
+    "  Tipo da revisao: $revisionTypeName"
+  ) -ForegroundColor DarkGray
+
+  try {
+
+    $importResult =
+    $importMethod.Invoke(
+      $null,
+      $invokeArguments
+    )
+  }
+  catch {
+
+    $realException =
+    $_.Exception
+
+    while (
+      $null -ne $realException.InnerException
+    ) {
+
+      $realException =
+      $realException.InnerException
+    }
+
+    throw (
+      "Falha ao importar o PDF para '$ItemCode': " +
+      $realException.Message
+    )
+  }
+  if ($null -eq $importResult) {
+
+    Write-Host (
+      "  [WARNING] ImportarPDF retornou NULL para '$ItemCode'."
+    ) -ForegroundColor Yellow
+  }
+  else {
+
+    Write-Host (
+      "  Retorno do ImportarPDF: $importResult"
+    ) -ForegroundColor DarkGray
+  }
+
+  return $importResult
 }
 
 function Get-TeamcenterServiceErrors {
@@ -574,7 +603,7 @@ function Get-DcaClientRevisionInfo {
   $value = ([string]$ClientRevision).Trim().ToUpper()
   $revision = $value
 
-  if ($value -match '^(?<Revision>[A-Z0-9]{1,2})A[0-4]$') {
+  if ($value -match '^(?<Revision>[A-Z0-9]{1,10})A[0-4]$') {
     $revision = $Matches["Revision"]
   }
 
@@ -642,22 +671,22 @@ function Get-DcaTypeConfiguration {
     Original = @{
       ItemType = $env:DCA_TC_PROCESS_ORIGINAL_ITEM_TYPE
       RevisionType = $env:DCA_TC_PROCESS_ORIGINAL_REVISION_TYPE
-      ClientProperty = $env:DCA_TC_PROCESS_CLIENT_PROPERTY
-      ClientValue = $env:DCA_TC_PROCESS_CLIENT_VALUE
+      ClientProperty = $env:DCA_TC_PROCESS_ORIGINAL_CLIENT_PROPERTY
+      ClientValue = $env:DCA_TC_PROCESS_ORIGINAL_CLIENT_VALUE
     }
 
     Processo = @{
       ItemType = $env:DCA_TC_PROCESS_PROCESS_ITEM_TYPE
       RevisionType = $env:DCA_TC_PROCESS_PROCESS_REVISION_TYPE
-      ClientProperty = $env:DCA_TC_PROCESS_CLIENT_PROPERTY
-      ClientValue = $env:DCA_TC_PROCESS_CLIENT_VALUE
+      ClientProperty = $env:DCA_TC_PROCESS_PROCESS_CLIENT_PROPERTY
+      ClientValue = $env:DCA_TC_PROCESS_PROCESS_CLIENT_VALUE
     }
 
     NormaExterna = @{
       ItemType = $env:DCA_TC_PROCESS_STANDARD_ITEM_TYPE
       RevisionType = $env:DCA_TC_PROCESS_STANDARD_REVISION_TYPE
-      ClientProperty = $env:DCA_TC_PROCESS_CLIENT_PROPERTY
-      ClientValue = $env:DCA_TC_PROCESS_CLIENT_VALUE
+      ClientProperty = $env:DCA_TC_PROCESS_STANDARD_CLIENT_PROPERTY
+      ClientValue = $env:DCA_TC_PROCESS_STANDARD_CLIENT_VALUE
     }
   }
 
@@ -666,22 +695,22 @@ function Get-DcaTypeConfiguration {
     Original = @{
       ItemType = $env:DCA_TC_TEST_ORIGINAL_ITEM_TYPE
       RevisionType = $env:DCA_TC_TEST_ORIGINAL_REVISION_TYPE
-      ClientProperty = $null
-      ClientValue = $null
+      ClientProperty = $env:DCA_TC_TEST_ORIGINAL_CLIENT_PROPERTY
+      ClientValue = $env:DCA_TC_TEST_ORIGINAL_CLIENT_VALUE
     }
 
     Processo = @{
       ItemType = $env:DCA_TC_TEST_PROCESS_ITEM_TYPE
       RevisionType = $env:DCA_TC_TEST_PROCESS_REVISION_TYPE
-      ClientProperty = $env:DCA_TC_TEST_CLIENT_PROPERTY
-      ClientValue = $env:DCA_TC_TEST_CLIENT_VALUE
+      ClientProperty = $env:DCA_TC_TEST_PROCESS_CLIENT_PROPERTY
+      ClientValue = $env:DCA_TC_TEST_PROCESS_CLIENT_VALUE
     }
 
     NormaExterna = @{
       ItemType = $env:DCA_TC_TEST_STANDARD_ITEM_TYPE
       RevisionType = $env:DCA_TC_TEST_STANDARD_REVISION_TYPE
-      ClientProperty = $null
-      ClientValue = $null
+      ClientProperty = $env:DCA_TC_TEST_STANDARD_CLIENT_PROPERTY
+      ClientValue = $env:DCA_TC_TEST_STANDARD_CLIENT_VALUE
     }
   }
   if ($TeamcenterEnvironment -eq "Processo") {
@@ -760,12 +789,12 @@ function Get-DcaTypeConfiguration {
       )
     }
 
-    if ($info.Revision.Length -gt 2) {
+    if ($info.Revision.Length -gt 5) {
 
       throw (
         "Revisao Cliente '$($info.Revision)' possui " +
         "$($info.Revision.Length) caracteres. " +
-        "O limite configurado e 2."
+        "O limite configurado e 5."
       )
     }
 
@@ -837,7 +866,128 @@ function Get-DcaTypeConfiguration {
     "'$DocumentType'."
   )
 }
+function Start-TeamcenterWorkflow {
 
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$WorkflowTemplate,
+
+    [Parameter(Mandatory = $true)]
+    $Revision
+  )
+
+  if ($null -eq $Revision) {
+    throw "A revisao nao foi fornecida para iniciar o workflow."
+  }
+
+  if ($null -eq $script:TeamcenterFunctions) {
+    throw (
+      "As funcoes do Teamcenter nao foram carregadas. " +
+      "Execute Connect-Teamcenter primeiro."
+    )
+  }
+
+  $revisionBaseObject =
+  $Revision.PSObject.BaseObject
+
+  if ($null -ne $revisionBaseObject) {
+    $Revision =
+    $revisionBaseObject
+  }
+
+  $revisionTypeName =
+  $Revision.GetType().FullName
+
+  if ($revisionTypeName -notmatch "ItemRevision") {
+    throw (
+      "O objeto recebido nao e uma revisao valida. " +
+      "Tipo recebido: '$revisionTypeName'."
+    )
+  }
+
+  $workflowMethod =
+  $script:TeamcenterFunctions.GetMethods() |
+    Where-Object {
+    $_.Name -eq "Start_Workflow" -and
+    $_.GetParameters().Count -eq 2
+  } |
+    Select-Object -First 1
+
+  if ($null -eq $workflowMethod) {
+    throw (
+      "Metodo Start_Workflow com 2 parametros nao encontrado."
+    )
+  }
+
+  $parameters =
+  $workflowMethod.GetParameters()
+
+  $revisionListType =
+  $parameters[1].ParameterType
+
+  $revisionList =
+  [System.Activator]::CreateInstance(
+    $revisionListType
+  )
+
+  if ($null -eq $revisionList) {
+    throw (
+      "Nao foi possivel criar a lista de revisoes para o workflow."
+    )
+  }
+
+  $addMethod =
+  $revisionListType.GetMethod("Add")
+
+  if ($null -eq $addMethod) {
+    throw (
+      "Metodo Add nao encontrado na lista de revisoes."
+    )
+  }
+
+  $null =
+  $addMethod.Invoke(
+    $revisionList,
+    @($Revision)
+  )
+
+  Write-Host (
+    "  Iniciando workflow '$WorkflowTemplate'..."
+  ) -ForegroundColor Cyan
+
+  try {
+
+    $null =
+    $workflowMethod.Invoke(
+      $null,
+      @(
+        [string]$WorkflowTemplate,
+        $revisionList
+      )
+    )
+  }
+  catch {
+
+    $realException =
+    $_.Exception
+
+    while ($null -ne $realException.InnerException) {
+      $realException =
+      $realException.InnerException
+    }
+
+    throw (
+      "Falha ao iniciar o workflow " +
+      "'$WorkflowTemplate': " +
+      $realException.Message
+    )
+  }
+
+  Write-Host (
+    "  Workflow solicitado: $WorkflowTemplate"
+  ) -ForegroundColor Green
+}
 function New-DcaCreateInputObject {
 
   # Create and populate an input object compatible with the SOA API.

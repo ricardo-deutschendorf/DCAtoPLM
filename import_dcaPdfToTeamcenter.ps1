@@ -20,6 +20,9 @@ param(
   # Enumerate local files without using the PDM API.
   [switch]$NoVaultApi,
 
+  # Mostra os arquivos individualmente durante pesquisas por pasta.
+  [switch]$Details,
+
   # Search only; do not connect to Teamcenter or create objects.
   [switch]$Preview
 )
@@ -108,6 +111,13 @@ if (-not [string]::IsNullOrWhiteSpace($env:DCA_PDM_LIB)) {
   $PdmLibraryPath = $env:DCA_PDM_LIB
 }
 
+if (-not [string]::IsNullOrWhiteSpace($env:DCA_ROOT)) {
+  $SearchRoot = $env:DCA_ROOT
+}
+
+if (-not [string]::IsNullOrWhiteSpace($env:DCA_VAULT_CREDENTIAL)) {
+  $VaultCredentialPath = $env:DCA_VAULT_CREDENTIAL
+}
 try {
   [Console]::InputEncoding = [System.Text.Encoding]::UTF8
   [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -132,7 +142,8 @@ $requiredFunctions = @(
   "Get-TeamcenterDataManagementService",
   "Get-TeamcenterServiceErrors",
   "Import-TeamcenterPdf",
-  "New-DcaTeamcenterItem"
+  "New-DcaTeamcenterItem",
+  "Start-TeamcenterWorkflow"
 )
 
 foreach ($requiredFunction in $requiredFunctions) {
@@ -879,9 +890,60 @@ function ConvertFrom-PdfFileName {
   $sourceCodeText = $name
   $clientRevision = $null
 
-  if ($name -match '^(?<Code>[^\[\]]+?)\s*\[(?<Revision>[^\]]+)\]\s*$') {
-    $sourceCodeText = $Matches["Code"].Trim()
-    $clientRevision = $Matches["Revision"].Trim().ToUpper()
+  if (
+    $name -match
+    '^(?<Code>[^\[\]]+?)\s*\[(?<BracketValue>[^\]]+)\]\s*$'
+  ) {
+
+    $possibleCode =
+    $Matches["Code"].Trim()
+
+    $possibleRevision =
+    $Matches["BracketValue"].Trim().ToUpper()
+
+    $validRevision =
+    $false
+
+    if ($DocumentType -eq "Processo") {
+
+      # Processo: A1, BA4, AA4 ou --4.
+      $validRevision =
+      $possibleRevision -match
+      '^[A-Z0-9-]{1,2}\d$'
+    }
+    elseif ($DocumentType -eq "Original") {
+
+      # Original: uma ou duas letras/numeros.
+      $validRevision =
+      $possibleRevision -match
+      '^[A-Z0-9]{1,2}$'
+    }
+    elseif ($DocumentType -eq "NormaExterna") {
+
+      # Norma Externa usa 000 automaticamente.
+      $validRevision =
+      $possibleRevision -eq "000"
+    }
+
+    if ($validRevision) {
+
+      $sourceCodeText =
+      $possibleCode
+
+      $clientRevision =
+      $possibleRevision
+    }
+    else {
+
+      # O texto entre colchetes nao e uma revisao.
+      # Mantem o codigo anterior aos colchetes, mas deixa
+      # a revisao vazia para o tratamento posterior.
+      $sourceCodeText =
+      $possibleCode
+
+      $clientRevision =
+      $null
+    }
   }
 
   $codeParsed = $true
@@ -923,7 +985,774 @@ function Test-DcaCodeMatch {
 
   return (($BaseName -ieq $Pattern) -or ($ParsedCode -ieq $Pattern))
 }
+function Get-DcaPdmFileState {
 
+  param(
+    [Parameter(Mandatory = $true)]
+    $Entry
+  )
+
+  if ($null -eq $script:DcaVault) {
+    return $null
+  }
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      [string]$Entry.FullName
+    )
+  ) {
+    return $null
+  }
+
+  $parentFolder =
+  $null
+
+  try {
+
+    $pdmFile =
+    $script:DcaVault.GetFileFromPath(
+      [string]$Entry.FullName,
+      [ref]$parentFolder
+    )
+
+    if ($null -eq $pdmFile) {
+      return $null
+    }
+
+    $currentState =
+    $pdmFile.CurrentState
+
+    if ($null -eq $currentState) {
+      return $null
+    }
+
+    return (
+      [string]$currentState.Name
+    ).Trim()
+  }
+  catch {
+
+    Write-Warn (
+      "Nao foi possivel consultar o estado no PDM para " +
+      "'$($Entry.FullName)': " +
+      $_.Exception.Message
+    )
+
+    return $null
+  }
+}
+function Select-DcaPdfsByFolder {
+
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$FolderPath,
+
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$FolderSearch
+  )
+
+  if (-not (
+      Test-Path `
+        -LiteralPath $FolderPath `
+        -PathType Container
+    )) {
+
+    throw "Vault DCA nao encontrado em '$FolderPath'."
+  }
+
+  $folderPattern =
+  Get-DcaFolderSearchPattern `
+    -SearchText $FolderSearch
+  $usesWildcard =
+  $folderPattern.Contains("*") -or
+  $folderPattern.Contains("?")
+
+  # ====================================================
+  # Localizar a raiz Documentacao
+  # ====================================================
+
+  $documentationFolder =
+  Get-ChildItem `
+    -LiteralPath $FolderPath `
+    -Directory `
+    -Force `
+    -ErrorAction Stop |
+    Where-Object {
+    $_.Name -like "Documenta*"
+  } |
+    Select-Object -First 1
+
+  if ($null -eq $documentationFolder) {
+
+    throw (
+      "A pasta de documentacao nao foi encontrada em " +
+      "'$FolderPath'."
+    )
+  }
+
+  $documentationRootPath =
+  [System.IO.Path]::GetFullPath(
+    $documentationFolder.FullName
+  ).TrimEnd("\")
+
+  # ====================================================
+  # Categorias conhecidas
+  # ====================================================
+
+  $categoryDefinitions =
+  @(
+    [PSCustomObject]@{
+      FolderName = "Desenhos Originais"
+      DocumentType = "Original"
+      DisplayName = "DCA Desenho Original"
+    }
+
+    [PSCustomObject]@{
+      FolderName = "FP - Ficha de Processo (PDF)"
+      DocumentType = "Processo"
+      DisplayName = "DCA Processo"
+    }
+
+    [PSCustomObject]@{
+      FolderName = "Normas Externas"
+      DocumentType = "NormaExterna"
+      DisplayName = "DCA Norma Externa"
+    }
+  )
+
+  # ====================================================
+  # Procurar pastas em toda Documentacao
+  # ====================================================
+
+  $availableFolders =
+  @(
+    Get-ChildItem `
+      -LiteralPath $documentationRootPath `
+      -Directory `
+      -Recurse `
+      -Force `
+      -ErrorAction SilentlyContinue
+  )
+
+  $matchingFolders =
+  [System.Collections.Generic.List[object]]::new()
+
+  foreach ($availableFolder in $availableFolders) {
+
+    $folderFullPath =
+    [System.IO.Path]::GetFullPath(
+      $availableFolder.FullName
+    ).TrimEnd("\")
+
+    if (-not $folderFullPath.StartsWith(
+        $documentationRootPath + "\",
+        [System.StringComparison]::OrdinalIgnoreCase
+      )) {
+
+      continue
+    }
+
+    $relativePath =
+    $folderFullPath.Substring(
+      $documentationRootPath.Length
+    ).TrimStart("\")
+
+    $folderMatches =
+    $relativePath -like $folderPattern -or
+    $availableFolder.Name -like $folderPattern
+
+    if (-not $folderMatches) {
+      continue
+    }
+
+    # Identifica o tipo de documento pelo primeiro nível
+    # abaixo da pasta Documentacao.
+    $matchedCategory =
+    $null
+
+    foreach ($categoryDefinition in $categoryDefinitions) {
+
+      $categoryPrefix =
+      $categoryDefinition.FolderName + "\"
+
+      if (
+        $relativePath -ieq $categoryDefinition.FolderName -or
+        $relativePath.StartsWith(
+          $categoryPrefix,
+          [System.StringComparison]::OrdinalIgnoreCase
+        )
+      ) {
+
+        $matchedCategory =
+        $categoryDefinition
+
+        break
+      }
+    }
+
+    if ($null -eq $matchedCategory) {
+
+      if ($Details) {
+
+        Write-Warn (
+          "Pasta encontrada, mas sem tipo DCA configurado: " +
+          "'$relativePath'."
+        )
+      }
+
+      continue
+    }
+
+    $matchingFolders.Add(
+      [PSCustomObject]@{
+        Name = $availableFolder.Name
+        RelativePath = $relativePath
+        FullName = $folderFullPath
+        CategoryFolder = $matchedCategory.FolderName
+        DocumentType = $matchedCategory.DocumentType
+        DisplayName = $matchedCategory.DisplayName
+      }
+    )
+  }
+
+  if ($matchingFolders.Count -eq 0) {
+
+    throw (
+      "Nenhuma pasta DCA foi encontrada para o padrao " +
+      "'\$folderPattern' dentro de Documentacao."
+    )
+  }
+
+  Write-AnimatedLine ""
+
+  Write-Info (
+    "Modo pasta em toda Documentacao: \$folderPattern"
+  )
+
+  # ====================================================
+  # Consultar todos os PDFs uma unica vez
+  # ====================================================
+
+  $vault =
+  Get-DcaVault
+
+  $allAvailablePdfs =
+  @()
+
+  if ($null -ne $vault) {
+
+    Write-Info "Consultando os PDFs no Vault..."
+
+    $allAvailablePdfs =
+    @(
+      Search-DcaVaultPdfEntries `
+        -Vault $vault `
+        -SearchText "*"
+    )
+  }
+  else {
+
+    Write-Warn (
+      "API do PDM indisponivel. " +
+      "A pesquisa sera feita nos arquivos locais."
+    )
+  }
+
+  # ====================================================
+  # Criar uma opcao para cada pasta encontrada
+  # ====================================================
+
+  $folderOptions =
+  [System.Collections.Generic.List[object]]::new()
+
+  foreach ($matchingFolder in $matchingFolders) {
+
+    $folderPdfEntries =
+    @()
+
+    if ($null -ne $vault) {
+
+      # Apenas PDFs diretamente dentro da pasta.
+      # Subpastas aparecem separadamente.
+      $folderPdfEntries =
+      @(
+        $allAvailablePdfs |
+          Where-Object {
+
+          $pdfFullName =
+          [string]$_.FullName
+
+          if (
+            [string]::IsNullOrWhiteSpace(
+              $pdfFullName
+            )
+          ) {
+            return $false
+          }
+
+          $pdfDirectory =
+          [System.IO.Path]::GetDirectoryName(
+            $pdfFullName
+          )
+
+          return (
+            $pdfDirectory -ieq
+            $matchingFolder.FullName
+          )
+        } |
+          Sort-Object FullName
+      )
+    }
+    else {
+
+      $diskFiles =
+      @(
+        Get-ChildItem `
+          -LiteralPath $matchingFolder.FullName `
+          -Filter "*.pdf" `
+          -File `
+          -Force `
+          -ErrorAction SilentlyContinue
+      )
+
+      $folderPdfEntries =
+      @(
+        foreach ($diskFile in $diskFiles) {
+
+          [PSCustomObject]@{
+            Name = $diskFile.Name
+            BaseName = $diskFile.BaseName.Trim()
+            FullName = $diskFile.FullName
+            FromVault = $false
+          }
+        }
+      )
+    }
+
+    $folderDocuments =
+    [System.Collections.Generic.List[object]]::new()
+
+    foreach ($pdfEntry in $folderPdfEntries) {
+
+      $parsedName =
+      ConvertFrom-PdfFileName `
+        -BaseName $pdfEntry.BaseName `
+        -DocumentType $matchingFolder.DocumentType
+
+      $clientRevision =
+      [string]$parsedName.ClientRevision
+
+      if (
+        $matchingFolder.DocumentType -eq "NormaExterna" -and
+        [string]::IsNullOrWhiteSpace(
+          $clientRevision
+        )
+      ) {
+
+        $clientRevision =
+        "000"
+      }
+
+      $pdmState =
+      Get-DcaPdmFileState `
+        -Entry $pdfEntry
+
+      $folderDocuments.Add(
+        [PSCustomObject]@{
+          File = $pdfEntry
+          SourceCode = $parsedName.SourceCode
+          ClientRevision = $clientRevision
+          DocumentTitle = $parsedName.DocumentTitle
+          DocumentType = $matchingFolder.DocumentType
+          TypeDisplayName = $matchingFolder.DisplayName
+          CodeParsed = $parsedName.CodeParsed
+          PdmState = $pdmState
+          FolderImport = $true
+          FolderPattern = $folderPattern
+          SourceFolder = $matchingFolder.RelativePath
+          CategoryFolder = $matchingFolder.CategoryFolder
+        }
+      )
+    }
+
+    # Pastas sem PDFs diretamente dentro delas não são
+    # apresentadas como opções.
+    if ($folderDocuments.Count -eq 0) {
+      continue
+    }
+
+    $approvedCount =
+    @(
+      $folderDocuments |
+        Where-Object {
+        $_.PdmState -ieq "Aprovado"
+      }
+    ).Count
+
+    $obsoleteCount =
+    @(
+      $folderDocuments |
+        Where-Object {
+        $_.PdmState -ieq "Obsoleto"
+      }
+    ).Count
+
+    $otherCount =
+    $folderDocuments.Count -
+    $approvedCount -
+    $obsoleteCount
+
+    $folderOptions.Add(
+      [PSCustomObject]@{
+        Number = 0
+        Name = $matchingFolder.Name
+        RelativePath = $matchingFolder.RelativePath
+        FullName = $matchingFolder.FullName
+        CategoryFolder = $matchingFolder.CategoryFolder
+        DocumentType = $matchingFolder.DocumentType
+        DisplayName = $matchingFolder.DisplayName
+        Documents = $folderDocuments.ToArray()
+        Total = $folderDocuments.Count
+        ApprovedCount = $approvedCount
+        ObsoleteCount = $obsoleteCount
+        OtherCount = $otherCount
+      }
+    )
+  }
+
+  if ($folderOptions.Count -eq 0) {
+
+    throw (
+      "As pastas encontradas para '\$folderPattern' " +
+      "nao possuem PDFs diretamente dentro delas."
+    )
+  }
+
+  $folderOptions =
+  @(
+    $folderOptions |
+      Sort-Object RelativePath
+  )
+
+  for (
+    $index = 0
+    $index -lt $folderOptions.Count
+    $index++
+  ) {
+
+    $folderOptions[$index].Number =
+    $index + 1
+  }
+
+  # ====================================================
+  # Pasta exata e unica: seleciona automaticamente
+  # ====================================================
+
+  if (
+    -not $usesWildcard -and
+    $folderOptions.Count -eq 1
+  ) {
+
+    $selectedFolder =
+    $folderOptions[0]
+
+    Write-AnimatedLine ""
+
+    Write-Success (
+      "Pasta selecionada: " +
+      "\$($selectedFolder.RelativePath)"
+    )
+
+    Write-Host (
+      "  Tipo:       $($selectedFolder.DisplayName)"
+    ) -ForegroundColor Cyan
+
+    Write-Host (
+      "  PDFs:       $($selectedFolder.Total)"
+    ) -ForegroundColor White
+
+    Write-Host (
+      "  Aprovados:  $($selectedFolder.ApprovedCount)"
+    ) -ForegroundColor Green
+
+    Write-Host (
+      "  Obsoletos:  $($selectedFolder.ObsoleteCount)"
+    ) -ForegroundColor Red
+
+    Write-Host (
+      "  Outros:     $($selectedFolder.OtherCount)"
+    ) -ForegroundColor Yellow
+
+    return $selectedFolder.Documents
+  }
+
+  # ====================================================
+  # Mostrar resumo das pastas para selecao
+  # ====================================================
+
+  Write-AnimatedLine ""
+
+  Write-Host "  Pastas encontradas:" -ForegroundColor Cyan
+  Write-Host ("  " + ("-" * 68)) -ForegroundColor DarkGray
+
+  foreach ($folderOption in $folderOptions) {
+
+    Write-Host (
+      "  [{0}] {1}" -f
+      $folderOption.Number,
+      $folderOption.RelativePath
+    ) -ForegroundColor White
+
+    Write-Host (
+      "      Tipo:       {0}" -f
+      $folderOption.DisplayName
+    ) -ForegroundColor Cyan
+
+    Write-Host (
+      "      PDFs:       {0}" -f
+      $folderOption.Total
+    ) -ForegroundColor Gray
+
+    Write-Host (
+      "      Aprovados:  {0}" -f
+      $folderOption.ApprovedCount
+    ) -ForegroundColor Green
+
+    Write-Host (
+      "      Obsoletos:  {0}" -f
+      $folderOption.ObsoleteCount
+    ) -ForegroundColor Red
+
+    Write-Host (
+      "      Outros:     {0}" -f
+      $folderOption.OtherCount
+    ) -ForegroundColor Yellow
+
+    Write-Host ""
+  }
+
+  Write-Host (
+    "  Selecione uma ou mais pastas."
+  ) -ForegroundColor Cyan
+
+  Write-Host (
+    "  Exemplos: 1 | 1,2 | 1-3 | T"
+  ) -ForegroundColor DarkGray
+
+  # ====================================================
+  # Ler a selecao das pastas
+  # ====================================================
+
+  while ($true) {
+
+    $selectionText =
+    Read-Host (
+      "Digite o numero da pasta, varios numeros ou T para todas"
+    )
+
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $selectionText
+      )
+    ) {
+
+      Write-Warn "Nenhuma pasta foi selecionada."
+
+      continue
+    }
+
+    $selectionText =
+    $selectionText.Trim()
+
+    $selectedNumbers =
+    [System.Collections.Generic.List[int]]::new()
+
+    $knownNumbers =
+    [System.Collections.Generic.HashSet[int]]::new()
+
+    $selectionIsValid =
+    $true
+
+    if (
+      $selectionText -ieq "T" -or
+      $selectionText -ieq "TODAS"
+    ) {
+
+      for (
+        $number = 1
+        $number -le $folderOptions.Count
+        $number++
+      ) {
+
+        if ($knownNumbers.Add($number)) {
+          $selectedNumbers.Add($number)
+        }
+      }
+    }
+    else {
+
+      foreach ($selectionPart in ($selectionText -split ",")) {
+
+        $currentPart =
+        ([string]$selectionPart).Trim()
+
+        if (
+          [string]::IsNullOrWhiteSpace(
+            $currentPart
+          )
+        ) {
+          continue
+        }
+
+        # Intervalo, por exemplo 1-3.
+        if (
+          $currentPart -match
+          '^(?<Start>\d+)\s*-\s*(?<End>\d+)$'
+        ) {
+
+          $rangeStart =
+          [int]$Matches["Start"]
+
+          $rangeEnd =
+          [int]$Matches["End"]
+
+          if (
+            $rangeStart -lt 1 -or
+            $rangeEnd -gt $folderOptions.Count -or
+            $rangeStart -gt $rangeEnd
+          ) {
+
+            Write-Warn (
+              "Intervalo invalido: '$currentPart'."
+            )
+
+            $selectionIsValid =
+            $false
+
+            break
+          }
+
+          for (
+            $rangeNumber = $rangeStart
+            $rangeNumber -le $rangeEnd
+            $rangeNumber++
+          ) {
+
+            if ($knownNumbers.Add($rangeNumber)) {
+              $selectedNumbers.Add($rangeNumber)
+            }
+          }
+
+          continue
+        }
+
+        $selectedNumber =
+        0
+
+        $validNumber =
+        [System.Int32]::TryParse(
+          $currentPart,
+          [ref]$selectedNumber
+        )
+
+        if (
+          -not $validNumber -or
+          $selectedNumber -lt 1 -or
+          $selectedNumber -gt $folderOptions.Count
+        ) {
+
+          Write-Warn (
+            "Selecao invalida: '$currentPart'. " +
+            "Use numeros entre 1 e " +
+            "$($folderOptions.Count)."
+          )
+
+          $selectionIsValid =
+          $false
+
+          break
+        }
+
+        if ($knownNumbers.Add($selectedNumber)) {
+          $selectedNumbers.Add($selectedNumber)
+        }
+      }
+    }
+
+    if (-not $selectionIsValid) {
+      continue
+    }
+
+    if ($selectedNumbers.Count -eq 0) {
+
+      Write-Warn "Nenhuma pasta valida foi selecionada."
+
+      continue
+    }
+
+    # ==================================================
+    # Juntar os documentos das pastas selecionadas
+    # ==================================================
+
+    $selectedDocuments =
+    [System.Collections.Generic.List[object]]::new()
+
+    $knownDocumentPaths =
+    [System.Collections.Generic.HashSet[string]]::new(
+      [System.StringComparer]::OrdinalIgnoreCase
+    )
+
+    Write-AnimatedLine ""
+
+    foreach (
+      $selectedNumber in (
+        $selectedNumbers |
+          Sort-Object
+      )
+    ) {
+
+      $selectedFolder =
+      $folderOptions[$selectedNumber - 1]
+
+      Write-Success (
+        "Pasta selecionada [$selectedNumber]: " +
+        "\$($selectedFolder.RelativePath)"
+      )
+
+      foreach ($document in $selectedFolder.Documents) {
+
+        $documentPath =
+        [string]$document.File.FullName
+
+        if (
+          [string]::IsNullOrWhiteSpace(
+            $documentPath
+          )
+        ) {
+          continue
+        }
+
+        if ($knownDocumentPaths.Add($documentPath)) {
+          $selectedDocuments.Add($document)
+        }
+      }
+    }
+
+    Write-AnimatedLine ""
+
+    Write-Host (
+      "  Pastas selecionadas:    $($selectedNumbers.Count)"
+    ) -ForegroundColor Cyan
+
+    Write-Host (
+      "  Documentos adicionados: $($selectedDocuments.Count)"
+    ) -ForegroundColor Cyan
+
+    return $selectedDocuments.ToArray()
+  }
+}
 function Select-DcaPdfByCode {
 
   param(
@@ -940,24 +1769,37 @@ function Select-DcaPdfByCode {
     throw "Vault DCA nao encontrado em '$FolderPath'."
   }
 
-  $searchPattern = $Code.Trim()
+  $searchText =
+  $Code.Trim()
 
-  if ([string]::IsNullOrWhiteSpace($searchPattern)) {
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $searchText
+    )
+  ) {
     throw "O codigo de pesquisa ficou vazio."
   }
 
-  $usesWildcard = $searchPattern.IndexOf("*") -ge 0 -or
-  $searchPattern.IndexOf("?") -ge 0
+  # A pesquisa por codigo e sempre parcial.
+  # Se o usuario nao informar wildcard, o script adiciona.
+  if (
+    $searchText.Contains("*") -or
+    $searchText.Contains("?")
+  ) {
+    $searchPattern =
+    $searchText
+  }
+  else {
+    $searchPattern =
+    "*$searchText*"
+  }
 
   Write-AnimatedLine ""
 
-  if ($usesWildcard) {
-    Write-Info "Pesquisando pelo padrao: [$searchPattern]"
-  }
-  else {
-    Write-Info "Pesquisando pelo codigo exato: [$searchPattern]"
-  }
-
+  Write-Info (
+    "Pesquisando todas as correspondencias de: " +
+    "[$searchText]"
+  )
   $rootFolders = @(Get-ChildItem -LiteralPath $FolderPath -Directory -Force -ErrorAction Stop)
 
   $documentationFolder = $rootFolders |
@@ -1031,6 +1873,11 @@ function Select-DcaPdfByCode {
 
   $matchingFiles = [System.Collections.Generic.List[object]]::new()
 
+  $knownMatchingPaths =
+  [System.Collections.Generic.HashSet[string]]::new(
+    [System.StringComparer]::OrdinalIgnoreCase
+  )
+
   $apiEntries = $null
   $vault = Get-DcaVault
 
@@ -1039,7 +1886,17 @@ function Select-DcaPdfByCode {
     Write-Info "Consultando o vault..."
 
     try {
-      $apiEntries = @(Search-DcaVaultPdfEntries -Vault $vault -SearchText $searchPattern)
+      $apiEntries =
+      @(
+        Search-DcaVaultPdfEntries `
+          -Vault $vault `
+          -SearchText $searchPattern
+      )
+
+      Write-Info (
+        "Resultados retornados pelo Vault: " +
+        $apiEntries.Count
+      )
     }
     catch {
 
@@ -1096,9 +1953,24 @@ function Select-DcaPdfByCode {
         -BaseName $pdfEntry.BaseName `
         -ParsedCode $parsedName.SourceCode `
         -Pattern $searchPattern `
-        -UsesWildcard $usesWildcard
+        -UsesWildcard $true
 
       if (-not $isMatch) {
+        continue
+      }
+
+      $pdfFullName =
+      [string]$pdfEntry.FullName
+
+      if (
+        [string]::IsNullOrWhiteSpace(
+          $pdfFullName
+        )
+      ) {
+        continue
+      }
+
+      if (-not $knownMatchingPaths.Add($pdfFullName)) {
         continue
       }
 
@@ -1111,6 +1983,10 @@ function Select-DcaPdfByCode {
         $clientRevision = "000"
       }
 
+      $pdmState =
+      Get-DcaPdmFileState `
+        -Entry $pdfEntry
+
       $matchingFiles.Add(
         [PSCustomObject]@{
           File = $pdfEntry
@@ -1120,6 +1996,7 @@ function Select-DcaPdfByCode {
           DocumentType = $searchFolder.DocumentType
           TypeDisplayName = $searchFolder.DisplayName
           CodeParsed = $parsedName.CodeParsed
+          PdmState = $pdmState
         }
       )
     }
@@ -1142,44 +2019,135 @@ function Select-DcaPdfByCode {
   Write-SearchResultLine ("  Pesquisa: {0}" -f $searchPattern) -Color Gray
   Write-SearchResultLine ("  " + ("-" * 72)) -Color DarkGray
 
-  for ($index = 0; $index -lt $matchCount; $index++) {
+  for (
+    $index = 0
+    $index -lt $matchCount
+    $index++
+  ) {
 
-    $number = $index + 1
-    $currentMatch = $matchingFiles[$index]
-    $revisionDisplay = [string]$currentMatch.ClientRevision
+    $number =
+    $index + 1
 
-    if ([string]::IsNullOrWhiteSpace($revisionDisplay)) {
-      $revisionDisplay = "nao informada"
+    $currentMatch =
+    $matchingFiles[$index]
+
+    $revisionDisplay =
+    [string]$currentMatch.ClientRevision
+
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $revisionDisplay
+      )
+    ) {
+
+      $revisionDisplay =
+      "nao informada"
     }
 
-    $nameDisplay = [string]$currentMatch.DocumentTitle
+    $nameDisplay =
+    [string]$currentMatch.DocumentTitle
 
-    if ([string]::IsNullOrWhiteSpace($nameDisplay)) {
-      $nameDisplay = "não informado"
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $nameDisplay
+      )
+    ) {
+
+      $nameDisplay =
+      "nao informado"
     }
 
-    Write-SearchResultLine ("  [{0}] {1}" -f $number, $currentMatch.File.Name) -Color White
-    Write-SearchResultLine ("       Tipo:     {0}" -f $currentMatch.TypeDisplayName) -Color White
-    Write-SearchResultLine ("       Codigo:   {0}" -f $currentMatch.SourceCode) -Color Gray
-    Write-SearchResultLine ("       Nome:     {0}" -f $nameDisplay) -Color Gray
-    Write-SearchResultLine ("       Revisao:  {0}" -f $revisionDisplay) -Color Gray
-    Write-SearchResultLine ("       Local:    {0}" -f $currentMatch.File.FullName) -Color DarkGray
+    $stateDisplay =
+    [string]$currentMatch.PdmState
+
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $stateDisplay
+      )
+    ) {
+
+      $stateDisplay =
+      "nao informado"
+    }
+
+    $stateColor =
+    [System.ConsoleColor]::Yellow
+
+    if ($stateDisplay -ieq "Aprovado") {
+
+      $stateColor =
+      [System.ConsoleColor]::Green
+    }
+    elseif ($stateDisplay -ieq "Obsoleto") {
+
+      $stateColor =
+      [System.ConsoleColor]::Red
+    }
+    elseif ($stateDisplay -ieq "Verificado") {
+
+      $stateColor =
+      [System.ConsoleColor]::Cyan
+    }
+
+    Write-SearchResultLine (
+      "  [{0}] {1}" -f
+      $number,
+      $currentMatch.SourceCode
+    ) -Color White
+
+    Write-SearchResultLine (
+      "       Nome:    {0}" -f
+      $nameDisplay
+    ) -Color Gray
+
+    Write-SearchResultLine (
+      "       Tipo:    {0}" -f
+      $currentMatch.TypeDisplayName
+    ) -Color Gray
+
+    Write-SearchResultLine (
+      "       Revisao: {0}" -f
+      $revisionDisplay
+    ) -Color Gray
+
+    Write-SearchResultLine (
+      "       Estado:  {0}" -f
+      $stateDisplay
+    ) -Color $stateColor
+
+    if ($Details) {
+
+      Write-SearchResultLine (
+        "       PDF:     {0}" -f
+        $currentMatch.File.Name
+      ) -Color DarkGray
+
+      Write-SearchResultLine (
+        "       Local:   {0}" -f
+        $currentMatch.File.FullName
+      ) -Color DarkGray
+    }
+
     Write-SearchResultLine ""
   }
 
+  # Este bloco precisa ficar FORA do for acima.
   if ($matchCount -eq 1) {
 
-    Write-Success "O unico PDF encontrado foi selecionado automaticamente."
+    Write-Success (
+      "O unico PDF encontrado foi selecionado automaticamente."
+    )
 
     return $matchingFiles[0]
   }
 
+  # Esta pergunta tambem precisa ficar FORA do for.
   while ($true) {
 
     $selectionText =
     Read-Host (
-      "Digite um ou mais numeros separados por virgula " +
-      "(exemplo: 1,2)"
+      "Digite numeros separados por virgula, " +
+      "um intervalo ou T para todos"
     )
 
     if (
@@ -1195,6 +2163,9 @@ function Select-DcaPdfByCode {
       continue
     }
 
+    $selectionText =
+    $selectionText.Trim()
+
     $selectedNumbers =
     [System.Collections.Generic.List[int]]::new()
 
@@ -1204,41 +2175,116 @@ function Select-DcaPdfByCode {
     $selectionIsValid =
     $true
 
-    foreach ($selectionPart in ($selectionText -split ",")) {
+    if (
+      $selectionText -ieq "T" -or
+      $selectionText -ieq "TODOS"
+    ) {
 
-      $trimmedSelection =
-      ([string]$selectionPart).Trim()
-
-      $selectedNumber =
-      0
-
-      $validNumber =
-      [System.Int32]::TryParse(
-        $trimmedSelection,
-        [ref]$selectedNumber
-      )
-
-      if (
-        -not $validNumber -or
-        $selectedNumber -lt 1 -or
-        $selectedNumber -gt $matchCount
+      for (
+        $number = 1
+        $number -le $matchCount
+        $number++
       ) {
 
-        Write-Warn (
-          "Selecao invalida: '$trimmedSelection'. " +
-          "Digite numeros entre 1 e $matchCount."
+        if ($knownNumbers.Add($number)) {
+
+          $selectedNumbers.Add($number)
+        }
+      }
+    }
+    else {
+
+      foreach (
+        $selectionPart in (
+          $selectionText -split ","
+        )
+      ) {
+
+        $currentPart =
+        ([string]$selectionPart).Trim()
+
+        if (
+          [string]::IsNullOrWhiteSpace(
+            $currentPart
+          )
+        ) {
+          continue
+        }
+
+        # Permite intervalo, por exemplo: 1-5.
+        if (
+          $currentPart -match
+          '^(?<Start>\d+)\s*-\s*(?<End>\d+)$'
+        ) {
+
+          $rangeStart =
+          [int]$Matches["Start"]
+
+          $rangeEnd =
+          [int]$Matches["End"]
+
+          if (
+            $rangeStart -lt 1 -or
+            $rangeEnd -gt $matchCount -or
+            $rangeStart -gt $rangeEnd
+          ) {
+
+            Write-Warn (
+              "Intervalo invalido: '$currentPart'. " +
+              "Use valores entre 1 e $matchCount."
+            )
+
+            $selectionIsValid =
+            $false
+
+            break
+          }
+
+          for (
+            $rangeNumber = $rangeStart
+            $rangeNumber -le $rangeEnd
+            $rangeNumber++
+          ) {
+
+            if ($knownNumbers.Add($rangeNumber)) {
+
+              $selectedNumbers.Add($rangeNumber)
+            }
+          }
+
+          continue
+        }
+
+        $selectedNumber =
+        0
+
+        $validNumber =
+        [System.Int32]::TryParse(
+          $currentPart,
+          [ref]$selectedNumber
         )
 
-        $selectionIsValid =
-        $false
+        if (
+          -not $validNumber -or
+          $selectedNumber -lt 1 -or
+          $selectedNumber -gt $matchCount
+        ) {
 
-        break
-      }
+          Write-Warn (
+            "Selecao invalida: '$currentPart'. " +
+            "Digite numeros entre 1 e $matchCount."
+          )
 
-      # Evita selecionar o mesmo resultado duas vezes.
-      if ($knownNumbers.Add($selectedNumber)) {
+          $selectionIsValid =
+          $false
 
-        $selectedNumbers.Add($selectedNumber)
+          break
+        }
+
+        if ($knownNumbers.Add($selectedNumber)) {
+
+          $selectedNumbers.Add($selectedNumber)
+        }
       }
     }
 
@@ -1260,7 +2306,12 @@ function Select-DcaPdfByCode {
 
     Write-AnimatedLine ""
 
-    foreach ($selectedNumber in $selectedNumbers) {
+    foreach (
+      $selectedNumber in (
+        $selectedNumbers |
+          Sort-Object
+      )
+    ) {
 
       $selectedFile =
       $matchingFiles[$selectedNumber - 1]
@@ -1269,11 +2320,18 @@ function Select-DcaPdfByCode {
 
       Write-Success (
         "PDF selecionado [$selectedNumber]: " +
-        $selectedFile.File.FullName
+        $selectedFile.File.Name
       )
+
+      if ($Details) {
+
+        Write-Info (
+          "Local: " +
+          $selectedFile.File.FullName
+        )
+      }
     }
 
-    # A virgula impede que o PowerShell desmonte a colecao.
     return $selectedFiles.ToArray()
   }
 }
@@ -1405,11 +2463,64 @@ function Get-DcaSearchCodeList {
 
   return $codes.ToArray()
 }
+function Test-DcaFolderSearch {
+
+  param(
+    [string]$SearchText
+  )
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $SearchText
+    )
+  ) {
+    return $false
+  }
+
+  return (
+    $SearchText.Trim().StartsWith("\") -or
+    $SearchText.Trim().StartsWith("/")
+  )
+}
+function Get-DcaFolderSearchPattern {
+
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$SearchText
+  )
+
+  $folderPattern =
+  $SearchText.Trim().TrimStart("\", "/").Trim()
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $folderPattern
+    )
+  ) {
+    throw "O nome ou padrao da pasta ficou vazio."
+  }
+
+  if ($folderPattern.Contains("..")) {
+    throw (
+      "O padrao de pasta nao pode conter '..': " +
+      "'$folderPattern'."
+    )
+  }
+
+  # Permite * e ?, mas bloqueia caracteres inadequados.
+  if ($folderPattern -match '[:"<>\|]') {
+    throw (
+      "O padrao de pasta possui caracteres invalidos: " +
+      "'$folderPattern'."
+    )
+  }
+
+  return $folderPattern.Replace("/", "\")
+}
 function Invoke-DcaMain {
 
   Write-Section -Title "Informe o que deseja pesquisar" -NoLeadingBlank
-
-  $searchPattern = $SourceCode
 
   $rootPath = $SearchRoot
 
@@ -1428,8 +2539,8 @@ function Invoke-DcaMain {
 
     $searchInput =
     Read-Host (
-      "Digite um ou mais codigos separados por virgula; " +
-      "use * para busca parcial"
+      "Digite codigos separados por virgula; " +
+      "use \ para pesquisar pastas"
     )
   }
 
@@ -1462,9 +2573,6 @@ function Invoke-DcaMain {
   [System.Collections.Generic.HashSet[string]]::new(
     [System.StringComparer]::OrdinalIgnoreCase
   )
-
-  $searchFailures =
-  [System.Collections.Generic.List[object]]::new()
   for (
     $searchIndex = 0
     $searchIndex -lt $requestedCodes.Count
@@ -1483,12 +2591,28 @@ function Invoke-DcaMain {
     ) -ForegroundColor Cyan
 
     try {
-      $selectedPdfs =
-      @(
-        Select-DcaPdfByCode `
-          -FolderPath $rootPath `
-          -Code $currentSearchCode
-      )
+      $isFolderSearch =
+      Test-DcaFolderSearch `
+        -SearchText $currentSearchCode
+
+      if ($isFolderSearch) {
+
+        $selectedPdfs =
+        @(
+          Select-DcaPdfsByFolder `
+            -FolderPath $rootPath `
+            -FolderSearch $currentSearchCode
+        )
+      }
+      else {
+
+        $selectedPdfs =
+        @(
+          Select-DcaPdfByCode `
+            -FolderPath $rootPath `
+            -Code $currentSearchCode
+        )
+      }
 
       if ($selectedPdfs.Count -eq 0) {
 
@@ -1539,14 +2663,6 @@ function Invoke-DcaMain {
       }
     }
     catch {
-
-      $searchFailures.Add(
-        [PSCustomObject]@{
-          SearchText = $currentSearchCode
-          ErrorMessage = $_.Exception.Message
-        }
-      )
-
       Write-Warn (
         "Falha na pesquisa '$currentSearchCode': " +
         $_.Exception.Message
@@ -1587,6 +2703,16 @@ function Invoke-DcaMain {
       -not $selectedPdf.CodeParsed
     ) {
 
+      if ($selectedPdf.FolderImport) {
+
+        Write-Warn (
+          "Codigo nao reconhecido. Arquivo ignorado: " +
+          "'$($selectedPdf.File.Name)'."
+        )
+
+        continue
+      }
+
       Write-Warn (
         "Nao foi possivel extrair o codigo da norma de " +
         "'$($selectedPdf.File.BaseName)'."
@@ -1603,7 +2729,6 @@ function Invoke-DcaMain {
           $typedCode
         )
       ) {
-
         $itemCodeFromFile =
         $typedCode.Trim()
       }
@@ -1636,28 +2761,39 @@ function Invoke-DcaMain {
       }
       else {
 
+        Write-Warn (
+          "Revisao nao encontrada no nome do PDF: " +
+          "'$($selectedPdf.File.Name)'."
+        )
+
+        $revisionPrompt =
+        if ($documentType -eq "Processo") {
+          "Digite a revisao do Processo"
+        }
+        else {
+          "Digite a revisao do Desenho Original"
+        }
+
         $clientRevision =
         Read-Host (
-          "Digite a Revisao Cliente para '$itemCodeFromFile' " +
-          "(Original: B ou BA4; Processo: BA4)"
+          "$revisionPrompt para '$itemCodeFromFile' " +
+          "ou Enter para ignorar"
         )
+
+        if (
+          [string]::IsNullOrWhiteSpace(
+            $clientRevision
+          )
+        ) {
+
+          Write-Warn (
+            "Arquivo ignorado: '$($selectedPdf.File.Name)'."
+          )
+
+          continue
+        }
       }
     }
-
-    if (
-      [string]::IsNullOrWhiteSpace(
-        $clientRevision
-      )
-    ) {
-
-      Write-Warn (
-        "Revisao nao informada para '$itemCodeFromFile'. " +
-        "O documento sera ignorado."
-      )
-
-      continue
-    }
-
     $clientRevision =
     $clientRevision.Trim().ToUpper()
 
@@ -1681,11 +2817,29 @@ function Invoke-DcaMain {
       )
     ) {
 
-      $itemNameText =
-      Read-Host (
-        "Digite o nome do item '$itemCodeFromFile' " +
-        "(obrigatorio)"
-      )
+      if ($selectedPdf.FolderImport) {
+
+        # Quando o arquivo possui somente o codigo,
+        # usa o proprio codigo como nome.
+        $itemNameText =
+        $itemCodeFromFile
+
+        if ($Details) {
+
+          Write-Warn (
+            "Titulo nao encontrado para '$itemCodeFromFile'. " +
+            "O codigo sera usado como nome."
+          )
+        }
+      }
+      else {
+
+        $itemNameText =
+        Read-Host (
+          "Digite o nome do item '$itemCodeFromFile' " +
+          "(obrigatorio)"
+        )
+      }
     }
 
     if (
@@ -1711,6 +2865,7 @@ function Invoke-DcaMain {
         ClientRevision = $clientRevision
         DocumentType = $documentType
         DisplayType = $selectedPdf.TypeDisplayName
+        PdmState = [string]$selectedPdf.PdmState
       }
     )
   }
@@ -1720,42 +2875,79 @@ function Invoke-DcaMain {
   }
   Write-Section -Title "Resumo do lote"
 
+  $totalPrepared =
+  $preparedDocuments.Count
+
+  $approvedPrepared =
+  @(
+    $preparedDocuments |
+      Where-Object {
+      $_.PdmState -ieq "Aprovado"
+    }
+  ).Count
+
+  $obsoletePrepared =
+  @(
+    $preparedDocuments |
+      Where-Object {
+      $_.PdmState -ieq "Obsoleto"
+    }
+  ).Count
+
+  $withoutWorkflowPrepared =
+  $totalPrepared -
+  $approvedPrepared -
+  $obsoletePrepared
+
   Write-Host ""
+  Write-Host (
+    "  Documentos preparados: $totalPrepared"
+  ) -ForegroundColor White
 
-  for (
-    $index = 0
-    $index -lt $preparedDocuments.Count
-    $index++
-  ) {
+  Write-Host (
+    "  Workflow de aprovacao: $approvedPrepared"
+  ) -ForegroundColor Green
 
-    $document =
-    $preparedDocuments[$index]
+  Write-Host (
+    "  Workflow de obsoleto:  $obsoletePrepared"
+  ) -ForegroundColor Red
 
-    Write-Host (
-      "  [$($index + 1)] $($document.ItemCode)"
-    ) -ForegroundColor White
+  Write-Host (
+    "  Sem workflow:           $withoutWorkflowPrepared"
+  ) -ForegroundColor Yellow
 
-    Write-Host (
-      "       Tipo:    " +
-      "$($document.DisplayType) [$($document.DocumentType)]"
-    ) -ForegroundColor Gray
-
-    Write-Host (
-      "       Revisao: " +
-      $document.ClientRevision
-    ) -ForegroundColor Gray
-
-    Write-Host (
-      "       Nome:    " +
-      $document.ItemName
-    ) -ForegroundColor Gray
-
-    Write-Host (
-      "       Arquivo: " +
-      $document.SelectedPdf.File.FullName
-    ) -ForegroundColor DarkGray
+  if ($Details -or $totalPrepared -le 10) {
 
     Write-Host ""
+
+    for (
+      $index = 0
+      $index -lt $preparedDocuments.Count
+      $index++
+    ) {
+
+      $document =
+      $preparedDocuments[$index]
+
+      Write-Host (
+        "  [{0}] {1} | {2} | {3}" -f
+        ($index + 1),
+        $document.ItemCode,
+        $document.ClientRevision,
+        $document.PdmState
+      ) -ForegroundColor Gray
+    }
+  }
+  else {
+
+    Write-Host ""
+    Write-Host (
+      "  Lista individual ocultada para manter a tela limpa."
+    ) -ForegroundColor DarkGray
+
+    Write-Host (
+      "  Execute com -Details para mostrar todos os documentos."
+    ) -ForegroundColor DarkGray
   }
   if ($Preview) {
 
@@ -1812,8 +3004,8 @@ function Invoke-DcaMain {
   Write-AnimatedLine ""
 
   Write-Warn (
-    "Esta etapa vai criar $($preparedDocuments.Count) " +
-    "item(ns) real(is) no Teamcenter."
+    "Esta etapa vai processar $($preparedDocuments.Count) " +
+    "documento(s) no Teamcenter."
   )
 
   $confirmation =
@@ -1857,6 +3049,9 @@ function Invoke-DcaMain {
     $false
 
     $pdfImported =
+    $false
+
+    $workflowStarted =
     $false
 
     Write-AnimatedLine ""
@@ -1979,9 +3174,15 @@ function Invoke-DcaMain {
       }
 
       Write-Info (
-        "Revisao localizada: $revisionTypeName"
+        "Revisao do Teamcenter localizada."
       )
 
+      if ($Details) {
+
+        Write-Info (
+          "Tipo tecnico: $revisionTypeName"
+        )
+      }
       # ==================================================
       # 4. Garantir que o PDF esteja no cache local
       # ==================================================
@@ -2060,14 +3261,17 @@ function Invoke-DcaMain {
       }
 
       Write-Info (
-        "PDF pronto para importacao: $temporaryPdfPath"
-      )
-
-      Write-Info (
-        "Tamanho do PDF: " +
+        "PDF temporario validado: " +
         "$($temporaryPdfFile.Length) bytes"
       )
 
+      if ($Details) {
+
+        Write-Info (
+          "Arquivo temporario: " +
+          $temporaryPdfPath
+        )
+      }
       # ==================================================
       # 6. Importar o PDF na revisao
       # ==================================================
@@ -2080,6 +3284,7 @@ function Invoke-DcaMain {
       Import-TeamcenterPdf `
         -Revision $teamcenterRevision `
         -ItemCode $createdCode `
+        -DatasetRevision $document.ClientRevision `
         -FilePath $temporaryPdfPath
 
       # O metodo pode ser void e retornar NULL.
@@ -2087,9 +3292,82 @@ function Invoke-DcaMain {
       $pdfImported =
       $true
 
-      Write-Success (
-        "PDF importado: $createdCode"
-      )
+      $pdmState =
+([string]$document.PdmState).Trim()
+
+$workflowTemplate =
+$null
+
+$workflowLabel =
+$null
+
+if ($pdmState -ieq "Aprovado") {
+
+  $workflowTemplate =
+  [string]$env:DCA_TC_APPROVED_WORKFLOW
+
+  $workflowLabel =
+  "aprovacao"
+}
+elseif ($pdmState -ieq "Obsoleto") {
+
+  $workflowTemplate =
+  [string]$env:DCA_TC_OBSOLETE_WORKFLOW
+
+  $workflowLabel =
+  "obsolescencia"
+}
+
+if ($null -eq $workflowLabel) {
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $pdmState
+    )
+  ) {
+
+    Write-Info (
+      "Estado do PDM nao identificado. " +
+      "Nenhum workflow sera iniciado."
+    )
+  }
+  else {
+
+    Write-Info (
+      "Estado no PDM: '$pdmState'. " +
+      "Nenhum workflow configurado para esse estado."
+    )
+  }
+}
+elseif (
+  [string]::IsNullOrWhiteSpace(
+    $workflowTemplate
+  )
+) {
+
+  Write-Warn (
+    "Workflow de $workflowLabel nao configurado no .env. " +
+    "O Item e o PDF foram mantidos sem workflow."
+  )
+}
+else {
+
+  Write-Info (
+    "Estado no PDM: '$pdmState'. " +
+    "Iniciando workflow de $workflowLabel..."
+  )
+
+  Start-TeamcenterWorkflow `
+    -WorkflowTemplate $workflowTemplate `
+    -Revision $teamcenterRevision
+
+  $workflowStarted =
+  $true
+
+  Write-Success (
+    "Workflow de $workflowLabel solicitado."
+  )
+}
 
       # ==================================================
       # 7. Registrar sucesso
@@ -2103,6 +3381,8 @@ function Invoke-DcaMain {
           TeamcenterCode = $createdCode
           ItemCreated = $itemCreated
           PdfImported = $pdfImported
+          PdmState = $pdmState
+          WorkflowStarted = $workflowStarted
           Succeeded = $true
           ErrorMessage = $null
         }
@@ -2149,11 +3429,18 @@ function Invoke-DcaMain {
       $result.PdfImported
     ) {
 
-      Write-Success (
-        "$($result.ItemCode) -> " +
-        "$($result.TeamcenterCode) - " +
-        "Item e PDF importados"
-      )
+      $successMessage =
+      "$($result.ItemCode) -> " +
+      "$($result.TeamcenterCode) - " +
+      "Item e PDF importados"
+
+      if ($result.WorkflowStarted) {
+
+        $successMessage +=
+        " - workflow solicitado"
+      }
+
+      Write-Success $successMessage
     }
     elseif (
       $result.ItemCreated -and
@@ -2174,7 +3461,6 @@ function Invoke-DcaMain {
       )
     }
   }
-
   $successCount =
   @(
     $batchResults |
