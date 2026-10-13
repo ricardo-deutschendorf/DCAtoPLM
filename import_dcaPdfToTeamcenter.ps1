@@ -49,8 +49,7 @@ function Import-DcaEnvironmentFile {
       -Encoding UTF8
   ) {
 
-    $trimmedLine =
-    $line.Trim()
+    $trimmedLine = $line.Trim()
 
     if (
       [string]::IsNullOrWhiteSpace($trimmedLine) -or
@@ -363,7 +362,6 @@ function Get-DcaVault {
     Remove-Variable plainTextPassword -ErrorAction SilentlyContinue
   }
 }
-
 function Search-DcaVaultPdfEntries {
 
   param(
@@ -416,7 +414,6 @@ function Search-DcaVaultPdfEntries {
 
   return $entries.ToArray()
 }
-
 function Get-DcaDiskPdfEntries {
 
   param(
@@ -448,7 +445,6 @@ function Get-DcaDiskPdfEntries {
 
   return $entries.ToArray()
 }
-
 function Confirm-DcaLocalPdf {
 
   param(
@@ -1041,8 +1037,1410 @@ function Get-DcaPdmFileState {
     return $null
   }
 }
-function Select-DcaPdfsByFolder {
+function Get-DcaPdmCardVariableValue {
 
+  param(
+    [Parameter(Mandatory = $true)]
+    $VariableReader,
+
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$VariableName,
+
+    [Parameter(Mandatory = $true)]
+    [int]$FolderId
+  )
+
+  $variableNameClean =
+  $VariableName.Trim()
+
+  $enumeratorVariableType =
+  [System.AppDomain]::CurrentDomain.GetAssemblies() |
+    ForEach-Object {
+
+    try {
+
+      $_.GetTypes()
+    }
+    catch {
+
+      @()
+    }
+  } |
+    Where-Object {
+    $_.IsInterface -and
+    $_.Name -eq "IEdmEnumeratorVariable10"
+  } |
+    Select-Object -First 1
+
+  if ($null -ne $enumeratorVariableType) {
+
+    $getVar2Method =
+    $enumeratorVariableType.GetMethods() |
+      Where-Object {
+      $_.Name -eq "GetVar2" -and
+      $_.GetParameters().Count -eq 4
+    } |
+      Select-Object -First 1
+
+    if ($null -ne $getVar2Method) {
+
+      $getVar2Arguments =
+      New-Object "System.Object[]" 4
+
+      $getVar2Arguments[0] =
+      [string]$variableNameClean
+
+      # PDF nao possui configuracoes como arquivos CAD.
+      $getVar2Arguments[1] =
+      [string]""
+
+      $getVar2Arguments[2] =
+      [int]$FolderId
+
+      $getVar2Arguments[3] =
+      $null
+
+      try {
+
+        $variableFound =
+        [bool]$getVar2Method.Invoke(
+          $VariableReader,
+          $getVar2Arguments
+        )
+
+        $variableValue =
+        $getVar2Arguments[3]
+
+        return [PSCustomObject]@{
+          Found = $variableFound
+          Value = ([string]$variableValue).Trim()
+          Method = "GetVar2"
+          Error = $null
+        }
+      }
+      catch {
+
+        $realException =
+        $_.Exception
+
+        while (
+          $null -ne $realException.InnerException
+        ) {
+
+          $realException =
+          $realException.InnerException
+        }
+
+        return [PSCustomObject]@{
+          Found = $false
+          Value = ""
+          Method = "GetVar2"
+          Error = $realException.Message
+        }
+      }
+    }
+  }
+
+  # Compatibilidade com versoes antigas da API.
+  $fallbackConfigurations =
+  @(
+    "",
+    "@"
+  )
+
+  foreach (
+    $configurationName in
+    $fallbackConfigurations
+  ) {
+
+    $variableValue =
+    $null
+
+    try {
+
+      $variableFound =
+      $VariableReader.GetVar(
+        $variableNameClean,
+        $configurationName,
+        [ref]$variableValue
+      )
+
+      $valueText =
+      ([string]$variableValue).Trim()
+
+      if (
+        $variableFound -or
+        -not [string]::IsNullOrWhiteSpace(
+          $valueText
+        )
+      ) {
+
+        return [PSCustomObject]@{
+          Found = [bool]$variableFound
+          Value = $valueText
+          Method = "GetVar('$configurationName')"
+          Error = $null
+        }
+      }
+    }
+    catch {
+
+      continue
+    }
+  }
+
+  return [PSCustomObject]@{
+    Found = $false
+    Value = ""
+    Method = "nenhum"
+    Error = $null
+  }
+}
+function Get-DcaPdmCardVariables {
+
+  param(
+    [Parameter(Mandatory = $true)]
+    $Entry,
+
+    [switch]$IncludeEmpty
+  )
+
+  $vault =
+  Get-DcaVault
+
+  if ($null -eq $vault) {
+
+    throw (
+      "A API do PDM nao esta disponivel para consultar " +
+      "as variaveis do cartao."
+    )
+  }
+
+  $filePath =
+  [string]$Entry.FullName
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $filePath
+    )
+  ) {
+
+    throw "O caminho do arquivo ficou vazio."
+  }
+
+  $parentFolder =
+  $null
+
+  $pdmFile =
+  $vault.GetFileFromPath(
+    $filePath,
+    [ref]$parentFolder
+  )
+
+  if ($null -eq $pdmFile) {
+
+    throw (
+      "O arquivo nao foi encontrado pela API do PDM: " +
+      "'$($Entry.Name)'."
+    )
+  }
+
+  if ($null -eq $parentFolder) {
+
+    throw (
+      "A pasta do arquivo nao foi encontrada pela API do PDM."
+    )
+  }
+
+  $variableReader =
+  $pdmFile.GetEnumeratorVariable("")
+
+  if ($null -eq $variableReader) {
+
+    throw (
+      "Nao foi possivel abrir o cartao de dados de " +
+      "'$($Entry.Name)'."
+    )
+  }
+
+  $variableManager =
+  $vault
+
+  $variableManagerType =
+  [System.AppDomain]::CurrentDomain.GetAssemblies() |
+    ForEach-Object {
+
+    try {
+
+      $_.GetTypes()
+    }
+    catch {
+
+      @()
+    }
+  } |
+    Where-Object {
+    $_.IsInterface -and
+    $_.Name -eq "IEdmVariableMgr5"
+  } |
+    Select-Object -First 1
+
+  if ($null -eq $variableManagerType) {
+
+    throw (
+      "A interface IEdmVariableMgr5 nao foi encontrada " +
+      "nos assemblies carregados."
+    )
+  }
+
+  $getFirstVariablePositionMethod =
+  $variableManagerType.GetMethods() |
+    Where-Object {
+    $_.Name -eq "GetFirstVariablePosition" -and
+    $_.GetParameters().Count -eq 0
+  } |
+    Select-Object -First 1
+
+  $getNextVariableMethod =
+  $variableManagerType.GetMethods() |
+    Where-Object {
+    $_.Name -eq "GetNextVariable" -and
+    $_.GetParameters().Count -eq 1
+  } |
+    Select-Object -First 1
+
+  if (
+    $null -eq $getFirstVariablePositionMethod -or
+    $null -eq $getNextVariableMethod
+  ) {
+
+    throw (
+      "Os metodos de enumeracao das variaveis " +
+      "nao foram encontrados em IEdmVariableMgr5."
+    )
+  }
+
+  $results =
+  [System.Collections.Generic.List[object]]::new()
+
+  try {
+
+    $position =
+    $getFirstVariablePositionMethod.Invoke(
+      $variableManager,
+      @()
+    )
+
+    if ($null -eq $position) {
+
+      throw (
+        "A API do PDM nao retornou a posicao inicial " +
+        "das variaveis."
+      )
+    }
+
+    while (
+      $null -ne $position -and
+      -not $position.IsNull
+    ) {
+
+      $pdmVariable =
+      $null
+
+      try {
+
+        $pdmVariable =
+        $getNextVariableMethod.Invoke(
+          $variableManager,
+          @($position)
+        )
+      }
+      catch {
+
+        $cursorError =
+        [string]$_.Exception.Message
+
+        if (
+          $cursorError -match
+          "cursor.*final|elemento.*lista|end.*list"
+        ) {
+          break
+        }
+
+        throw
+      }
+
+      if ($null -eq $pdmVariable) {
+        continue
+      }
+
+      $variableName =
+      ([string]$pdmVariable.Name).Trim()
+
+      if (
+        [string]::IsNullOrWhiteSpace(
+          $variableName
+        )
+      ) {
+        continue
+      }
+
+      $variableValue =
+      $null
+
+      $variableFound =
+      $false
+      try {
+
+        $readResult =
+        Get-DcaPdmCardVariableValue `
+          -VariableReader $variableReader `
+          -VariableName $variableName `
+          -FolderId ([int]$parentFolder.ID)
+
+        $variableFound =
+        [bool]$readResult.Found
+
+        $variableValue =
+        [string]$readResult.Value
+
+        if (
+          -not [string]::IsNullOrWhiteSpace(
+            [string]$readResult.Error
+          )
+        ) {
+
+          Write-Host (
+            "  Erro ao ler '$variableName' com " +
+            "$($readResult.Method): " +
+            $readResult.Error
+          ) -ForegroundColor DarkGray
+        }
+      }
+      catch {
+
+        Write-Host (
+          "  Erro inesperado ao ler '$variableName': " +
+          $_.Exception.Message
+        ) -ForegroundColor DarkGray
+
+        continue
+      }
+
+      $valueText =
+      ([string]$variableValue).Trim()
+
+      if (
+        -not $IncludeEmpty -and
+        [string]::IsNullOrWhiteSpace(
+          $valueText
+        )
+      ) {
+        continue
+      }
+
+      $variableId =
+      $null
+
+      if (
+        $pdmVariable.PSObject.Properties["ID"]
+      ) {
+
+        $variableId =
+        $pdmVariable.ID
+      }
+
+      $results.Add(
+        [PSCustomObject]@{
+          Name = $variableName
+          ID = $variableId
+          Value = $valueText
+          Found = [bool]$variableFound
+          Method = [string]$readResult.Method
+        }
+      )
+    }
+  }
+  finally {
+    if ($null -ne $variableReader) {
+
+      $closeFileMethod =
+      $variableReader.GetType().GetMethods() |
+        Where-Object {
+        $_.Name -eq "CloseFile"
+      } |
+        Select-Object -First 1
+
+      if ($null -ne $closeFileMethod) {
+
+        try {
+
+          $closeParameters =
+          $closeFileMethod.GetParameters()
+
+          if ($closeParameters.Count -eq 1) {
+
+            $null =
+            $closeFileMethod.Invoke(
+              $variableReader,
+              @([bool]$false)
+            )
+          }
+          elseif ($closeParameters.Count -eq 0) {
+
+            $null =
+            $closeFileMethod.Invoke(
+              $variableReader,
+              @()
+            )
+          }
+        }
+        catch {
+
+          # A falha ao fechar o enumerador nao deve
+          # interromper a descoberta das variaveis.
+        }
+      }
+    }
+  }
+
+  return @(
+    $results |
+      Sort-Object Name
+  )
+}
+function Show-DcaPdmCardVariables {
+
+  param(
+    [Parameter(Mandatory = $true)]
+    $Entry
+  )
+
+  Write-AnimatedLine ""
+
+  Write-Host (
+    "  Procurando variaveis preenchidas no cartao de:"
+  ) -ForegroundColor Cyan
+
+  Write-Host (
+    "  $($Entry.Name)"
+  ) -ForegroundColor White
+
+  $cardVariables =
+  @(
+    Get-DcaPdmCardVariables `
+      -Entry $Entry `
+      -IncludeEmpty
+  )
+
+  if ($cardVariables.Count -eq 0) {
+
+    Write-Warn (
+      "Nenhuma variavel preenchida foi encontrada no cartao."
+    )
+
+    return
+  }
+
+  Write-Host ""
+
+  Write-Host (
+    "  Variaveis preenchidas no cartao:"
+  ) -ForegroundColor Cyan
+
+  Write-Host (
+    "  " + ("-" * 68)
+  ) -ForegroundColor DarkGray
+
+  for (
+    $index = 0
+    $index -lt $cardVariables.Count
+    $index++
+  ) {
+
+    $variable =
+    $cardVariables[$index]
+
+    $number =
+    $index + 1
+
+    $idDisplay =
+    ""
+
+    if ($null -ne $variable.ID) {
+
+      $idDisplay =
+      " | ID: $($variable.ID)"
+    }
+
+    Write-Host (
+      "  [{0}] {1}{2}" -f
+      $number,
+      $variable.Name,
+      $idDisplay
+    ) -ForegroundColor White
+
+    $valueDisplay =
+    [string]$variable.Value
+
+    $valueColor =
+    [System.ConsoleColor]::Green
+
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $valueDisplay
+      )
+    ) {
+
+      $valueDisplay =
+      "<vazio>"
+
+      $valueColor =
+      [System.ConsoleColor]::DarkGray
+    }
+
+    Write-Host (
+      "       Valor: {0}" -f
+      $valueDisplay
+    ) -ForegroundColor $valueColor
+
+    Write-Host (
+      "       Leitura: {0}" -f
+      $variable.Method
+    ) -ForegroundColor DarkGray
+  }
+
+  Write-Host ""
+
+  Write-Host (
+    "  Procure acima o campo que representa a revisao."
+  ) -ForegroundColor Yellow
+
+  Write-Host (
+    "  Copie exatamente o nome exibido antes de 'Valor'."
+  ) -ForegroundColor DarkGray
+}
+function Get-DcaCardRevisionVariableNames {
+
+  param(
+    [string]$DocumentType
+  )
+
+  $configuredValue =
+  ""
+
+  if ($DocumentType -eq "Original") {
+
+    $configuredValue =
+    [string]$env:DCA_PDM_VAR_ORIGINAL_REVISION
+  }
+  elseif ($DocumentType -eq "Processo") {
+
+    $configuredValue =
+    [string]$env:DCA_PDM_VAR_PROCESS_REVISION
+  }
+  elseif ($DocumentType -eq "NormaExterna") {
+
+    $configuredValue =
+    [string]$env:DCA_PDM_VAR_STANDARD_REVISION
+  }
+
+  $variableNames =
+  [System.Collections.Generic.List[string]]::new()
+
+  foreach ($part in ($configuredValue -split '[|;]')) {
+
+    $currentName =
+    ([string]$part).Trim()
+
+    if (-not [string]::IsNullOrWhiteSpace($currentName)) {
+      $variableNames.Add($currentName)
+    }
+  }
+
+  return $variableNames.ToArray()
+}
+function Get-DcaPdmVariableValue {
+  param(
+    [Parameter(Mandatory = $true)]
+    $Entry,
+
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string[]]$VariableNames
+  )
+
+  $vault =
+  Get-DcaVault
+
+  if ($null -eq $vault) {
+    return $null
+  }
+
+  $filePath =
+  [string]$Entry.FullName
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $filePath
+    )
+  ) {
+    return $null
+  }
+
+  $parentFolder =
+  $null
+
+  try {
+
+    $pdmFile =
+    $vault.GetFileFromPath(
+      $filePath,
+      [ref]$parentFolder
+    )
+
+    if ($null -eq $pdmFile) {
+
+      if ($Details) {
+
+        Write-Warn (
+          "Arquivo nao encontrado pela API do PDM: " +
+          "'$($Entry.Name)'."
+        )
+      }
+
+      return $null
+    }
+
+    $variableReader =
+    $pdmFile.GetEnumeratorVariable("")
+
+    if ($null -eq $variableReader) {
+
+      if ($Details) {
+
+        Write-Warn (
+          "Nao foi possivel abrir as variaveis do cartao de " +
+          "'$($Entry.Name)'."
+        )
+      }
+
+      return $null
+    }
+
+    foreach ($variableName in $VariableNames) {
+
+      $currentName =
+      ([string]$variableName).Trim()
+
+      if (
+        [string]::IsNullOrWhiteSpace(
+          $currentName
+        )
+      ) {
+        continue
+      }
+
+      $variableValue =
+      $null
+
+      try {
+        $readResult =
+        Get-DcaPdmCardVariableValue `
+          -VariableReader $variableReader `
+          -VariableName $currentName `
+          -FolderId ([int]$parentFolder.ID)
+
+        $variableFound =
+        [bool]$readResult.Found
+
+        $variableValue =
+        [string]$readResult.Value
+        if (-not $variableFound) {
+
+          if ($Details) {
+
+            Write-Host (
+              "  Variavel nao encontrada no cartao: " +
+              "'$currentName'"
+            ) -ForegroundColor DarkGray
+          }
+
+          continue
+        }
+      }
+      catch {
+
+        if ($Details) {
+
+          Write-Host (
+            "  Variavel nao encontrada: '$currentName'"
+          ) -ForegroundColor DarkGray
+        }
+
+        continue
+      }
+
+      $valueText =
+      ([string]$variableValue).Trim()
+
+      if (
+        -not [string]::IsNullOrWhiteSpace(
+          $valueText
+        )
+      ) {
+
+        if ($Details) {
+
+          Write-Host (
+            "  Cartao de dados: '$currentName' = '$valueText'"
+          ) -ForegroundColor Cyan
+        }
+
+        return $valueText
+      }
+
+      if ($Details) {
+
+        Write-Host (
+          "  Variavel encontrada, mas vazia: '$currentName'"
+        ) -ForegroundColor DarkGray
+      }
+    }
+
+    return $null
+  }
+  catch {
+
+    if ($Details) {
+
+      Write-Warn (
+        "Falha ao ler o cartao de dados de " +
+        "'$($Entry.Name)': $($_.Exception.Message)"
+      )
+    }
+
+    return $null
+  }
+}
+function Update-DcaMatchDescriptionFromCard {
+
+  param(
+    [Parameter(Mandatory = $true)]
+    $Match
+  )
+
+  $descriptionVariableName =
+  $null
+
+  if ($Match.DocumentType -eq "Processo") {
+
+    $descriptionVariableName =
+    [string]$env:DCA_PDM_VAR_PROCESS_DESCRIPTION
+  }
+  elseif ($Match.DocumentType -eq "Original") {
+
+    $descriptionVariableName =
+    [string]$env:DCA_PDM_VAR_ORIGINAL_DESCRIPTION
+  }
+  elseif ($Match.DocumentType -eq "NormaExterna") {
+
+    $descriptionVariableName =
+    [string]$env:DCA_PDM_VAR_STANDARD_DESCRIPTION
+  }
+
+  $descriptionVariableName =
+  ([string]$descriptionVariableName).Trim()
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $descriptionVariableName
+    )
+  ) {
+
+    Add-Member `
+      -InputObject $Match `
+      -NotePropertyName "DescriptionSource" `
+      -NotePropertyValue "nao configurada" `
+      -Force
+
+    return
+  }
+
+  $cardDescription =
+  Get-DcaPdmVariableValue `
+    -Entry $Match.File `
+    -VariableNames @(
+    $descriptionVariableName
+  )
+
+  $cardDescription =
+  ([string]$cardDescription).Trim()
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $cardDescription
+    )
+  ) {
+
+    Add-Member `
+      -InputObject $Match `
+      -NotePropertyName "DescriptionSource" `
+      -NotePropertyValue "cartao vazio" `
+      -Force
+
+    if ($Details) {
+
+      Write-Warn (
+        "A descricao do cartao esta vazia em " +
+        "'$($Match.File.Name)'. " +
+        "Variavel: '$descriptionVariableName'."
+      )
+    }
+
+    return
+  }
+
+  $Match.DocumentTitle =
+  $cardDescription
+
+  Add-Member `
+    -InputObject $Match `
+    -NotePropertyName "CardDescription" `
+    -NotePropertyValue $cardDescription `
+    -Force
+
+  Add-Member `
+    -InputObject $Match `
+    -NotePropertyName "DescriptionSource" `
+    -NotePropertyValue "cartao de dados" `
+    -Force
+
+  if ($Details) {
+
+    Write-Host (
+      "  Descricao do cartao: " +
+      "'$cardDescription'"
+    ) -ForegroundColor Cyan
+  }
+}
+function Update-DcaMatchRevisionFromCard {
+
+  param(
+    [Parameter(Mandatory = $true)]
+    $Match
+  )
+  $discoverCardVariables =
+  ([string]$env:DCA_PDM_DISCOVER_CARD_VARIABLES).Trim()
+
+  if (
+    $discoverCardVariables -match
+    '^(?i:true|1|sim|yes)$'
+  ) {
+
+    Show-DcaPdmCardVariables `
+      -Entry $Match.File
+  }
+  $fileRevision =
+  ([string]$Match.ClientRevision).Trim().ToUpper()
+
+  $revisionSource =
+  "nome do arquivo"
+
+  $variableNames =
+  @(
+    Get-DcaCardRevisionVariableNames `
+      -DocumentType ([string]$Match.DocumentType)
+  )
+  if ($Details) {
+
+    $configuredVariablesDisplay =
+    if ($variableNames.Count -gt 0) {
+      $variableNames -join ", "
+    }
+    else {
+      "<nenhuma>"
+    }
+
+    Write-Host (
+      "  Variaveis de revisao configuradas: " +
+      $configuredVariablesDisplay
+    ) -ForegroundColor DarkGray
+  }
+  if ($variableNames.Count -gt 0) {
+
+    $cardRevision =
+    Get-DcaPdmVariableValue `
+      -Entry $Match.File `
+      -VariableNames $variableNames
+
+    if ($Details) {
+
+      Write-Host (
+        "  Cartao de dados: " +
+        $Match.File.Name
+      ) -ForegroundColor Cyan
+
+      Write-Host (
+        "    Variavel(is) testada(s): " +
+        ($variableNames -join ", ")
+      ) -ForegroundColor DarkGray
+
+      if (
+        [string]::IsNullOrWhiteSpace(
+          [string]$cardRevision
+        )
+      ) {
+
+        Write-Host (
+          "    Revisao do cartao: nao encontrada ou vazia"
+        ) -ForegroundColor Yellow
+      }
+      else {
+
+        Write-Host (
+          "    Revisao do cartao: [$cardRevision]"
+        ) -ForegroundColor Green
+      }
+    }
+
+    if (
+      -not [string]::IsNullOrWhiteSpace(
+        $cardRevision
+      )
+    ) {
+
+      $cardRevision =
+      ([string]$cardRevision).Trim().ToUpperInvariant()
+
+      if (
+        -not [string]::IsNullOrWhiteSpace($fileRevision) -and
+        $cardRevision -ne $fileRevision
+      ) {
+
+        Write-Warn (
+          "Revisao diferente em '$($Match.File.Name)': " +
+          "arquivo [$fileRevision] x cartao [$cardRevision]. " +
+          "Usando o cartao."
+        )
+      }
+
+      $Match.ClientRevision =
+      $cardRevision
+
+      $revisionSource =
+      "cartao de dados"
+    }
+  }
+  if (
+    $variableNames.Count -eq 0 -and
+    $Details
+  ) {
+
+    Write-Warn (
+      "Nenhuma variavel de revisao do cartao foi configurada " +
+      "para o tipo '$($Match.DocumentType)'."
+    )
+
+    Write-Host (
+      "  Configure DCA_PDM_VAR_PROCESS_REVISION no arquivo .env."
+    ) -ForegroundColor DarkGray
+  }
+  Add-Member `
+    -InputObject $Match `
+    -NotePropertyName "FileRevision" `
+    -NotePropertyValue $fileRevision `
+    -Force
+
+  Add-Member `
+    -InputObject $Match `
+    -NotePropertyName "RevisionSource" `
+    -NotePropertyValue $revisionSource `
+    -Force
+}
+function Select-DcaDocumentsFromFolder {
+
+  param(
+    [Parameter(Mandatory = $true)]
+    $FolderOption,
+
+    [switch]$AllowBack
+  )
+
+  $documents =
+  @(
+    $FolderOption.Documents |
+      Sort-Object {
+      [string]$_.SourceCode
+    }, {
+      [string]$_.File.Name
+    }
+  )
+
+  if ($documents.Count -eq 0) {
+    Write-Warn (
+      "A pasta '$($FolderOption.RelativePath)' nao possui PDFs."
+    )
+
+    return $null
+  }
+
+  while ($true) {
+
+    Write-AnimatedLine ""
+
+    Write-Host (
+      "  Pasta selecionada: \$($FolderOption.RelativePath)"
+    ) -ForegroundColor Cyan
+
+    Write-Host (
+      "  Tipo: $($FolderOption.DisplayName)"
+    ) -ForegroundColor Gray
+
+    Write-Host (
+      "  Documentos encontrados: $($documents.Count)"
+    ) -ForegroundColor Gray
+
+    Write-Host (
+      "  " + ("-" * 72)
+    ) -ForegroundColor DarkGray
+
+    for (
+      $index = 0
+      $index -lt $documents.Count
+      $index++
+    ) {
+
+      $document =
+      $documents[$index]
+
+      $number =
+      $index + 1
+
+      $sourceCode =
+      [string]$document.SourceCode
+
+      if (
+        [string]::IsNullOrWhiteSpace(
+          $sourceCode
+        )
+      ) {
+        $sourceCode =
+        [string]$document.File.BaseName
+      }
+
+      $documentTitle =
+      [string]$document.DocumentTitle
+
+      if (
+        [string]::IsNullOrWhiteSpace(
+          $documentTitle
+        )
+      ) {
+        $documentTitle =
+        "sem titulo"
+      }
+
+      $revisionDisplay =
+      [string]$document.ClientRevision
+
+      if (
+        [string]::IsNullOrWhiteSpace(
+          $revisionDisplay
+        )
+      ) {
+        $revisionDisplay =
+        "nao informada"
+      }
+
+      $stateDisplay =
+      [string]$document.PdmState
+
+      if (
+        [string]::IsNullOrWhiteSpace(
+          $stateDisplay
+        )
+      ) {
+        $stateDisplay =
+        "nao informado"
+      }
+
+      $stateColor =
+      [System.ConsoleColor]::Yellow
+
+      if ($stateDisplay -ieq "Aprovado") {
+        $stateColor =
+        [System.ConsoleColor]::Green
+      }
+      elseif ($stateDisplay -ieq "Obsoleto") {
+        $stateColor =
+        [System.ConsoleColor]::Red
+      }
+      elseif ($stateDisplay -ieq "Verificado") {
+        $stateColor =
+        [System.ConsoleColor]::Cyan
+      }
+
+      Write-Host (
+        "  [{0}] {1}" -f
+        $number,
+        $sourceCode
+      ) -ForegroundColor White
+
+      Write-Host (
+        "       Nome:    {0}" -f
+        $documentTitle
+      ) -ForegroundColor Gray
+
+      Write-Host (
+        "       Revisao: {0}" -f
+        $revisionDisplay
+      ) -ForegroundColor Gray
+
+      $revisionSourceDisplay =
+      [string]$currentMatch.RevisionSource
+
+      if (
+        [string]::IsNullOrWhiteSpace(
+          $revisionSourceDisplay
+        )
+      ) {
+        $revisionSourceDisplay =
+        "nome do arquivo"
+      }
+
+      Write-SearchResultLine (
+        "       Fonte:   {0}" -f
+        $revisionSourceDisplay
+      ) -Color DarkGray
+
+      Write-Host (
+        "       Estado:  {0}" -f
+        $stateDisplay
+      ) -ForegroundColor $stateColor
+
+      if ($Details) {
+
+        Write-Host (
+          "       PDF:     {0}" -f
+          $document.File.Name
+        ) -ForegroundColor DarkGray
+
+        Write-Host (
+          "       Local:   {0}" -f
+          $document.File.FullName
+        ) -ForegroundColor DarkGray
+      }
+
+      Write-Host ""
+    }
+
+    Write-Host (
+      "  Selecione os documentos que deseja importar."
+    ) -ForegroundColor Cyan
+
+    Write-Host (
+      "  Exemplos: 1 | 1,3,5 | 1-5 | T | *"
+    ) -ForegroundColor DarkGray
+
+    if ($AllowBack) {
+      Write-Host (
+        "  Digite V para voltar para a lista de pastas"
+      ) -ForegroundColor DarkGray
+    }
+
+    $selectionText =
+    Read-Host (
+      "Digite os numeros dos documentos"
+    )
+
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $selectionText
+      )
+    ) {
+      Write-Warn "Nenhum documento foi selecionado."
+      continue
+    }
+
+    $selectionText =
+    $selectionText.Trim()
+
+    if (
+      $AllowBack -and
+      (
+        $selectionText -ieq "V" -or
+        $selectionText -ieq "VOLTAR"
+      )
+    ) {
+      return $null
+    }
+
+    $selectedNumbers =
+    [System.Collections.Generic.List[int]]::new()
+
+    $knownNumbers =
+    [System.Collections.Generic.HashSet[int]]::new()
+
+    $selectionIsValid =
+    $true
+
+    if (
+      $selectionText -ieq "T" -or
+      $selectionText -ieq "TODOS" -or
+      $selectionText -eq "*"
+    ) {
+
+      for (
+        $number = 1
+        $number -le $documents.Count
+        $number++
+      ) {
+
+        if ($knownNumbers.Add($number)) {
+          $selectedNumbers.Add($number)
+        }
+      }
+    }
+    else {
+
+      foreach (
+        $selectionPart in (
+          $selectionText -split ","
+        )
+      ) {
+
+        $currentPart =
+        ([string]$selectionPart).Trim()
+
+        if (
+          [string]::IsNullOrWhiteSpace(
+            $currentPart
+          )
+        ) {
+          continue
+        }
+
+        if (
+          $currentPart -match
+          '^(?<Start>\d+)\s*-\s*(?<End>\d+)$'
+        ) {
+
+          $rangeStart =
+          [int]$Matches["Start"]
+
+          $rangeEnd =
+          [int]$Matches["End"]
+
+          if (
+            $rangeStart -lt 1 -or
+            $rangeEnd -gt $documents.Count -or
+            $rangeStart -gt $rangeEnd
+          ) {
+
+            Write-Warn (
+              "Intervalo invalido: '$currentPart'. " +
+              "Use valores entre 1 e $($documents.Count)."
+            )
+
+            $selectionIsValid =
+            $false
+
+            break
+          }
+
+          for (
+            $rangeNumber = $rangeStart
+            $rangeNumber -le $rangeEnd
+            $rangeNumber++
+          ) {
+
+            if ($knownNumbers.Add($rangeNumber)) {
+              $selectedNumbers.Add($rangeNumber)
+            }
+          }
+
+          continue
+        }
+
+        $selectedNumber =
+        0
+
+        $validNumber =
+        [System.Int32]::TryParse(
+          $currentPart,
+          [ref]$selectedNumber
+        )
+
+        if (
+          -not $validNumber -or
+          $selectedNumber -lt 1 -or
+          $selectedNumber -gt $documents.Count
+        ) {
+
+          Write-Warn (
+            "Selecao invalida: '$currentPart'. " +
+            "Digite numeros entre 1 e $($documents.Count)."
+          )
+
+          $selectionIsValid =
+          $false
+
+          break
+        }
+
+        if ($knownNumbers.Add($selectedNumber)) {
+          $selectedNumbers.Add($selectedNumber)
+        }
+      }
+    }
+
+    if (-not $selectionIsValid) {
+      continue
+    }
+
+    if ($selectedNumbers.Count -eq 0) {
+      Write-Warn "Nenhum documento valido foi selecionado."
+      continue
+    }
+
+    $selectedDocuments =
+    [System.Collections.Generic.List[object]]::new()
+
+    Write-AnimatedLine ""
+
+    foreach (
+      $selectedNumber in (
+        $selectedNumbers |
+          Sort-Object
+      )
+    ) {
+
+      $selectedDocument =
+      $documents[$selectedNumber - 1]
+
+      $selectedDocuments.Add(
+        $selectedDocument
+      )
+
+      Write-Success (
+        "PDF selecionado [$selectedNumber]: " +
+        $selectedDocument.File.Name
+      )
+    }
+
+    Write-AnimatedLine ""
+
+    Write-Host (
+      "  Documentos selecionados: " +
+      $selectedDocuments.Count
+    ) -ForegroundColor Cyan
+
+    return $selectedDocuments.ToArray()
+  }
+}
+function Select-DcaPdfsByFolder {
   param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
@@ -1050,9 +2448,10 @@ function Select-DcaPdfsByFolder {
 
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
-    [string]$FolderSearch
-  )
+    [string]$FolderSearch,
 
+    [switch]$ListFolderItems
+  )
   if (-not (
       Test-Path `
         -LiteralPath $FolderPath `
@@ -1376,7 +2775,14 @@ function Select-DcaPdfsByFolder {
         }
       )
     }
+    foreach ($folderDocument in $folderDocuments) {
 
+      Update-DcaMatchRevisionFromCard `
+        -Match $folderDocument
+
+      Update-DcaMatchDescriptionFromCard `
+        -Match $folderDocument
+    }
     # Pastas sem PDFs diretamente dentro delas não são
     # apresentadas como opções.
     if ($folderDocuments.Count -eq 0) {
@@ -1449,7 +2855,6 @@ function Select-DcaPdfsByFolder {
   # ====================================================
   # Pasta exata e unica: seleciona automaticamente
   # ====================================================
-
   if (
     -not $usesWildcard -and
     $folderOptions.Count -eq 1
@@ -1485,9 +2890,17 @@ function Select-DcaPdfsByFolder {
       "  Outros:     $($selectedFolder.OtherCount)"
     ) -ForegroundColor Yellow
 
+    if ($ListFolderItems) {
+
+      $selectedDocuments =
+      Select-DcaDocumentsFromFolder `
+        -FolderOption $selectedFolder
+
+      return @($selectedDocuments)
+    }
+
     return $selectedFolder.Documents
   }
-
   # ====================================================
   # Mostrar resumo das pastas para selecao
   # ====================================================
@@ -1532,26 +2945,45 @@ function Select-DcaPdfsByFolder {
 
     Write-Host ""
   }
+  if ($ListFolderItems) {
 
-  Write-Host (
-    "  Selecione uma ou mais pastas."
-  ) -ForegroundColor Cyan
+    Write-Host (
+      "  Selecione a pasta que deseja abrir."
+    ) -ForegroundColor Cyan
 
-  Write-Host (
-    "  Exemplos: 1 | 1,2 | 1-3 | T"
-  ) -ForegroundColor DarkGray
+    Write-Host (
+      "  Depois da selecao, os documentos da pasta serao listados."
+    ) -ForegroundColor DarkGray
+  }
+  else {
 
+    Write-Host (
+      "  Selecione uma ou mais pastas."
+    ) -ForegroundColor Cyan
+
+    Write-Host (
+      "  Exemplos: 1 | 1,2 | 1-3 | T"
+    ) -ForegroundColor DarkGray
+  }
   # ====================================================
   # Ler a selecao das pastas
   # ====================================================
 
   while ($true) {
+    if ($ListFolderItems) {
 
-    $selectionText =
-    Read-Host (
-      "Digite o numero da pasta, varios numeros ou T para todas"
-    )
+      $selectionText =
+      Read-Host (
+        "Digite o numero da pasta que deseja abrir"
+      )
+    }
+    else {
 
+      $selectionText =
+      Read-Host (
+        "Digite o numero da pasta, varios numeros ou T para todas"
+      )
+    }
     if (
       [string]::IsNullOrWhiteSpace(
         $selectionText
@@ -1691,7 +3123,50 @@ function Select-DcaPdfsByFolder {
 
       continue
     }
+    if (
+      $ListFolderItems -and
+      $selectedNumbers.Count -ne 1
+    ) {
 
+      Write-Warn (
+        "No modo de visualizacao de itens, " +
+        "selecione somente uma pasta por vez."
+      )
+
+      continue
+    }
+
+    if ($ListFolderItems) {
+
+      $selectedFolderNumber =
+      $selectedNumbers[0]
+
+      $selectedFolder =
+      $folderOptions[$selectedFolderNumber - 1]
+
+      Write-AnimatedLine ""
+
+      Write-Success (
+        "Pasta selecionada [$selectedFolderNumber]: " +
+        "\$($selectedFolder.RelativePath)"
+      )
+
+      $selectedDocuments =
+      Select-DcaDocumentsFromFolder `
+        -FolderOption $selectedFolder `
+        -AllowBack
+
+      if ($null -eq $selectedDocuments) {
+        continue
+      }
+
+      if (@($selectedDocuments).Count -eq 0) {
+        Write-Warn "Nenhum documento foi selecionado."
+        continue
+      }
+
+      return @($selectedDocuments)
+    }
     # ==================================================
     # Juntar os documentos das pastas selecionadas
     # ==================================================
@@ -2001,7 +3476,14 @@ function Select-DcaPdfByCode {
       )
     }
   }
+  foreach ($matchingFile in $matchingFiles) {
 
+    Update-DcaMatchRevisionFromCard `
+      -Match $matchingFile
+
+    Update-DcaMatchDescriptionFromCard `
+      -Match $matchingFile
+  }
   [int]$matchCount = $matchingFiles.Count
 
   if ($matchCount -eq 0) {
@@ -2463,6 +3945,47 @@ function Get-DcaSearchCodeList {
 
   return $codes.ToArray()
 }
+function Get-DcaFolderSearchMode {
+
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$SearchText
+  )
+
+  $normalizedSearch =
+  $SearchText.Trim()
+
+  if (
+    $normalizedSearch.StartsWith("\\") -or
+    $normalizedSearch.StartsWith("//")
+  ) {
+
+    return [PSCustomObject]@{
+      IsFolderSearch = $true
+      ListFolderItems = $true
+      SearchText = $normalizedSearch.Substring(2).Trim()
+    }
+  }
+
+  if (
+    $normalizedSearch.StartsWith("\") -or
+    $normalizedSearch.StartsWith("/")
+  ) {
+
+    return [PSCustomObject]@{
+      IsFolderSearch = $true
+      ListFolderItems = $false
+      SearchText = $normalizedSearch.Substring(1).Trim()
+    }
+  }
+
+  return [PSCustomObject]@{
+    IsFolderSearch = $false
+    ListFolderItems = $false
+    SearchText = $normalizedSearch
+  }
+}
 function Test-DcaFolderSearch {
 
   param(
@@ -2477,10 +4000,11 @@ function Test-DcaFolderSearch {
     return $false
   }
 
-  return (
-    $SearchText.Trim().StartsWith("\") -or
-    $SearchText.Trim().StartsWith("/")
-  )
+  $folderSearchMode =
+  Get-DcaFolderSearchMode `
+    -SearchText $SearchText
+
+  return [bool]$folderSearchMode.IsFolderSearch
 }
 function Get-DcaFolderSearchPattern {
 
@@ -2490,8 +4014,19 @@ function Get-DcaFolderSearchPattern {
     [string]$SearchText
   )
 
+  $folderSearchMode =
+  Get-DcaFolderSearchMode `
+    -SearchText $SearchText
+
+  if (-not $folderSearchMode.IsFolderSearch) {
+    throw (
+      "A pesquisa informada nao e uma pesquisa de pasta: " +
+      "'$SearchText'."
+    )
+  }
+
   $folderPattern =
-  $SearchText.Trim().TrimStart("\", "/").Trim()
+  ([string]$folderSearchMode.SearchText).Trim()
 
   if (
     [string]::IsNullOrWhiteSpace(
@@ -2508,7 +4043,6 @@ function Get-DcaFolderSearchPattern {
     )
   }
 
-  # Permite * e ?, mas bloqueia caracteres inadequados.
   if ($folderPattern -match '[:"<>\|]') {
     throw (
       "O padrao de pasta possui caracteres invalidos: " +
@@ -2517,6 +4051,505 @@ function Get-DcaFolderSearchPattern {
   }
 
   return $folderPattern.Replace("/", "\")
+}
+function Get-DcaConfiguredEnvironmentName {
+
+  if (
+    -not [string]::IsNullOrWhiteSpace(
+      $script:TeamcenterEnvironment
+    )
+  ) {
+    return [string]$script:TeamcenterEnvironment
+  }
+
+  $configuredValue =
+  ([string]$env:DCA_TC_ENV).Trim()
+
+  if ($configuredValue -ieq "Teste") {
+    return "Teste"
+  }
+
+  if ($configuredValue -ieq "Processo") {
+    return "Processo"
+  }
+
+  throw (
+    "DCA_TC_ENV nao foi configurado. " +
+    "Use Teste ou Processo."
+  )
+}
+
+function Show-DcaImportPlan {
+
+  param(
+    [Parameter(Mandatory = $true)]
+    [object[]]$Documents
+  )
+
+  $environmentName =
+  Get-DcaConfiguredEnvironmentName
+
+  $serverUrl =
+  [string]$env:DCA_TC_TEST_URL
+
+  $environmentColor =
+  [System.ConsoleColor]::Cyan
+
+  if ($environmentName -eq "Processo") {
+
+    $serverUrl =
+    [string]$env:DCA_TC_PROCESS_URL
+
+    $environmentColor =
+    [System.ConsoleColor]::Yellow
+  }
+
+  $approvedTemplate =
+  [string]$env:DCA_TC_APPROVED_WORKFLOW
+
+  $obsoleteTemplate =
+  [string]$env:DCA_TC_OBSOLETE_WORKFLOW
+
+  # ====================================================
+  # Montar o plano de cada documento
+  # ====================================================
+
+  $planItems =
+  [System.Collections.Generic.List[object]]::new()
+
+  foreach ($document in $Documents) {
+
+    $pdmState =
+    ([string]$document.PdmState).Trim()
+
+    $workflowLabel =
+    $null
+
+    $workflowTemplate =
+    $null
+
+    if ($pdmState -ieq "Aprovado") {
+
+      $workflowLabel =
+      "aprovacao"
+
+      $workflowTemplate =
+      $approvedTemplate
+    }
+    elseif ($pdmState -ieq "Obsoleto") {
+
+      $workflowLabel =
+      "obsolescencia"
+
+      $workflowTemplate =
+      $obsoleteTemplate
+    }
+
+    $configuration =
+    $null
+
+    $configurationError =
+    $null
+
+    try {
+
+      $configuration =
+      Get-DcaTypeConfiguration `
+        -DocumentType $document.DocumentType `
+        -ClientRevision $document.ClientRevision `
+        -TeamcenterEnvironment $environmentName
+    }
+    catch {
+
+      $configurationError =
+      $_.Exception.Message
+    }
+
+    $teamcenterRevisionId =
+    "?"
+
+    $revisionText =
+    ""
+
+    if ($null -ne $configuration) {
+
+      $teamcenterRevisionId =
+      [string]$configuration.TeamcenterRevisionId
+
+      $revisionParts =
+      @()
+
+      foreach (
+        $propertyName in (
+          $configuration.RevisionProperties.Keys |
+            Sort-Object
+        )
+      ) {
+
+        $revisionParts +=
+        (
+          "{0}={1}" -f
+          $propertyName,
+          $configuration.RevisionProperties[$propertyName]
+        )
+      }
+
+      $revisionText =
+      $revisionParts -join "; "
+    }
+
+    $planItems.Add(
+      [PSCustomObject]@{
+        ItemCode = ([string]$document.ItemCode).Trim().ToUpper()
+        ItemName = [string]$document.ItemName
+        DocumentType = [string]$document.DocumentType
+        DisplayType = [string]$document.DisplayType
+        PdmState = $pdmState
+        Configuration = $configuration
+        ConfigurationError = $configurationError
+        TeamcenterRevisionId = $teamcenterRevisionId
+        RevisionText = $revisionText
+        WorkflowLabel = $workflowLabel
+        WorkflowTemplate = $workflowTemplate
+        FilePath = [string]$document.SelectedPdf.File.FullName
+      }
+    )
+  }
+
+  # ====================================================
+  # Cabecalho
+  # ====================================================
+
+  Write-Section -Title "Log antes da importacao"
+
+  Write-Host ""
+
+  Write-Host (
+    "  Nada foi criado ainda. Confira as informacoes abaixo."
+  ) -ForegroundColor DarkGray
+
+  Write-Host ""
+
+  Write-Host (
+    "  Ambiente:   {0}" -f $environmentName
+  ) -ForegroundColor $environmentColor
+
+  Write-Host (
+    "  Servidor:   {0}" -f $serverUrl
+  ) -ForegroundColor Gray
+
+  Write-Host (
+    "  Documentos: {0}" -f $planItems.Count
+  ) -ForegroundColor White
+
+  # ====================================================
+  # Configuracao por tipo de documento
+  # ====================================================
+
+  Write-Host ""
+  Write-Host "  Configuracao por tipo:" -ForegroundColor Cyan
+
+  foreach (
+    $typeGroup in @(
+      $planItems |
+        Group-Object -Property DocumentType
+    )
+  ) {
+
+    $groupLabel =
+    [string]$typeGroup.Group[0].DisplayType
+
+    Write-Host (
+      "    {0}  ({1} documento(s))" -f
+      $groupLabel,
+      $typeGroup.Count
+    ) -ForegroundColor White
+
+    $sampleItem =
+    $typeGroup.Group |
+      Where-Object {
+      $null -ne $_.Configuration
+    } |
+      Select-Object -First 1
+
+    if ($null -eq $sampleItem) {
+
+      Write-Host (
+        "      Configuracao invalida. Veja os erros abaixo."
+      ) -ForegroundColor Red
+
+      continue
+    }
+
+    $typeConfiguration =
+    $sampleItem.Configuration
+
+    $clientText =
+    "nenhum"
+
+    if (
+      -not [string]::IsNullOrWhiteSpace(
+        [string]$typeConfiguration.ClientProperty
+      ) -and
+      -not [string]::IsNullOrWhiteSpace(
+        [string]$typeConfiguration.ClientValue
+      )
+    ) {
+
+      $clientText =
+      "{0} = {1}" -f
+      $typeConfiguration.ClientProperty,
+      $typeConfiguration.ClientValue
+    }
+
+    Write-Host (
+      "      Tipo do Item:    {0}" -f
+      $typeConfiguration.ItemType
+    ) -ForegroundColor Gray
+
+    Write-Host (
+      "      Tipo da Revisao: {0}" -f
+      $typeConfiguration.RevisionType
+    ) -ForegroundColor Gray
+
+    Write-Host (
+      "      Cliente:         {0}" -f
+      $clientText
+    ) -ForegroundColor Gray
+  }
+
+  # ====================================================
+  # Workflows
+  # ====================================================
+
+  $approvedCount =
+  @(
+    $planItems |
+      Where-Object {
+      $_.WorkflowLabel -eq "aprovacao"
+    }
+  ).Count
+
+  $obsoleteCount =
+  @(
+    $planItems |
+      Where-Object {
+      $_.WorkflowLabel -eq "obsolescencia"
+    }
+  ).Count
+
+  $withoutWorkflowCount =
+  $planItems.Count -
+  $approvedCount -
+  $obsoleteCount
+
+  $approvedText =
+  $approvedTemplate
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $approvedText
+    )
+  ) {
+    $approvedText =
+    "NAO CONFIGURADO"
+  }
+
+  $obsoleteText =
+  $obsoleteTemplate
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $obsoleteText
+    )
+  ) {
+    $obsoleteText =
+    "NAO CONFIGURADO"
+  }
+
+  Write-Host ""
+  Write-Host "  Workflows:" -ForegroundColor Cyan
+
+  Write-Host (
+    "    Aprovacao:     {0,3}  ({1})" -f
+    $approvedCount,
+    $approvedText
+  ) -ForegroundColor Green
+
+  Write-Host (
+    "    Obsolescencia: {0,3}  ({1})" -f
+    $obsoleteCount,
+    $obsoleteText
+  ) -ForegroundColor Red
+
+  Write-Host (
+    "    Sem workflow:  {0,3}" -f
+    $withoutWorkflowCount
+  ) -ForegroundColor Yellow
+
+  # ====================================================
+  # Lista de documentos
+  # ====================================================
+
+  Write-Host ""
+  Write-Host "  Documentos:" -ForegroundColor Cyan
+
+  $errorCount =
+  0
+
+  $missingWorkflowCount =
+  0
+
+  for (
+    $index = 0
+    $index -lt $planItems.Count
+    $index++
+  ) {
+
+    $planItem =
+    $planItems[$index]
+
+    $workflowText =
+    "sem workflow"
+
+    $lineColor =
+    [System.ConsoleColor]::Gray
+
+    if ($null -ne $planItem.WorkflowLabel) {
+
+      if (
+        [string]::IsNullOrWhiteSpace(
+          $planItem.WorkflowTemplate
+        )
+      ) {
+
+        $workflowText =
+        "workflow de $($planItem.WorkflowLabel) NAO CONFIGURADO"
+
+        $lineColor =
+        [System.ConsoleColor]::Yellow
+
+        $missingWorkflowCount++
+      }
+      elseif ($planItem.WorkflowLabel -eq "aprovacao") {
+
+        $workflowText =
+        "workflow de aprovacao"
+
+        $lineColor =
+        [System.ConsoleColor]::Green
+      }
+      else {
+
+        $workflowText =
+        "workflow de obsolescencia"
+
+        $lineColor =
+        [System.ConsoleColor]::Red
+      }
+    }
+
+    if ($null -ne $planItem.ConfigurationError) {
+
+      $lineColor =
+      [System.ConsoleColor]::Red
+
+      $errorCount++
+    }
+
+    $stateText =
+    $planItem.PdmState
+
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $stateText
+      )
+    ) {
+      $stateText =
+      "sem estado"
+    }
+
+    Write-Host (
+      "  [{0}] {1} | rev {2} | {3} | {4}" -f
+      ($index + 1),
+      $planItem.ItemCode,
+      $planItem.TeamcenterRevisionId,
+      $stateText,
+      $workflowText
+    ) -ForegroundColor $lineColor
+
+    if ($null -ne $planItem.ConfigurationError) {
+
+      Write-Host (
+        "       ERRO: {0}" -f
+        $planItem.ConfigurationError
+      ) -ForegroundColor Red
+    }
+
+    if ($Details) {
+
+      Write-Host (
+        "       Nome:     {0}" -f
+        $planItem.ItemName
+      ) -ForegroundColor DarkGray
+
+      if (
+        -not [string]::IsNullOrWhiteSpace(
+          $planItem.RevisionText
+        )
+      ) {
+
+        Write-Host (
+          "       Revisao:  {0}" -f
+          $planItem.RevisionText
+        ) -ForegroundColor DarkGray
+      }
+
+      if (
+        -not [string]::IsNullOrWhiteSpace(
+          $planItem.WorkflowTemplate
+        )
+      ) {
+
+        Write-Host (
+          "       Template: {0}" -f
+          $planItem.WorkflowTemplate
+        ) -ForegroundColor DarkGray
+      }
+
+      Write-Host (
+        "       Arquivo:  {0}" -f
+        $planItem.FilePath
+      ) -ForegroundColor DarkGray
+    }
+  }
+
+  # ====================================================
+  # Avisos finais
+  # ====================================================
+
+  if ($errorCount -gt 0) {
+
+    Write-Host ""
+
+    Write-Warn (
+      "$errorCount documento(s) com erro de configuracao " +
+      "vao falhar na criacao."
+    )
+  }
+
+  if ($missingWorkflowCount -gt 0) {
+
+    Write-Host ""
+
+    Write-Warn (
+      "$missingWorkflowCount documento(s) com workflow nao " +
+      "configurado no .env. O Item e o PDF serao criados " +
+      "sem workflow."
+    )
+  }
+
+  Write-Host ""
 }
 function Invoke-DcaMain {
 
@@ -2536,11 +4569,10 @@ function Invoke-DcaMain {
       $searchInput
     )
   ) {
-
     $searchInput =
     Read-Host (
       "Digite codigos separados por virgula; " +
-      "use \ para pesquisar pastas"
+      "use \ para pesquisar pastas ou \\ para abrir os itens"
     )
   }
 
@@ -2591,17 +4623,18 @@ function Invoke-DcaMain {
     ) -ForegroundColor Cyan
 
     try {
-      $isFolderSearch =
-      Test-DcaFolderSearch `
+      $folderSearchMode =
+      Get-DcaFolderSearchMode `
         -SearchText $currentSearchCode
 
-      if ($isFolderSearch) {
+      if ($folderSearchMode.IsFolderSearch) {
 
         $selectedPdfs =
         @(
           Select-DcaPdfsByFolder `
             -FolderPath $rootPath `
-            -FolderSearch $currentSearchCode
+            -FolderSearch $currentSearchCode `
+            -ListFolderItems:$folderSearchMode.ListFolderItems
         )
       }
       else {
@@ -2613,7 +4646,6 @@ function Invoke-DcaMain {
             -Code $currentSearchCode
         )
       }
-
       if ($selectedPdfs.Count -eq 0) {
 
         throw (
@@ -2801,7 +4833,6 @@ function Invoke-DcaMain {
     [string]$ItemName
 
     if (
-      $documentType -eq "NormaExterna" -and
       -not [string]::IsNullOrWhiteSpace(
         $documentTitle
       )
@@ -2862,6 +4893,8 @@ function Invoke-DcaMain {
         SelectedPdf = $selectedPdf
         ItemCode = $itemCodeFromFile
         ItemName = $itemNameText.Trim()
+        CardDescription = [string]$selectedPdf.CardDescription
+        DescriptionSource = [string]$selectedPdf.DescriptionSource
         ClientRevision = $clientRevision
         DocumentType = $documentType
         DisplayType = $selectedPdf.TypeDisplayName
@@ -2951,6 +4984,8 @@ function Invoke-DcaMain {
   }
   if ($Preview) {
 
+    Show-DcaImportPlan -Documents $preparedDocuments.ToArray()
+
     Write-AnimatedLine ""
     Write-Success "Preview apenas. Nada foi criado no Teamcenter."
 
@@ -2997,6 +5032,8 @@ function Invoke-DcaMain {
   # ====================================================
   # Confirmacao geral do lote
   # ====================================================
+
+  Show-DcaImportPlan -Documents $preparedDocuments.ToArray()
 
   Write-Section `
     -Title "Criar itens e importar documentos"
@@ -3293,81 +5330,81 @@ function Invoke-DcaMain {
       $true
 
       $pdmState =
-([string]$document.PdmState).Trim()
+      ([string]$document.PdmState).Trim()
 
-$workflowTemplate =
-$null
+      $workflowTemplate =
+      $null
 
-$workflowLabel =
-$null
+      $workflowLabel =
+      $null
 
-if ($pdmState -ieq "Aprovado") {
+      if ($pdmState -ieq "Aprovado") {
 
-  $workflowTemplate =
-  [string]$env:DCA_TC_APPROVED_WORKFLOW
+        $workflowTemplate =
+        [string]$env:DCA_TC_APPROVED_WORKFLOW
 
-  $workflowLabel =
-  "aprovacao"
-}
-elseif ($pdmState -ieq "Obsoleto") {
+        $workflowLabel =
+        "aprovacao"
+      }
+      elseif ($pdmState -ieq "Obsoleto") {
 
-  $workflowTemplate =
-  [string]$env:DCA_TC_OBSOLETE_WORKFLOW
+        $workflowTemplate =
+        [string]$env:DCA_TC_OBSOLETE_WORKFLOW
 
-  $workflowLabel =
-  "obsolescencia"
-}
+        $workflowLabel =
+        "obsolescencia"
+      }
 
-if ($null -eq $workflowLabel) {
+      if ($null -eq $workflowLabel) {
 
-  if (
-    [string]::IsNullOrWhiteSpace(
-      $pdmState
-    )
-  ) {
+        if (
+          [string]::IsNullOrWhiteSpace(
+            $pdmState
+          )
+        ) {
 
-    Write-Info (
-      "Estado do PDM nao identificado. " +
-      "Nenhum workflow sera iniciado."
-    )
-  }
-  else {
+          Write-Info (
+            "Estado do PDM nao identificado. " +
+            "Nenhum workflow sera iniciado."
+          )
+        }
+        else {
 
-    Write-Info (
-      "Estado no PDM: '$pdmState'. " +
-      "Nenhum workflow configurado para esse estado."
-    )
-  }
-}
-elseif (
-  [string]::IsNullOrWhiteSpace(
-    $workflowTemplate
-  )
-) {
+          Write-Info (
+            "Estado no PDM: '$pdmState'. " +
+            "Nenhum workflow configurado para esse estado."
+          )
+        }
+      }
+      elseif (
+        [string]::IsNullOrWhiteSpace(
+          $workflowTemplate
+        )
+      ) {
 
-  Write-Warn (
-    "Workflow de $workflowLabel nao configurado no .env. " +
-    "O Item e o PDF foram mantidos sem workflow."
-  )
-}
-else {
+        Write-Warn (
+          "Workflow de $workflowLabel nao configurado no .env. " +
+          "O Item e o PDF foram mantidos sem workflow."
+        )
+      }
+      else {
 
-  Write-Info (
-    "Estado no PDM: '$pdmState'. " +
-    "Iniciando workflow de $workflowLabel..."
-  )
+        Write-Info (
+          "Estado no PDM: '$pdmState'. " +
+          "Iniciando workflow de $workflowLabel..."
+        )
 
-  Start-TeamcenterWorkflow `
-    -WorkflowTemplate $workflowTemplate `
-    -Revision $teamcenterRevision
+        Start-TeamcenterWorkflow `
+          -WorkflowTemplate $workflowTemplate `
+          -Revision $teamcenterRevision
 
-  $workflowStarted =
-  $true
+        $workflowStarted =
+        $true
 
-  Write-Success (
-    "Workflow de $workflowLabel solicitado."
-  )
-}
+        Write-Success (
+          "Workflow de $workflowLabel solicitado."
+        )
+      }
 
       # ==================================================
       # 7. Registrar sucesso
@@ -3389,6 +5426,60 @@ else {
       )
     }
     catch {
+
+      $errorRecord =
+      $_
+
+      $errorLine =
+      $errorRecord.InvocationInfo.ScriptLineNumber
+
+      $errorFile =
+      [string]$errorRecord.InvocationInfo.ScriptName
+
+      $errorCode =
+      [string]$errorRecord.InvocationInfo.Line
+
+      $errorStack =
+      [string]$errorRecord.ScriptStackTrace
+
+      Write-Host ""
+
+      Write-Host (
+        "  Diagnostico tecnico da falha:"
+      ) -ForegroundColor Yellow
+
+      Write-Host (
+        "    Arquivo: $errorFile"
+      ) -ForegroundColor DarkGray
+
+      Write-Host (
+        "    Linha:   $errorLine"
+      ) -ForegroundColor DarkGray
+
+      Write-Host (
+        "    Comando: $($errorCode.Trim())"
+      ) -ForegroundColor DarkGray
+
+      Write-Host (
+        "    Erro:    $($errorRecord.Exception.Message)"
+      ) -ForegroundColor Red
+
+      if (
+        -not [string]::IsNullOrWhiteSpace(
+          $errorStack
+        )
+      ) {
+
+        Write-Host (
+          "    Stack:"
+        ) -ForegroundColor DarkGray
+
+        Write-Host (
+          $errorStack
+        ) -ForegroundColor DarkGray
+      }
+
+      Write-Host ""
 
       $batchResults.Add(
         [PSCustomObject]@{

@@ -417,30 +417,41 @@ function Import-TeamcenterPdf {
     throw "A revisao do item '$ItemCode' nao foi fornecida."
   }
 
-  if (-not (Test-Path -LiteralPath $FilePath -PathType Leaf)) {
+  if (-not (
+      Test-Path `
+        -LiteralPath $FilePath `
+        -PathType Leaf
+    )) {
+
     throw "PDF nao encontrado em '$FilePath'."
   }
 
-  if ([System.IO.Path]::GetExtension($FilePath) -ine ".pdf") {
+  if (
+    [System.IO.Path]::GetExtension(
+      $FilePath
+    ) -ine ".pdf"
+  ) {
+
     throw "O arquivo informado nao possui extensao PDF."
   }
 
-  $revisionBaseObject = $Revision.PSObject.BaseObject
+  $revisionBaseObject =
+  $Revision.PSObject.BaseObject
 
   if ($null -ne $revisionBaseObject) {
     $Revision = $revisionBaseObject
   }
 
-  $revisionTypeName = $Revision.GetType().FullName
+  $revisionTypeName =
+  $Revision.GetType().FullName
 
   if ($revisionTypeName -notmatch "ItemRevision") {
+
     throw (
       "A revisao recebida nao e um ItemRevision valido. " +
       "Tipo recebido: '$revisionTypeName'."
     )
   }
-
-  $importMethod = Get-TeamcenterMethod -MethodName "ImportarPDF" -ParameterCount 5
 
   $datasetId =
   $ItemCode.Trim()
@@ -453,6 +464,7 @@ function Import-TeamcenterPdf {
       $datasetId
     )
   ) {
+
     throw "DatasetId ficou vazio para '$ItemCode'."
   }
 
@@ -461,8 +473,14 @@ function Import-TeamcenterPdf {
       $datasetRevisionClean
     )
   ) {
+
     throw "DatasetRev ficou vazio para '$ItemCode'."
   }
+
+  $importMethod =
+  Get-TeamcenterMethod `
+    -MethodName "ImportarPDF" `
+    -ParameterCount 5
 
   $invokeArguments =
   New-Object "System.Object[]" 5
@@ -482,19 +500,9 @@ function Import-TeamcenterPdf {
   $invokeArguments[4] =
   [bool]$true
 
-  $importResult =
-  Write-Host (
-    "  Arquivo: $FilePath"
-  ) -ForegroundColor DarkGray
-
-  Write-Host (
-    "  Tipo da revisao: $revisionTypeName"
-  ) -ForegroundColor DarkGray
-
   try {
 
-    $importResult =
-    $importMethod.Invoke(
+    return $importMethod.Invoke(
       $null,
       $invokeArguments
     )
@@ -517,20 +525,6 @@ function Import-TeamcenterPdf {
       $realException.Message
     )
   }
-  if ($null -eq $importResult) {
-
-    Write-Host (
-      "  [WARNING] ImportarPDF retornou NULL para '$ItemCode'."
-    ) -ForegroundColor Yellow
-  }
-  else {
-
-    Write-Host (
-      "  Retorno do ImportarPDF: $importResult"
-    ) -ForegroundColor DarkGray
-  }
-
-  return $importResult
 }
 
 function Get-TeamcenterServiceErrors {
@@ -814,24 +808,116 @@ function Get-DcaTypeConfiguration {
 
   if ($DocumentType -eq "Processo") {
 
-    $processValue = ([string]$ClientRevision).Trim().ToUpper()
+    $processValueRaw =
+    ([string]$ClientRevision).Trim().ToUpperInvariant()
 
-    if (
-      $processValue -notmatch
-      '^(?<Client>[A-Z0-9-]{1,2})(?<Internal>\d)$'
-    ) {
+    $clientRevisionValue =
+    $null
+
+    $internalRevisionValue =
+    $null
+
+    $processValue =
+    $null
+
+    # Formato do cartao:
+    # AH-3, EB-2, FC-5.
+    $processRevisionWithSeparatorRegex =
+    [System.Text.RegularExpressions.Regex]::new(
+      '^([A-Z0-9]{1,2})-([0-9])$'
+    )
+
+    # Formato antigo:
+    # AH3, EB2, FC5 ou --4.
+    $processRevisionWithoutSeparatorRegex =
+    [System.Text.RegularExpressions.Regex]::new(
+      '^([A-Z0-9-]{1,2})([0-9])$'
+    )
+
+    $processRevisionWithSeparatorMatch =
+    $processRevisionWithSeparatorRegex.Match(
+      $processValueRaw
+    )
+
+    $processRevisionWithoutSeparatorMatch =
+    $processRevisionWithoutSeparatorRegex.Match(
+      $processValueRaw
+    )
+
+    if ($processRevisionWithSeparatorMatch.Success) {
+
+      $clientRevisionValue =
+      $processRevisionWithSeparatorMatch.Groups[1].Value
+
+      $internalRevisionValue =
+      $processRevisionWithSeparatorMatch.Groups[2].Value
+    }
+    elseif ($processRevisionWithoutSeparatorMatch.Success) {
+
+      $clientRevisionValue =
+      $processRevisionWithoutSeparatorMatch.Groups[1].Value
+
+      $internalRevisionValue =
+      $processRevisionWithoutSeparatorMatch.Groups[2].Value
+    }
+    else {
 
       throw (
-        "A revisao '$processValue' nao segue o padrao " +
-        "de DCA Processo: 1 ou 2 caracteres de revisao " +
-        "cliente e 1 digito interno. Exemplos: BA4, " +
-        "AA4 ou --4."
+        "A revisao '$processValueRaw' nao segue o padrao " +
+        "de DCA Processo. Formatos aceitos: AH-3, AH3, " +
+        "BA-4, BA4 ou --4."
       )
     }
 
-    $clientRevisionValue = $Matches["Client"]
+    $clientRevisionValue =
+    ([string]$clientRevisionValue).Trim().ToUpperInvariant()
 
-    $internalRevisionValue = $Matches["Internal"]
+    $internalRevisionValue =
+    ([string]$internalRevisionValue).Trim()
+
+    if (
+      $clientRevisionValue -notmatch
+      '^[A-Z0-9-]{1,2}$'
+    ) {
+
+      throw (
+        "A revisao cliente '$clientRevisionValue' e invalida."
+      )
+    }
+
+    if (
+      $internalRevisionValue -notmatch
+      '^[0-9]$'
+    ) {
+
+      throw (
+        "A revisao interna '$internalRevisionValue' e invalida. " +
+        "Era esperado exatamente um digito."
+      )
+    }
+
+    $processValue =
+    $clientRevisionValue + $internalRevisionValue
+
+    Write-Host (
+      "  Revisao recebida do cartao: " +
+      "[$processValueRaw]"
+    ) -ForegroundColor DarkGray
+
+    Write-Host (
+      "  Revisao cliente: " +
+      "[$clientRevisionValue]"
+    ) -ForegroundColor DarkGray
+
+    Write-Host (
+      "  Revisao interna: " +
+      "[$internalRevisionValue]"
+    ) -ForegroundColor DarkGray
+
+    Write-Host (
+      "  Revision ID do Teamcenter: " +
+      "[$processValue]"
+    ) -ForegroundColor Cyan
 
     return [PSCustomObject]@{
       Environment = $TeamcenterEnvironment
@@ -847,9 +933,7 @@ function Get-DcaTypeConfiguration {
       }
     }
   }
-
   if ($DocumentType -eq "NormaExterna") {
-
     return [PSCustomObject]@{
       Environment = $TeamcenterEnvironment
       ItemType = $itemType
@@ -860,7 +944,6 @@ function Get-DcaTypeConfiguration {
       RevisionProperties = @{}
     }
   }
-
   throw (
     "Tipo de documento nao suportado: " +
     "'$DocumentType'."
@@ -877,11 +960,27 @@ function Start-TeamcenterWorkflow {
     $Revision
   )
 
+  $workflowTemplateClean =
+  $WorkflowTemplate.Trim()
+
+  if (
+    :IsNullOrWhiteSpace(
+      $workflowTemplateClean
+    )
+  ) {
+
+    throw "O nome do workflow ficou vazio."
+  }
+
   if ($null -eq $Revision) {
-    throw "A revisao nao foi fornecida para iniciar o workflow."
+
+    throw (
+      "A revisao nao foi fornecida para iniciar o workflow."
+    )
   }
 
   if ($null -eq $script:TeamcenterFunctions) {
+
     throw (
       "As funcoes do Teamcenter nao foram carregadas. " +
       "Execute Connect-Teamcenter primeiro."
@@ -892,6 +991,7 @@ function Start-TeamcenterWorkflow {
   $Revision.PSObject.BaseObject
 
   if ($null -ne $revisionBaseObject) {
+
     $Revision =
     $revisionBaseObject
   }
@@ -900,6 +1000,7 @@ function Start-TeamcenterWorkflow {
   $Revision.GetType().FullName
 
   if ($revisionTypeName -notmatch "ItemRevision") {
+
     throw (
       "O objeto recebido nao e uma revisao valida. " +
       "Tipo recebido: '$revisionTypeName'."
@@ -915,16 +1016,26 @@ function Start-TeamcenterWorkflow {
     Select-Object -First 1
 
   if ($null -eq $workflowMethod) {
+
     throw (
-      "Metodo Start_Workflow com 2 parametros nao encontrado."
+      "Metodo Start_Workflow com 2 parametros " +
+      "nao encontrado no Importar GD."
     )
   }
 
-  $parameters =
+  $workflowParameters =
   $workflowMethod.GetParameters()
 
   $revisionListType =
-  $parameters[1].ParameterType
+  $workflowParameters[1].ParameterType
+
+  if ($null -eq $revisionListType) {
+
+    throw (
+      "O tipo da lista de revisoes do workflow " +
+      "nao foi identificado."
+    )
+  }
 
   $revisionList =
   [System.Activator]::CreateInstance(
@@ -932,15 +1043,23 @@ function Start-TeamcenterWorkflow {
   )
 
   if ($null -eq $revisionList) {
+
     throw (
-      "Nao foi possivel criar a lista de revisoes para o workflow."
+      "Nao foi possivel criar a lista de revisoes " +
+      "para o workflow."
     )
   }
 
   $addMethod =
-  $revisionListType.GetMethod("Add")
+  $revisionListType.GetMethods() |
+    Where-Object {
+    $_.Name -eq "Add" -and
+    $_.GetParameters().Count -eq 1
+  } |
+    Select-Object -First 1
 
   if ($null -eq $addMethod) {
+
     throw (
       "Metodo Add nao encontrado na lista de revisoes."
     )
@@ -952,19 +1071,21 @@ function Start-TeamcenterWorkflow {
     @($Revision)
   )
 
-  Write-Host (
-    "  Iniciando workflow '$WorkflowTemplate'..."
-  ) -ForegroundColor Cyan
+  $workflowArguments =
+  New-Object "System.Object[]" 2
+
+  $workflowArguments[0] =
+  [string]$workflowTemplateClean
+
+  $workflowArguments[1] =
+  $revisionList
 
   try {
 
     $null =
     $workflowMethod.Invoke(
       $null,
-      @(
-        [string]$WorkflowTemplate,
-        $revisionList
-      )
+      $workflowArguments
     )
   }
   catch {
@@ -972,23 +1093,22 @@ function Start-TeamcenterWorkflow {
     $realException =
     $_.Exception
 
-    while ($null -ne $realException.InnerException) {
+    while (
+      $null -ne $realException.InnerException
+    ) {
+
       $realException =
       $realException.InnerException
     }
 
     throw (
       "Falha ao iniciar o workflow " +
-      "'$WorkflowTemplate': " +
+      "'$workflowTemplateClean': " +
       $realException.Message
     )
   }
-
-  Write-Host (
-    "  Workflow solicitado: $WorkflowTemplate"
-  ) -ForegroundColor Green
 }
-function New-DcaCreateInputObject {
+function New-DcaCreateInputObject { function New-DcaCreateInputObject {
 
   # Create and populate an input object compatible with the SOA API.
   param(
@@ -1093,7 +1213,91 @@ function Get-DcaCreatedObjects {
 
   return $createdObjects.ToArray()
 }
+}
+function Set-DcaObjectMemberValue {
 
+  param(
+    [Parameter(Mandatory = $true)]
+    $InputObject,
+
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$MemberName,
+
+    [Parameter(Mandatory = $true)]
+    $Value
+  )
+
+  $objectType =
+  $InputObject.GetType()
+
+  $bindingFlags =
+  [System.Reflection.BindingFlags]::Public -bor
+  [System.Reflection.BindingFlags]::Instance -bor
+  [System.Reflection.BindingFlags]::IgnoreCase
+
+  $memberProperty =
+  $objectType.GetProperty(
+    $MemberName,
+    $bindingFlags
+  )
+
+  if ($null -ne $memberProperty) {
+
+    if (-not $memberProperty.CanWrite) {
+
+      throw (
+        "A propriedade '$MemberName' existe em " +
+        "'$($objectType.FullName)', mas nao permite escrita."
+      )
+    }
+
+    $memberProperty.SetValue(
+      $InputObject,
+      $Value,
+      $null
+    )
+
+    return
+  }
+
+  $memberField =
+  $objectType.GetField(
+    $MemberName,
+    $bindingFlags
+  )
+
+  if ($null -ne $memberField) {
+
+    $memberField.SetValue(
+      $InputObject,
+      $Value
+    )
+
+    return
+  }
+
+  $availableMembers =
+  @(
+    $objectType.GetMembers($bindingFlags) |
+      Where-Object {
+      $_.MemberType -eq
+      [System.Reflection.MemberTypes]::Field -or
+      $_.MemberType -eq
+      [System.Reflection.MemberTypes]::Property
+    } |
+      ForEach-Object {
+      $_.Name
+    } |
+      Sort-Object -Unique
+  )
+
+  throw (
+    "O membro '$MemberName' nao foi encontrado no tipo " +
+    "'$($objectType.FullName)'. Membros disponiveis: " +
+    ($availableMembers -join ", ")
+  )
+}
 function New-DcaTeamcenterItem {
 
   # Build and submit the item and revision creation request.
@@ -1220,13 +1424,22 @@ function New-DcaTeamcenterItem {
   }
 
   foreach ($extraKey in $revisionExtraProperties.Keys) {
-    $revisionProperties[$extraKey] = $revisionExtraProperties[$extraKey]
+    $revisionProperties[$extraKey] =
+    $revisionExtraProperties[$extraKey]
   }
 
   $revisionInput = New-DcaCreateInputObject `
     -InputType $createInputType `
     -BoName $revisionType `
     -Properties $revisionProperties
+
+  if ($null -eq $revisionInput) {
+
+    throw (
+      "revisionInput ficou NULL para o tipo " +
+      "'$revisionType'."
+    )
+  }
 
   $itemProperties = @{
     "item_id" = $candidateCode
@@ -1241,17 +1454,57 @@ function New-DcaTeamcenterItem {
     $itemProperties[$clientProperty] = $clientValue
   }
 
-  $itemInput = New-DcaCreateInputObject `
-    -InputType $createInputType `
-    -BoName $itemType `
-    -Properties $itemProperties
+  $itemInput =
+  [System.Activator]::CreateInstance(
+    $createInputType
+  )
+
+  if ($null -eq $itemInput) {
+
+    throw (
+      "Nao foi possivel criar o CreateInput do Item " +
+      "'$itemType'."
+    )
+  }
+
+  $itemInput.BoName =
+  [string]$itemType
+
+  $itemStringProperties =
+  New-Object System.Collections.Hashtable
+
+  foreach ($itemPropertyName in $itemProperties.Keys) {
+
+    $itemStringProperties[$itemPropertyName] =
+    [string]$itemProperties[$itemPropertyName]
+  }
+
+  $itemInput.StringProps =
+  $itemStringProperties
 
   $revisionInputArray = [System.Array]::CreateInstance($createInputType, 1)
   $revisionInputArray.SetValue($revisionInput, 0)
 
   $compoundInput = New-Object System.Collections.Hashtable
   $compoundInput["revision"] = $revisionInputArray
-  $itemInput.CompoundCreateInput = $compoundInput
+
+  if ($null -eq $itemInput) {
+
+    throw (
+      "itemInput ficou NULL antes de preencher " +
+      "CompoundCreateInput."
+    )
+  }
+
+  Write-Host (
+    "  Tipo tecnico do CreateInput: " +
+    $itemInput.GetType().FullName
+  ) -ForegroundColor DarkGray
+
+  Set-DcaObjectMemberValue `
+    -InputObject $itemInput `
+    -MemberName "CompoundCreateInput" `
+    -Value $compoundInput
 
   $createIn = [System.Activator]::CreateInstance($createInType)
 
@@ -1266,12 +1519,98 @@ function New-DcaTeamcenterItem {
   $createInArray.SetValue($createIn, 0)
 
   $createInSent = $createInArray.GetValue(0)
-  $revisionSent = $createInSent.Data.CompoundCreateInput["revision"].GetValue(0)
+  $revisionSent = $revisionInput
 
   if ($null -eq $revisionSent) {
     throw "revisionSent ficou NULL."
   }
+  # Valida as propriedades obrigatorias da revisao de Processo
+  # no objeto que sera enviado ao Teamcenter.
+  if ($DocumentType -eq "Processo") {
 
+    $revisionClient =
+    ([string]$revisionSent.StringProps["gd5revcliente"]).Trim()
+
+    $revisionInternal =
+    ([string]$revisionSent.StringProps["gd5revinterna"]).Trim()
+
+    $finalRevisionId =
+    ([string]$revisionSent.StringProps["item_revision_id"]).Trim()
+
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $revisionClient
+      )
+    ) {
+
+      throw (
+        "gd5revcliente ficou vazio no objeto de revisao " +
+        "antes do CreateObjects."
+      )
+    }
+
+    if (
+      $revisionClient -notmatch
+      '^[A-Z0-9-]{1,2}$'
+    ) {
+
+      throw (
+        "gd5revcliente possui valor invalido: " +
+        "'$revisionClient'."
+      )
+    }
+
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $revisionInternal
+      )
+    ) {
+
+      throw (
+        "gd5revinterna ficou vazio no objeto de revisao " +
+        "antes do CreateObjects."
+      )
+    }
+
+    if (
+      $revisionInternal -notmatch
+      '^[0-9]$'
+    ) {
+
+      throw (
+        "gd5revinterna possui valor invalido: " +
+        "'$revisionInternal'. Era esperado um digito."
+      )
+    }
+
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $finalRevisionId
+      )
+    ) {
+
+      throw (
+        "item_revision_id ficou vazio no objeto de revisao " +
+        "antes do CreateObjects."
+      )
+    }
+
+    Write-Host (
+      "  Dados da revisao que serao enviados:"
+    ) -ForegroundColor Cyan
+
+    Write-Host (
+      "    item_revision_id = '$finalRevisionId'"
+    ) -ForegroundColor Gray
+
+    Write-Host (
+      "    gd5revcliente    = '$revisionClient'"
+    ) -ForegroundColor Gray
+
+    Write-Host (
+      "    gd5revinterna    = '$revisionInternal'"
+    ) -ForegroundColor Gray
+  }
   foreach ($extraKey in $revisionExtraProperties.Keys) {
 
     if ([string]::IsNullOrWhiteSpace([string]$revisionSent.StringProps[$extraKey])) {
@@ -1292,6 +1631,7 @@ function New-DcaTeamcenterItem {
 
   $invokeArguments = New-Object "System.Object[]" 1
   $invokeArguments[0] = $createInArray
+
   $createResponse = $null
 
   try {
