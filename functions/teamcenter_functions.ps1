@@ -212,14 +212,16 @@ function Connect-Teamcenter {
       "  [AMBIENTE] Teamcenter de PROCESSO"
     ) -ForegroundColor Yellow
   }
+  if ($Details) {
 
-  Write-Host (
-    "  Servidor: $($settings.Url)"
-  ) -ForegroundColor Gray
+    Write-Host (
+      "  Servidor: $($settings.Url)"
+    ) -ForegroundColor Gray
 
-  Write-Host (
-    "  Usuario:  $($settings.User)"
-  ) -ForegroundColor Gray
+    Write-Host (
+      "  Usuario:  $($settings.User)"
+    ) -ForegroundColor Gray
+  }
 
   Write-Host ""
 
@@ -824,7 +826,7 @@ function Get-DcaTypeConfiguration {
     # AH-3, EB-2, FC-5.
     $processRevisionWithSeparatorRegex =
     [System.Text.RegularExpressions.Regex]::new(
-      '^([A-Z0-9]{1,2})-([0-9])$'
+      '^([A-Z0-9]{2})-([0-9])$'
     )
 
     # Formato antigo:
@@ -898,27 +900,28 @@ function Get-DcaTypeConfiguration {
 
     $processValue =
     $clientRevisionValue + $internalRevisionValue
+    if ($Details) {
 
-    Write-Host (
-      "  Revisao recebida do cartao: " +
-      "[$processValueRaw]"
-    ) -ForegroundColor DarkGray
+      Write-Host (
+        "  Revisao recebida do cartao: " +
+        "[$processValueRaw]"
+      ) -ForegroundColor DarkGray
 
-    Write-Host (
-      "  Revisao cliente: " +
-      "[$clientRevisionValue]"
-    ) -ForegroundColor DarkGray
+      Write-Host (
+        "  Revisao cliente: " +
+        "[$clientRevisionValue]"
+      ) -ForegroundColor DarkGray
 
-    Write-Host (
-      "  Revisao interna: " +
-      "[$internalRevisionValue]"
-    ) -ForegroundColor DarkGray
+      Write-Host (
+        "  Revisao interna: " +
+        "[$internalRevisionValue]"
+      ) -ForegroundColor DarkGray
 
-    Write-Host (
-      "  Revision ID do Teamcenter: " +
-      "[$processValue]"
-    ) -ForegroundColor Cyan
-
+      Write-Host (
+        "  Revision ID do Teamcenter: " +
+        "[$processValue]"
+      ) -ForegroundColor Cyan
+    }
     return [PSCustomObject]@{
       Environment = $TeamcenterEnvironment
       ItemType = $itemType
@@ -934,13 +937,39 @@ function Get-DcaTypeConfiguration {
     }
   }
   if ($DocumentType -eq "NormaExterna") {
+
+    $standardRevision =
+    ([string]$ClientRevision).Trim().ToUpperInvariant()
+
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $standardRevision
+      )
+    ) {
+
+      throw (
+        "A revisao da Norma Externa ficou vazia."
+      )
+    }
+
+    if (
+      $standardRevision -notmatch
+      '^[A-Z0-9.-]{1,10}$'
+    ) {
+
+      throw (
+        "A revisao da Norma Externa possui formato invalido: " +
+        "'$standardRevision'."
+      )
+    }
+
     return [PSCustomObject]@{
       Environment = $TeamcenterEnvironment
       ItemType = $itemType
       RevisionType = $revisionType
       ClientProperty = $clientProperty
       ClientValue = $clientValue
-      TeamcenterRevisionId = "000"
+      TeamcenterRevisionId = $standardRevision
       RevisionProperties = @{}
     }
   }
@@ -964,7 +993,7 @@ function Start-TeamcenterWorkflow {
   $WorkflowTemplate.Trim()
 
   if (
-    :IsNullOrWhiteSpace(
+    [string]::IsNullOrWhiteSpace(
       $workflowTemplateClean
     )
   ) {
@@ -1108,7 +1137,63 @@ function Start-TeamcenterWorkflow {
     )
   }
 }
-function New-DcaCreateInputObject { function New-DcaCreateInputObject {
+function Get-DcaIntegerPropertyNames {
+
+  # Propriedades que o Teamcenter espera como INTEIRO (IntProps).
+  # Padrao: gd5revinterna. Para desligar, use DCA_TC_INTEGER_PROPERTIES=none
+  $configuredValue =
+  ([string]$env:DCA_TC_INTEGER_PROPERTIES).Trim()
+
+  if ([string]::IsNullOrWhiteSpace($configuredValue)) {
+    return @("gd5revinterna")
+  }
+
+  if ($configuredValue -ieq "none") {
+    return @()
+  }
+
+  $names =
+  [System.Collections.Generic.List[string]]::new()
+
+  foreach ($part in ($configuredValue -split '[|;,]')) {
+
+    $name =
+    ([string]$part).Trim()
+
+    if (-not [string]::IsNullOrWhiteSpace($name)) {
+      $names.Add($name)
+    }
+  }
+
+  return $names.ToArray()
+}
+
+function Get-DcaCreateInputPropertyText {
+
+  param(
+    $InputObject,
+
+    [string]$PropertyName
+  )
+
+  if (
+    $null -ne $InputObject.StringProps -and
+    $InputObject.StringProps.ContainsKey($PropertyName)
+  ) {
+    return ([string]$InputObject.StringProps[$PropertyName]).Trim()
+  }
+
+  if (
+    $null -ne $InputObject.IntProps -and
+    $InputObject.IntProps.ContainsKey($PropertyName)
+  ) {
+    return ([string]$InputObject.IntProps[$PropertyName]).Trim()
+  }
+
+  return ""
+}
+
+function New-DcaCreateInputObject {
 
   # Create and populate an input object compatible with the SOA API.
   param(
@@ -1119,7 +1204,9 @@ function New-DcaCreateInputObject { function New-DcaCreateInputObject {
     [string]$BoName,
 
     [Parameter(Mandatory = $true)]
-    [hashtable]$Properties
+    [hashtable]$Properties,
+
+    [string[]]$IntegerPropertyNames = @()
   )
 
   $inputObject = [System.Activator]::CreateInstance($InputType)
@@ -1131,16 +1218,64 @@ function New-DcaCreateInputObject { function New-DcaCreateInputObject {
   $inputObject.BoName = $BoName
 
   $stringProps = New-Object System.Collections.Hashtable
+  $intProps = New-Object System.Collections.Hashtable
 
   foreach ($key in $Properties.Keys) {
-    $stringProps[$key] = [string]$Properties[$key]
+
+    $isInteger = $false
+
+    foreach ($integerName in $IntegerPropertyNames) {
+
+      if ($key -ieq $integerName) {
+        $isInteger = $true
+        break
+      }
+    }
+
+    if ($isInteger) {
+
+      $parsedInteger = 0
+
+      if (-not [int]::TryParse(
+          ([string]$Properties[$key]).Trim(),
+          [ref]$parsedInteger
+        )) {
+
+        throw (
+          "A propriedade inteira '$key' recebeu um valor " +
+          "invalido: '$($Properties[$key])'."
+        )
+      }
+
+      $intProps[$key] = [int]$parsedInteger
+    }
+    else {
+
+      $stringProps[$key] = [string]$Properties[$key]
+    }
   }
 
   $inputObject.StringProps = $stringProps
 
-  return $inputObject
-}
+  if ($intProps.Count -gt 0) {
 
+    Set-DcaObjectMemberValue `
+      -InputObject $inputObject `
+      -MemberName "IntProps" `
+      -Value $intProps
+  }
+
+  if ($null -eq $inputObject.StringProps) {
+
+    throw (
+      "StringProps ficou NULL no CreateInput de '$BoName'."
+    )
+  }
+
+  Write-Output `
+    -NoEnumerate `
+    -InputObject $inputObject
+}
 function Get-DcaCreatedObjects {
 
   # Collect created objects from both the response and service data.
@@ -1211,8 +1346,14 @@ function Get-DcaCreatedObjects {
     }
   }
 
+  if ($Details) {
+
+    Write-Host (
+      "  Quantidade de objetos criados: $($createdObjects.Count)"
+    ) -ForegroundColor DarkGray
+  }
+
   return $createdObjects.ToArray()
-}
 }
 function Set-DcaObjectMemberValue {
 
@@ -1347,20 +1488,23 @@ function New-DcaTeamcenterItem {
     -ClientRevision $ClientRevision `
     -TeamcenterEnvironment $script:TeamcenterEnvironment
   Write-Host ""
-  Write-Host (
-    "  Ambiente Teamcenter: " +
-    "$($typeConfiguration.Environment)"
-  ) -ForegroundColor Gray
+  if ($Details) {
 
-  Write-Host (
-    "  Tipo do Item:        " +
-    "$($typeConfiguration.ItemType)"
-  ) -ForegroundColor Gray
+    Write-Host (
+      "  Ambiente Teamcenter: " +
+      "$($typeConfiguration.Environment)"
+    ) -ForegroundColor Gray
 
-  Write-Host (
-    "  Tipo da Revisao:     " +
-    "$($typeConfiguration.RevisionType)"
-  ) -ForegroundColor Gray
+    Write-Host (
+      "  Tipo do Item:        " +
+      "$($typeConfiguration.ItemType)"
+    ) -ForegroundColor Gray
+
+    Write-Host (
+      "  Tipo da Revisao:     " +
+      "$($typeConfiguration.RevisionType)"
+    ) -ForegroundColor Gray
+  }
 
   Write-Host ""
   $itemType = $typeConfiguration.ItemType
@@ -1428,10 +1572,15 @@ function New-DcaTeamcenterItem {
     $revisionExtraProperties[$extraKey]
   }
 
-  $revisionInput = New-DcaCreateInputObject `
+  $integerPropertyNames =
+  @(Get-DcaIntegerPropertyNames)
+
+  $revisionInput =
+  New-DcaCreateInputObject `
     -InputType $createInputType `
     -BoName $revisionType `
-    -Properties $revisionProperties
+    -Properties $revisionProperties `
+    -IntegerPropertyNames $integerPropertyNames
 
   if ($null -eq $revisionInput) {
 
@@ -1440,20 +1589,74 @@ function New-DcaTeamcenterItem {
       "'$revisionType'."
     )
   }
+  if ($Details) {
+    Write-Host (
+      "  revisionInput criado: " +
+      $revisionInput.GetType().FullName
+    ) -ForegroundColor DarkGray
 
-  $itemProperties = @{
-    "item_id" = $candidateCode
-    "object_name" = $itemNameClean
-    "object_desc" = $itemNameClean
+    Write-Host (
+      "  BoName da revisao: " +
+      [string]$revisionInput.BoName
+    ) -ForegroundColor DarkGray
+
+    Write-Host (
+      "  Propriedades da revisao:"
+    ) -ForegroundColor Cyan
+
+    foreach (
+      $revisionPropertyName in (
+        $revisionInput.StringProps.Keys |
+          Sort-Object
+      )
+    ) {
+
+      Write-Host (
+        "    {0} = '{1}'" -f
+        $revisionPropertyName,
+        $revisionInput.StringProps[$revisionPropertyName]
+      ) -ForegroundColor Gray
+    }
   }
-
-  if (-not [string]::IsNullOrWhiteSpace([string]$clientProperty) -and
-    -not [string]::IsNullOrWhiteSpace([string]$clientValue)
+  if (
+    $Details -and
+    $null -ne $revisionInput.IntProps
   ) {
 
-    $itemProperties[$clientProperty] = $clientValue
-  }
+    foreach (
+      $integerPropertyName in (
+        $revisionInput.IntProps.Keys |
+          Sort-Object
+      )
+    ) {
 
+      Write-Host (
+        "    {0} = {1}  (inteiro)" -f
+        $integerPropertyName,
+        $revisionInput.IntProps[$integerPropertyName]
+      ) -ForegroundColor Gray
+    }
+  }
+  if ($Details) {
+
+    Write-Host (
+      "  Propriedades do Item:"
+    ) -ForegroundColor Cyan
+
+    foreach (
+      $itemPropertyName in (
+        $itemProperties.Keys |
+          Sort-Object
+      )
+    ) {
+
+      Write-Host (
+        "    {0} = '{1}'" -f
+        $itemPropertyName,
+        $itemProperties[$itemPropertyName]
+      ) -ForegroundColor Gray
+    }
+  }
   $itemInput =
   [System.Activator]::CreateInstance(
     $createInputType
@@ -1496,11 +1699,13 @@ function New-DcaTeamcenterItem {
     )
   }
 
-  Write-Host (
-    "  Tipo tecnico do CreateInput: " +
-    $itemInput.GetType().FullName
-  ) -ForegroundColor DarkGray
+  if ($Details) {
 
+    Write-Host (
+      "  Tipo tecnico do CreateInput: " +
+      $itemInput.GetType().FullName
+    ) -ForegroundColor DarkGray
+  }
   Set-DcaObjectMemberValue `
     -InputObject $itemInput `
     -MemberName "CompoundCreateInput" `
@@ -1532,7 +1737,9 @@ function New-DcaTeamcenterItem {
     ([string]$revisionSent.StringProps["gd5revcliente"]).Trim()
 
     $revisionInternal =
-    ([string]$revisionSent.StringProps["gd5revinterna"]).Trim()
+    Get-DcaCreateInputPropertyText `
+      -InputObject $revisionSent `
+      -PropertyName "gd5revinterna"
 
     $finalRevisionId =
     ([string]$revisionSent.StringProps["item_revision_id"]).Trim()
@@ -1594,39 +1801,38 @@ function New-DcaTeamcenterItem {
         "antes do CreateObjects."
       )
     }
+    if ($Details) {
 
-    Write-Host (
-      "  Dados da revisao que serao enviados:"
-    ) -ForegroundColor Cyan
+      Write-Host (
+        "  Dados da revisao que serao enviados:"
+      ) -ForegroundColor Cyan
 
-    Write-Host (
-      "    item_revision_id = '$finalRevisionId'"
-    ) -ForegroundColor Gray
+      Write-Host (
+        "    item_revision_id = '$finalRevisionId'"
+      ) -ForegroundColor Gray
 
-    Write-Host (
-      "    gd5revcliente    = '$revisionClient'"
-    ) -ForegroundColor Gray
+      Write-Host (
+        "    gd5revcliente    = '$revisionClient'"
+      ) -ForegroundColor Gray
 
-    Write-Host (
-      "    gd5revinterna    = '$revisionInternal'"
-    ) -ForegroundColor Gray
+      Write-Host (
+        "    gd5revinterna    = '$revisionInternal'"
+      ) -ForegroundColor Gray
+    }
   }
   foreach ($extraKey in $revisionExtraProperties.Keys) {
+    $extraValueText =
+    Get-DcaCreateInputPropertyText `
+      -InputObject $revisionSent `
+      -PropertyName $extraKey
 
-    if ([string]::IsNullOrWhiteSpace([string]$revisionSent.StringProps[$extraKey])) {
+    if ([string]::IsNullOrWhiteSpace($extraValueText)) {
       throw "A propriedade '$extraKey' ficou vazia na revisao."
     }
   }
 
   if ($revisionSent.StringProps.ContainsKey("sequence_id")) {
     throw "sequence_id nao deve ser enviado."
-  }
-
-  if (
-    $DocumentType -eq "NormaExterna" -and
-    $revisionSent.StringProps.ContainsKey("gd5revcliente")
-  ) {
-    throw "gd5revcliente nao deve ser enviado para '$DocumentType'."
   }
 
   $invokeArguments = New-Object "System.Object[]" 1
