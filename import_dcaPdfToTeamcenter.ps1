@@ -1,5 +1,6 @@
-﻿# Main script: locate a DCA PDF, collect the required data, and, unless running
-# in Preview mode, create the item and import the file into Teamcenter.
+﻿# Fluxo principal da importacao DCA para o Teamcenter.
+# Pesquisa os PDFs, prepara o lote e, fora do modo Preview,
+# cria os itens, importa os documentos e inicia os workflows.
 param(
   [string]$SearchRoot = $env:DCA_ROOT,
 
@@ -7,7 +8,7 @@ param(
 
   [string]$ItemName,
 
-  # SolidWorks PDM vault name. Override with DCA_VAULT_NAME.
+  # Nome da view local do Vault. O valor do .env tem prioridade.
   [string]$VaultName = $env:DCA_VAULT_NAME,
 
   [string]$PdmLibraryPath = $env:DCA_PDM_LIB,
@@ -17,18 +18,19 @@ param(
   [ValidateRange(0, 2000)]
   [int]$OutputDelayMilliseconds = 100,
 
-  # Enumerate local files without using the PDM API.
+  # Ignora a API do PDM e pesquisa somente nos arquivos locais.
   [switch]$NoVaultApi,
 
-  # Mostra os arquivos individualmente durante pesquisas por pasta.
+  # Exibe caminhos, propriedades tecnicas e diagnosticos adicionais.
   [switch]$Details,
 
-  # Search only; do not connect to Teamcenter or create objects.
+  # Valida o lote sem criar objetos no Teamcenter.
   [switch]$Preview
 )
 
+# Carrega o arquivo .env no escopo do processo atual.
+# As variaveis carregadas ficam disponiveis para todos os helpers.
 function Import-DcaEnvironmentFile {
-
   param(
     [Parameter(Mandatory = $true)]
     [string]$FilePath
@@ -91,6 +93,9 @@ function Import-DcaEnvironmentFile {
     )
   }
 }
+
+# O .env deve permanecer fora do repositorio porque pode conter
+# caminhos internos, usuarios, servidores e credenciais.
 $environmentFilePath =
 Join-Path `
   -Path $PSScriptRoot `
@@ -99,6 +104,9 @@ Join-Path `
 Import-DcaEnvironmentFile `
   -FilePath $environmentFilePath
 $ErrorActionPreference = "Stop"
+
+# Estado compartilhado pelas funcoes carregadas via dot source.
+# Evita repetir o login no Vault durante a mesma execucao.
 $script:DcaVault = $null
 $script:DcaVaultTried = $false
 
@@ -124,6 +132,9 @@ try {
 catch {
 }
 
+# ============================================================
+# CARREGAMENTO DOS ARQUIVOS DE FUNCOES
+# ============================================================
 $teamcenterFunctionsPath = Join-Path $PSScriptRoot "functions\teamcenter_functions.ps1"
 
 if (-not (Test-Path -LiteralPath $teamcenterFunctionsPath -PathType Leaf)) {
@@ -185,6 +196,9 @@ foreach (
 
   . $functionFilePath
 }
+
+# Valida antecipadamente as funcoes obrigatorias para evitar
+# falhas somente no meio da importacao.
 $requiredFunctions =
 @(
   # Saida e interface.
@@ -235,21 +249,44 @@ foreach ($requiredFunction in $requiredFunctions) {
 
   if ($null -eq $loadedFunction) {
     Write-Host (
-      "Algo deu errado: a funcao '$requiredFunction' nao foi carregada de " +
-      "'$teamcenterFunctionsPath'."
+      "Algo deu errado: a funcao obrigatoria " +
+      "'$requiredFunction' nao foi carregada."
     ) -ForegroundColor Red
     exit 1
   }
 }
 
+# ============================================================
+# FLUXO PRINCIPAL
+# ============================================================
 function Invoke-DcaMain {
 
   Write-Section -Title "Informe o que deseja pesquisar" -NoLeadingBlank
 
-  $rootPath = $SearchRoot
+  $rootPath =
+  [string]$SearchRoot
 
-  if ([string]::IsNullOrWhiteSpace($rootPath)) {
-    throw "DCA_ROOT or -SearchRoot must be configured."
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $rootPath
+    )
+  ) {
+
+    throw (
+      "DCA_ROOT ou o parametro -SearchRoot deve ser configurado."
+    )
+  }
+
+  if (-not (
+      Test-Path `
+        -LiteralPath $rootPath `
+        -PathType Container
+    )) {
+
+    throw (
+      "A raiz de pesquisa nao foi encontrada: " +
+      "'$rootPath'."
+    )
   }
 
   $searchInput =
@@ -292,6 +329,8 @@ function Invoke-DcaMain {
   $selectedDocuments =
   [System.Collections.Generic.List[object]]::new()
 
+  # Impede que o mesmo PDF seja adicionado mais de uma vez quando
+  # diferentes pesquisas retornarem o mesmo caminho.
   $selectedDocumentPaths =
   [System.Collections.Generic.HashSet[string]]::new(
     [System.StringComparer]::OrdinalIgnoreCase
@@ -379,7 +418,6 @@ function Invoke-DcaMain {
 
         $selectedDocuments.Add(
           [PSCustomObject]@{
-            SearchText = $currentSearchCode
             SelectedPdf = $selectedPdf
           }
         )
@@ -397,6 +435,8 @@ function Invoke-DcaMain {
     throw "Nenhum documento foi selecionado para importacao."
   }
 
+  # Normaliza codigo, nome, revisao, tipo e estado antes de qualquer
+  # conexao com o Teamcenter.
   $preparedDocuments =
   [System.Collections.Generic.List[object]]::new()
 
@@ -537,6 +577,8 @@ function Invoke-DcaMain {
     $clientRevision =
     $clientRevision.Trim().ToUpper()
 
+    # A descricao do cartao tem prioridade sobre o nome informado
+    # manualmente e sera usada como nome e descricao no Teamcenter.
     $itemNameText =
     [string]$ItemName
 
@@ -558,8 +600,9 @@ function Invoke-DcaMain {
 
       if ($selectedPdf.FolderImport) {
 
-        # Quando o arquivo possui somente o codigo,
-        # usa o proprio codigo como nome.
+        # Em importacoes por pasta nao ha interacao individual.
+        # Se o cartao nao possuir descricao, o codigo evita que todo
+        # o lote seja interrompido por falta de nome.
         $itemNameText =
         $itemCodeFromFile
 
@@ -597,12 +640,9 @@ function Invoke-DcaMain {
 
     $preparedDocuments.Add(
       [PSCustomObject]@{
-        SearchText = $selection.SearchText
         SelectedPdf = $selectedPdf
         ItemCode = $itemCodeFromFile
         ItemName = $itemNameText.Trim()
-        CardDescription = [string]$selectedPdf.CardDescription
-        DescriptionSource = [string]$selectedPdf.DescriptionSource
         ClientRevision = $clientRevision
         DocumentType = $documentType
         DisplayType = $selectedPdf.TypeDisplayName
@@ -703,9 +743,11 @@ function Invoke-DcaMain {
   $null =
   Connect-Teamcenter
 
-  # ====================================================
-  # Confirmacao adicional para ambiente de processo
-  # ====================================================
+  # ============================================================
+  # PROTECAO PARA O AMBIENTE DE PROCESSO
+  # ============================================================
+  # Exige uma confirmacao exclusiva antes da confirmacao geral
+  # para reduzir o risco de criacao acidental no ambiente oficial.
 
   if (
     $script:TeamcenterEnvironment -eq "Processo"
@@ -737,9 +779,11 @@ function Invoke-DcaMain {
     }
   }
 
-  # ====================================================
-  # Confirmacao geral do lote
-  # ====================================================
+  # ============================================================
+  # VALIDACAO FINAL ANTES DA CRIACAO
+  # ============================================================
+  # O plano e exibido novamente depois da conexao para garantir
+  # que o usuario veja o ambiente e os documentos que serao criados.
 
   Show-DcaImportPlan -Documents $preparedDocuments.ToArray()
 
@@ -771,9 +815,11 @@ function Invoke-DcaMain {
     return 0
   }
 
-  # ====================================================
-  # Executar o lote
-  # ====================================================
+  # ============================================================
+  # EXECUCAO DO LOTE
+  # ============================================================
+  # Cada documento possui tratamento de erro independente.
+  # Uma falha individual nao interrompe os documentos seguintes.
 
   $batchResults =
   [System.Collections.Generic.List[object]]::new()
@@ -847,7 +893,7 @@ function Invoke-DcaMain {
       )
 
       # ==================================================
-      # 2. Obter o Item criado
+      # 2. Validar o Item retornado pelo CreateObjects
       # ==================================================
 
       $teamcenterItem =
@@ -868,7 +914,7 @@ function Invoke-DcaMain {
       }
 
       # ==================================================
-      # 3. Obter a revisao criada
+      # 3. Localizar e validar a revisao criada
       # ==================================================
 
       $teamcenterRevision =
@@ -961,7 +1007,7 @@ function Invoke-DcaMain {
       }
 
       # ==================================================
-      # 5. Copiar o PDF para a pasta temporaria
+      # 5. Preparar uma copia local validada para o importador
       # ==================================================
 
       $temporaryPdfPath =
@@ -1011,9 +1057,6 @@ function Invoke-DcaMain {
           "PDF temporario validado: " +
           "$($temporaryPdfFile.Length) bytes"
         )
-      }
-
-      if ($Details) {
 
         Write-Info (
           "Arquivo temporario: " +
@@ -1028,7 +1071,7 @@ function Invoke-DcaMain {
         "Importando o PDF no Teamcenter..."
       )
 
-      $importResult =
+      $null =
       Import-TeamcenterPdf `
         -Revision $teamcenterRevision `
         -ItemCode $createdCode `
@@ -1118,18 +1161,15 @@ function Invoke-DcaMain {
       }
 
       # ==================================================
-      # 7. Registrar sucesso
+      # 7. Registrar o resultado para o resumo final
       # ==================================================
-
       $batchResults.Add(
         [PSCustomObject]@{
-          SearchText = $document.SearchText
           ItemCode = $document.ItemCode
           ItemName = $document.ItemName
           TeamcenterCode = $createdCode
           ItemCreated = $itemCreated
           PdfImported = $pdfImported
-          PdmState = $pdmState
           WorkflowStarted = $workflowStarted
           Succeeded = $true
           ErrorMessage = $null
@@ -1210,14 +1250,15 @@ function Invoke-DcaMain {
         $_.Exception.Message
       )
 
-      # Uma falha nao interrompe os outros documentos.
+      # O lote continua mesmo que um documento falhe. O erro sera
+      # consolidado no resumo final.
       continue
     }
   }
 
-  # ====================================================
-  # Resumo final
-  # ====================================================
+  # ============================================================
+  # RESUMO FINAL E CODIGO DE SAIDA
+  # ============================================================
 
   Write-Section `
     -Title "Resumo da importacao"
@@ -1300,6 +1341,8 @@ function Invoke-DcaMain {
   return 0
 }
 
+# Codigo 0 indica sucesso. Codigo 1 indica que ao menos um
+# documento falhou ou que o fluxo principal foi interrompido.
 $exitCode = 1
 
 try {

@@ -1,5 +1,14 @@
+# Funcoes de pesquisa e selecao dos documentos DCA.
+# Este arquivo permite pesquisar PDFs por codigo, localizar pastas
+# da Documentacao e selecionar os documentos que formarao o lote.
+
+# ============================================================
+# SELECAO DOS DOCUMENTOS DE UMA PASTA
+# ============================================================
 function Select-DcaDocumentsFromFolder {
 
+  # Exibe os documentos encontrados na pasta e permite selecionar
+  # numeros individuais, listas, intervalos ou todos os resultados.
   param(
     [Parameter(Mandatory = $true)]
     $FolderOption,
@@ -7,6 +16,8 @@ function Select-DcaDocumentsFromFolder {
     [switch]$AllowBack
   )
 
+  # A ordenacao mantem os resultados previsiveis entre execucoes:
+  # primeiro pelo codigo e depois pelo nome fisico do PDF.
   $documents =
   @(
     $FolderOption.Documents |
@@ -57,6 +68,8 @@ function Select-DcaDocumentsFromFolder {
       $number =
       $index + 1
 
+      # Prepara os valores exibidos e define textos alternativos para
+      # informacoes que nao foram encontradas no cartao ou no arquivo.
       $sourceCode =
       [string]$document.SourceCode
 
@@ -105,6 +118,8 @@ function Select-DcaDocumentsFromFolder {
         "nao informado"
       }
 
+      # A cor destaca o estado do documento sem alterar a decisao
+      # posterior sobre workflow.
       $stateColor =
       [System.ConsoleColor]::Yellow
 
@@ -137,22 +152,26 @@ function Select-DcaDocumentsFromFolder {
         $revisionDisplay
       ) -ForegroundColor Gray
 
-      $revisionSourceDisplay =
-      [string]$currentMatch.RevisionSource
+      if ($Details) {
 
-      if (
-        [string]::IsNullOrWhiteSpace(
-          $revisionSourceDisplay
-        )
-      ) {
         $revisionSourceDisplay =
-        "nome do arquivo"
-      }
+        [string]$document.RevisionSource
 
-      Write-SearchResultLine (
-        "       Fonte:   {0}" -f
-        $revisionSourceDisplay
-      ) -Color DarkGray
+        if (
+          [string]::IsNullOrWhiteSpace(
+            $revisionSourceDisplay
+          )
+        ) {
+
+          $revisionSourceDisplay =
+          "nome do arquivo"
+        }
+
+        Write-SearchResultLine (
+          "       Fonte:   {0}" -f
+          $revisionSourceDisplay
+        ) -Color DarkGray
+      }
 
       Write-Host (
         "       Estado:  {0}" -f
@@ -216,9 +235,13 @@ function Select-DcaDocumentsFromFolder {
       return $null
     }
 
+    # A selecao aceita um numero, numeros separados por virgula,
+    # intervalos, T, TODOS ou o caractere curinga.
     $selectedNumbers =
     [System.Collections.Generic.List[int]]::new()
 
+    # Evita adicionar o mesmo documento duas vezes quando a entrada
+    # combina numeros individuais e intervalos sobrepostos.
     $knownNumbers =
     [System.Collections.Generic.HashSet[int]]::new()
 
@@ -379,7 +402,14 @@ function Select-DcaDocumentsFromFolder {
     return $selectedDocuments.ToArray()
   }
 }
+
+# ============================================================
+# PESQUISA E SELECAO POR PASTA
+# ============================================================
 function Select-DcaPdfsByFolder {
+
+  # Localiza pastas dentro da raiz Documentacao, identifica o
+  # tipo DCA pela categoria e prepara os PDFs encontrados.
   param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
@@ -435,10 +465,12 @@ function Select-DcaPdfsByFolder {
     $documentationFolder.FullName
   ).TrimEnd("\")
 
-  # ====================================================
-  # Categorias conhecidas
-  # ====================================================
-
+# ============================================================
+# CATEGORIAS DCA PERMITIDAS
+# ============================================================
+#
+# O primeiro nivel abaixo de Documentacao define o tipo que sera
+# utilizado na criacao do Item e da revisao no Teamcenter.
   $categoryDefinitions =
   @(
     [PSCustomObject]@{
@@ -460,10 +492,12 @@ function Select-DcaPdfsByFolder {
     }
   )
 
-  # ====================================================
-  # Procurar pastas em toda Documentacao
-  # ====================================================
-
+# ============================================================
+# PESQUISA DAS PASTAS
+# ============================================================
+#
+# A busca e recursiva, mas cada pasta encontrada e tratada como
+# uma opcao independente.
   $availableFolders =
   @(
     Get-ChildItem `

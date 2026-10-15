@@ -2,16 +2,22 @@ $script:ImporterAssembly = $null
 $script:TeamcenterSession = $null
 $script:TeamcenterFunctions = $null
 $script:TeamcenterEnvironment = $null
-$script:TeamcenterHost = $null
-# Helpers for loading the .NET importer and executing Teamcenter operations.
+# Funcoes de integracao com o Teamcenter.
+# Este arquivo concentra conexao, configuracao dos tipos DCA,
+# construcao das entradas SOA, criacao dos objetos, importacao
+# do PDF e inicializacao dos workflows.
 
+# ============================================================
+# CONEXAO E SESSAO DO TEAMCENTER
+# ============================================================
 function Confirm-TeamcenterImporter {
 
-  # Confirm the executable used by the integration.
+  # Valida o executavel que contem as bibliotecas utilizadas
+  # pela integracao com o Teamcenter.
   $importerExecutablePath = $env:DCA_IMPORTER_PATH
 
   if ([string]::IsNullOrWhiteSpace($importerExecutablePath)) {
-    throw "DCA_IMPORTER_PATH must be configured."
+    throw ("DCA_IMPORTER_PATH deve ser configurado no arquivo .env.")
   }
 
   if (-not (Test-Path -LiteralPath $importerExecutablePath -PathType Leaf)) {
@@ -191,12 +197,11 @@ function Get-TeamcenterSettings {
 
 function Connect-Teamcenter {
 
-  # Load the assembly, create a session, and authenticate with Teamcenter.
+  # Carrega o assembly do importador, cria a sessao e autentica
+  # o usuario no ambiente configurado.
   $importerExecutablePath = Confirm-TeamcenterImporter
   $settings = Get-TeamcenterSettings
   $script:TeamcenterEnvironment = $settings.Environment
-
-  $script:TeamcenterHost = $settings.Host
 
   Write-Host ""
 
@@ -265,8 +270,8 @@ function Connect-Teamcenter {
 }
 
 function Get-TeamcenterMethod {
-
-  # Find an importer static method by name and parameter count.
+  # Localiza um metodo estatico do importador pelo nome e pela
+  # quantidade de parametros esperada.
   param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
@@ -303,7 +308,7 @@ function Get-TeamcenterMethod {
 
 function Get-TeamcenterConnection {
 
-  # Get the SOA connection maintained by the Teamcenter session.
+  # Recupera a conexao SOA mantida pela sessao autenticada.
   if ($null -eq $script:ImporterAssembly) {
     throw (
       "O assembly do Importar GD nao foi carregado. " +
@@ -334,7 +339,8 @@ function Get-TeamcenterConnection {
 
 function Get-TeamcenterDataManagementService {
 
-  # Locate and instantiate the SOA data-management service.
+  # Localiza e instancia o servico SOA responsavel pela criacao
+  # e pelo gerenciamento dos objetos do Teamcenter.
   $connection = Get-TeamcenterConnection
 
   $serviceType = [System.AppDomain]::CurrentDomain.GetAssemblies() |
@@ -377,9 +383,12 @@ function Get-TeamcenterDataManagementService {
   return $service
 }
 
+# ============================================================
+# OPERACOES SOBRE ITEM, REVISAO E PDF
+# ============================================================
 function Get-TeamcenterRevision {
 
-  # Get the revision associated with the supplied item.
+  # Localiza a revisao associada ao Item informado.
   param(
     [Parameter(Mandatory = $true)]
     $Item
@@ -391,13 +400,16 @@ function Get-TeamcenterRevision {
 
   $getRevisionMethod = Get-TeamcenterMethod -MethodName "getItemRevisionfromItem" -ParameterCount 1
 
-  $revision = $getRevisionMethod.Invoke($null, @($Item))
-
-  return $revision
+  return $getRevisionMethod.Invoke(
+    $null,
+    @($Item)
+  )
 }
 
 function Import-TeamcenterPdf {
 
+  # Valida o arquivo e chama o metodo do Importar GD que cria
+  # o dataset PDF associado a revisao do Teamcenter.
   param(
     [Parameter(Mandatory = $true)]
     $Revision,
@@ -529,9 +541,13 @@ function Import-TeamcenterPdf {
   }
 }
 
+# ============================================================
+# TRATAMENTO DAS RESPOSTAS SOA
+# ============================================================
 function Get-TeamcenterServiceErrors {
 
-  # Convert service partial errors into text messages.
+  # Converte os erros parciais do servico SOA em mensagens
+  # legiveis para o log da importacao.
   param(
     $ServiceData
   )
@@ -589,9 +605,13 @@ function Get-TeamcenterServiceErrors {
   return $errorMessages.ToArray()
 }
 
+# ============================================================
+# CONFIGURACAO DOS TIPOS E REVISOES DCA
+# ============================================================
 function Get-DcaClientRevisionInfo {
 
-  # Normalize the client revision and separate its internal suffix, when present.
+  # Normaliza a revisao do Desenho Original e remove o sufixo
+  # interno quando o cartao apresentar esse formato.
   param(
     [string]$ClientRevision
   )
@@ -611,6 +631,8 @@ function Get-DcaClientRevisionInfo {
 
 function Get-DcaTypeConfiguration {
 
+  # Retorna os tipos tecnicos e as propriedades da revisao
+  # conforme o ambiente e o tipo de documento selecionados.
   param(
     [Parameter(Mandatory = $true)]
     [ValidateSet(
@@ -709,20 +731,12 @@ function Get-DcaTypeConfiguration {
       ClientValue = $env:DCA_TC_TEST_STANDARD_CLIENT_VALUE
     }
   }
+  $selectedTypes =
   if ($TeamcenterEnvironment -eq "Processo") {
-
-    $selectedTypes = $processTypes
-  }
-  elseif ($TeamcenterEnvironment -eq "Teste") {
-
-    $selectedTypes = $testTypes
+    $processTypes
   }
   else {
-
-    throw (
-      "Ambiente Teamcenter nao suportado: " +
-      "'$TeamcenterEnvironment'."
-    )
+    $testTypes
   }
 
   if (-not $selectedTypes.ContainsKey($DocumentType)) {
@@ -743,7 +757,8 @@ function Get-DcaTypeConfiguration {
 
   $clientValue = [string]$selectedDocumentTypes.ClientValue
 
-  # Prevent creation when the configured type names are missing.
+  # Bloqueia a criacao quando os nomes tecnicos do Item ou da
+  # revisao nao estiverem configurados no arquivo .env.
   if (
     [string]::IsNullOrWhiteSpace($itemType) -or
     $itemType -like "<*>"
@@ -822,28 +837,18 @@ function Get-DcaTypeConfiguration {
     $processValue =
     $null
 
-    # Formato do cartao:
-    # AH-3, EB-2, FC-5.
-    $processRevisionWithSeparatorRegex =
-    [System.Text.RegularExpressions.Regex]::new(
+    # O cartao pode retornar a revisao de Processo com ou sem
+    # separador. Exemplos aceitos: AH-3, AH3, BA-4 e BA4.
+    $processRevisionWithSeparatorMatch =
+    [System.Text.RegularExpressions.Regex]::Match(
+      $processValueRaw,
       '^([A-Z0-9]{2})-([0-9])$'
     )
 
-    # Formato antigo:
-    # AH3, EB2, FC5 ou --4.
-    $processRevisionWithoutSeparatorRegex =
-    [System.Text.RegularExpressions.Regex]::new(
-      '^([A-Z0-9-]{1,2})([0-9])$'
-    )
-
-    $processRevisionWithSeparatorMatch =
-    $processRevisionWithSeparatorRegex.Match(
-      $processValueRaw
-    )
-
     $processRevisionWithoutSeparatorMatch =
-    $processRevisionWithoutSeparatorRegex.Match(
-      $processValueRaw
+    [System.Text.RegularExpressions.Regex]::Match(
+      $processValueRaw,
+      '^([A-Z0-9-]{1,2})([0-9])$'
     )
 
     if ($processRevisionWithSeparatorMatch.Success) {
@@ -898,6 +903,8 @@ function Get-DcaTypeConfiguration {
       )
     }
 
+    # O ID da revisao no Teamcenter e formado pela concatenacao
+    # da revisao cliente com a revisao interna.
     $processValue =
     $clientRevisionValue + $internalRevisionValue
     if ($Details) {
@@ -978,8 +985,14 @@ function Get-DcaTypeConfiguration {
     "'$DocumentType'."
   )
 }
+
+# ============================================================
+# INICIALIZACAO DE WORKFLOW
+# ============================================================
 function Start-TeamcenterWorkflow {
 
+  # Cria a lista esperada pelo Importar GD e solicita o inicio
+  # do workflow para a revisao criada.
   param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
@@ -1137,10 +1150,15 @@ function Start-TeamcenterWorkflow {
     )
   }
 }
+
+# ============================================================
+# CONSTRUCAO E LEITURA DOS OBJETOS CREATEINPUT
+# ============================================================
 function Get-DcaIntegerPropertyNames {
 
-  # Propriedades que o Teamcenter espera como INTEIRO (IntProps).
-  # Padrao: gd5revinterna. Para desligar, use DCA_TC_INTEGER_PROPERTIES=none
+  # Determina quais propriedades devem ser enviadas em IntProps.
+  # Por padrao, gd5revinterna e inteira. Use o valor "none" no
+  # .env caso nenhuma propriedade deva ser enviada como inteiro.
   $configuredValue =
   ([string]$env:DCA_TC_INTEGER_PROPERTIES).Trim()
 
@@ -1170,9 +1188,15 @@ function Get-DcaIntegerPropertyNames {
 
 function Get-DcaCreateInputPropertyText {
 
+  # Recupera uma propriedade independentemente de ela ter sido
+  # enviada ao Teamcenter como texto ou como numero inteiro.
   param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNull()]
     $InputObject,
 
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
     [string]$PropertyName
   )
 
@@ -1195,7 +1219,9 @@ function Get-DcaCreateInputPropertyText {
 
 function New-DcaCreateInputObject {
 
-  # Create and populate an input object compatible with the SOA API.
+  # Cria e preenche um objeto CreateInput compativel com a API SOA.
+  # As propriedades configuradas como inteiras sao separadas em
+  # IntProps; as demais sao armazenadas em StringProps.
   param(
     [Parameter(Mandatory = $true)]
     [type]$InputType,
@@ -1278,7 +1304,8 @@ function New-DcaCreateInputObject {
 }
 function Get-DcaCreatedObjects {
 
-  # Collect created objects from both the response and service data.
+  # Reune os objetos criados que podem aparecer tanto na resposta
+  # direta do CreateObjects quanto no ServiceData.
   param(
     $CreateResponse,
     $ServiceData
@@ -1357,8 +1384,12 @@ function Get-DcaCreatedObjects {
 }
 function Set-DcaObjectMemberValue {
 
+  # Define um campo ou uma propriedade publica por reflexao.
+  # Isso e necessario porque algumas versoes da API SOA expoem
+  # os mesmos membros como campos e outras como propriedades.
   param(
     [Parameter(Mandatory = $true)]
+    [ValidateNotNull()]
     $InputObject,
 
     [Parameter(Mandatory = $true)]
@@ -1366,6 +1397,7 @@ function Set-DcaObjectMemberValue {
     [string]$MemberName,
 
     [Parameter(Mandatory = $true)]
+    [ValidateNotNull()]
     $Value
   )
 
@@ -1439,9 +1471,14 @@ function Set-DcaObjectMemberValue {
     ($availableMembers -join ", ")
   )
 }
+
+# ============================================================
+# CRIACAO DO ITEM E DA REVISAO
+# ============================================================
 function New-DcaTeamcenterItem {
 
-  # Build and submit the item and revision creation request.
+  # Monta a solicitacao CreateObjects, envia o Item e a revisao
+  # ao Teamcenter e retorna os objetos efetivamente criados.
   param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
@@ -1483,12 +1520,15 @@ function New-DcaTeamcenterItem {
     )
   }
 
-  $typeConfiguration = Get-DcaTypeConfiguration `
+  $typeConfiguration =
+  Get-DcaTypeConfiguration `
     -DocumentType $DocumentType `
     -ClientRevision $ClientRevision `
     -TeamcenterEnvironment $script:TeamcenterEnvironment
-  Write-Host ""
+
   if ($Details) {
+
+    Write-Host ""
 
     Write-Host (
       "  Ambiente Teamcenter: " +
@@ -1506,8 +1546,7 @@ function New-DcaTeamcenterItem {
     ) -ForegroundColor Gray
   }
 
-  Write-Host ""
-  $itemType = $typeConfiguration.ItemType
+  $itemType =$typeConfiguration.ItemType
   $revisionType = $typeConfiguration.RevisionType
   $clientProperty = $typeConfiguration.ClientProperty
   $clientValue = $typeConfiguration.ClientValue
@@ -1561,6 +1600,11 @@ function New-DcaTeamcenterItem {
   }
 
   $candidateCode = $sourceCodeClean
+
+  # Propriedades adicionais por tipo:
+  # Original: gd5revcliente.
+  # Processo: gd5revcliente e gd5revinterna.
+  # Norma Externa: nenhuma propriedade adicional.
   $revisionProperties = @{
     "item_revision_id" = $teamcenterRevisionId
     "object_name" = $itemNameClean
@@ -1637,6 +1681,28 @@ function New-DcaTeamcenterItem {
       ) -ForegroundColor Gray
     }
   }
+
+  # O nome preparado pelo script e aplicado ao Item e a revisao
+  # como nome e descricao.
+  $itemProperties = @{
+    "item_id"     = $candidateCode
+    "object_name" = $itemNameClean
+    "object_desc" = $itemNameClean
+  }
+
+  if (
+    -not [string]::IsNullOrWhiteSpace(
+      [string]$clientProperty
+    ) -and
+    -not [string]::IsNullOrWhiteSpace(
+      [string]$clientValue
+    )
+  ) {
+
+    $itemProperties[$clientProperty] =
+    $clientValue
+  }
+
   if ($Details) {
 
     Write-Host (
@@ -1658,46 +1724,23 @@ function New-DcaTeamcenterItem {
     }
   }
   $itemInput =
-  [System.Activator]::CreateInstance(
-    $createInputType
-  )
+  New-DcaCreateInputObject `
+    -InputType $createInputType `
+    -BoName $itemType `
+    -Properties $itemProperties
 
   if ($null -eq $itemInput) {
 
     throw (
-      "Nao foi possivel criar o CreateInput do Item " +
+      "itemInput ficou NULL para o tipo " +
       "'$itemType'."
     )
   }
-
-  $itemInput.BoName =
-  [string]$itemType
-
-  $itemStringProperties =
-  New-Object System.Collections.Hashtable
-
-  foreach ($itemPropertyName in $itemProperties.Keys) {
-
-    $itemStringProperties[$itemPropertyName] =
-    [string]$itemProperties[$itemPropertyName]
-  }
-
-  $itemInput.StringProps =
-  $itemStringProperties
-
   $revisionInputArray = [System.Array]::CreateInstance($createInputType, 1)
   $revisionInputArray.SetValue($revisionInput, 0)
 
   $compoundInput = New-Object System.Collections.Hashtable
   $compoundInput["revision"] = $revisionInputArray
-
-  if ($null -eq $itemInput) {
-
-    throw (
-      "itemInput ficou NULL antes de preencher " +
-      "CompoundCreateInput."
-    )
-  }
 
   if ($Details) {
 
@@ -1723,14 +1766,14 @@ function New-DcaTeamcenterItem {
   $createInArray = [System.Array]::CreateInstance($createInType, 1)
   $createInArray.SetValue($createIn, 0)
 
-  $createInSent = $createInArray.GetValue(0)
   $revisionSent = $revisionInput
 
   if ($null -eq $revisionSent) {
     throw "revisionSent ficou NULL."
   }
-  # Valida as propriedades obrigatorias da revisao de Processo
-  # no objeto que sera enviado ao Teamcenter.
+
+  # Valida as propriedades depois da separacao entre StringProps
+  # e IntProps, antes de chamar o CreateObjects.
   if ($DocumentType -eq "Processo") {
 
     $revisionClient =
@@ -1831,6 +1874,8 @@ function New-DcaTeamcenterItem {
     }
   }
 
+  # A sequencia e controlada automaticamente pelo Teamcenter.
+  # O importador nao deve enviar sequence_id.
   if ($revisionSent.StringProps.ContainsKey("sequence_id")) {
     throw "sequence_id nao deve ser enviado."
   }
@@ -1838,10 +1883,16 @@ function New-DcaTeamcenterItem {
   $invokeArguments = New-Object "System.Object[]" 1
   $invokeArguments[0] = $createInArray
 
+  # A chamada abaixo pode efetivamente criar objetos no Teamcenter.
+  # Todas as validacoes locais devem ocorrer antes deste ponto.
   $createResponse = $null
 
   try {
-    $createResponse = $createObjectsMethod.Invoke($dataManagementService, $invokeArguments)
+    $createResponse =
+    $createObjectsMethod.Invoke(
+      $dataManagementService,
+      $invokeArguments
+    )
   }
   catch {
 
@@ -1878,19 +1929,46 @@ function New-DcaTeamcenterItem {
     throw "O Teamcenter rejeitou a criacao: $joinedErrors"
   }
 
-  $createdObjects = @(Get-DcaCreatedObjects -CreateResponse $createResponse -ServiceData $serviceData)
+  # A resposta pode conter Item, revisao e objetos auxiliares.
+  # Somente o Item e a revisao sao retornados ao fluxo principal.
+  $createdObjects =
+  @(
+    Get-DcaCreatedObjects `
+      -CreateResponse $createResponse `
+      -ServiceData $serviceData
+  )
 
-  $createdItem = $createdObjects |
+  $createdItem =
+  $createdObjects |
     Where-Object {
-    $_.GetType().Name -eq "Item" -or
-    $_.GetType().FullName -match '\.Item$'
+
+    $null -ne $_ -and
+    (
+      $_.GetType().Name -eq "Item" -or
+      $_.GetType().FullName -match '\.Item$'
+    )
   } |
     Select-Object -First 1
 
-  $createdRevision = $createdObjects |
+  $createdRevision =
+  $createdObjects |
     Where-Object {
-    $_.GetType().Name -eq "ItemRevision" -or
-    $_.GetType().FullName -match 'ItemRevision'
+
+    $null -ne $_ -and
+    (
+      $_.GetType().Name -eq "ItemRevision" -or
+      $_.GetType().FullName -match "ItemRevision"
+    )
+  } |
+    Select-Object -First 1
+  $createdObjects |
+    Where-Object {
+
+    $null -ne $_ -and
+    (
+      $_.GetType().Name -eq "ItemRevision" -or
+      $_.GetType().FullName -match "ItemRevision"
+    )
   } |
     Select-Object -First 1
 
