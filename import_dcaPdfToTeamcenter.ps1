@@ -16,7 +16,7 @@ param(
   [string]$VaultCredentialPath = $env:DCA_VAULT_CREDENTIAL,
 
   [ValidateRange(0, 2000)]
-  [int]$OutputDelayMilliseconds = 100,
+  [int]$OutputDelayMilliseconds = 10,
 
   # Ignora a API do PDM e pesquisa somente nos arquivos locais.
   [switch]$NoVaultApi,
@@ -300,7 +300,8 @@ function Invoke-DcaMain {
     $searchInput =
     Read-Host (
       "Digite codigos separados por virgula; " +
-      "use \ para pesquisar pastas ou \\ para abrir os itens"
+      "use \NomeCompleto para importar uma pasta ou " +
+      "\\NomeCompleto para escolher os itens"
     )
   }
 

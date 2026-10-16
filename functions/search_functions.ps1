@@ -430,12 +430,18 @@ function Select-DcaPdfsByFolder {
     throw "Vault DCA nao encontrado em '$FolderPath'."
   }
 
+  # Distingue curingas informados pelo usuario dos curingas
+  # adicionados automaticamente pela pesquisa parcial.
+  $folderSearchMode =
+  Get-DcaFolderSearchMode `
+    -SearchText $FolderSearch
+
+  $folderSearchText =
+  ([string]$folderSearchMode.SearchText).Trim()
+
   $folderPattern =
   Get-DcaFolderSearchPattern `
     -SearchText $FolderSearch
-  $usesWildcard =
-  $folderPattern.Contains("*") -or
-  $folderPattern.Contains("?")
 
   # ====================================================
   # Localizar a raiz Documentacao
@@ -465,12 +471,12 @@ function Select-DcaPdfsByFolder {
     $documentationFolder.FullName
   ).TrimEnd("\")
 
-# ============================================================
-# CATEGORIAS DCA PERMITIDAS
-# ============================================================
-#
-# O primeiro nivel abaixo de Documentacao define o tipo que sera
-# utilizado na criacao do Item e da revisao no Teamcenter.
+  # ============================================================
+  # CATEGORIAS DCA PERMITIDAS
+  # ============================================================
+  #
+  # O primeiro nivel abaixo de Documentacao define o tipo que sera
+  # utilizado na criacao do Item e da revisao no Teamcenter.
   $categoryDefinitions =
   @(
     [PSCustomObject]@{
@@ -492,12 +498,12 @@ function Select-DcaPdfsByFolder {
     }
   )
 
-# ============================================================
-# PESQUISA DAS PASTAS
-# ============================================================
-#
-# A busca e recursiva, mas cada pasta encontrada e tratada como
-# uma opcao independente.
+  # ============================================================
+  # PESQUISA DAS PASTAS
+  # ============================================================
+  #
+  # A busca e recursiva, mas cada pasta encontrada e tratada como
+  # uma opcao independente.
   $availableFolders =
   @(
     Get-ChildItem `
@@ -531,9 +537,11 @@ function Select-DcaPdfsByFolder {
       $documentationRootPath.Length
     ).TrimStart("\")
 
+    # A pasta deve possuir exatamente o nome informado ou o caminho
+    # relativo completo informado pelo usuario.
     $folderMatches =
-    $relativePath -like $folderPattern -or
-    $availableFolder.Name -like $folderPattern
+    $availableFolder.Name -ieq $folderPattern -or
+    $relativePath -ieq $folderPattern
 
     if (-not $folderMatches) {
       continue
@@ -592,39 +600,121 @@ function Select-DcaPdfsByFolder {
   if ($matchingFolders.Count -eq 0) {
 
     throw (
-      "Nenhuma pasta DCA foi encontrada para o padrao " +
-      "'\$folderPattern' dentro de Documentacao."
+      "Nenhuma pasta DCA foi encontrada contendo " +
+      "'$folderSearchText' dentro de Documentacao."
     )
+  }
+
+  # Quando a pesquisa para abrir os documentos encontra mais de uma
+  # pasta com o mesmo nome, permite escolher a pasta antes de consultar
+  # os PDFs e os cartoes do PDM.
+  if (
+    $ListFolderItems -and
+    $matchingFolders.Count -gt 1
+  ) {
+
+    Write-AnimatedLine ""
+
+    Write-Host (
+      "  Foram encontradas varias pastas com o nome " +
+      "'$folderPattern':"
+    ) -ForegroundColor Cyan
+
+    Write-Host (
+      "  " + ("-" * 68)
+    ) -ForegroundColor DarkGray
+
+    for (
+      $folderIndex = 0
+      $folderIndex -lt $matchingFolders.Count
+      $folderIndex++
+    ) {
+
+      $folderOption =
+      $matchingFolders[$folderIndex]
+
+      Write-Host (
+        "  [{0}] {1}" -f
+        ($folderIndex + 1),
+        $folderOption.RelativePath
+      ) -ForegroundColor White
+
+      Write-Host (
+        "      Tipo: {0}" -f
+        $folderOption.DisplayName
+      ) -ForegroundColor Gray
+
+      Write-Host ""
+    }
+
+    while ($true) {
+
+      $selectedFolderText =
+      Read-Host (
+        "Digite o numero da pasta que deseja abrir"
+      )
+
+      $selectedFolderNumber =
+      0
+
+      $validFolderNumber =
+      [System.Int32]::TryParse(
+        $selectedFolderText,
+        [ref]$selectedFolderNumber
+      )
+
+      if (
+        -not $validFolderNumber -or
+        $selectedFolderNumber -lt 1 -or
+        $selectedFolderNumber -gt $matchingFolders.Count
+      ) {
+
+        Write-Warn (
+          "Selecao invalida. Digite um numero entre 1 e " +
+          "$($matchingFolders.Count)."
+        )
+
+        continue
+      }
+
+      $selectedMatchingFolder =
+      $matchingFolders[$selectedFolderNumber - 1]
+
+      Write-AnimatedLine ""
+
+      Write-Success (
+        "Pasta escolhida [$selectedFolderNumber]: " +
+        $selectedMatchingFolder.RelativePath
+      )
+
+      # Mantem somente a pasta selecionada. A consulta dos PDFs e dos
+      # cartoes ocorrera apenas para essa pasta.
+      $matchingFolders =
+      @(
+        $selectedMatchingFolder
+      )
+
+      break
+    }
   }
 
   Write-AnimatedLine ""
 
   Write-Info (
-    "Modo pasta em toda Documentacao: \$folderPattern"
+    "Localizando a pasta com o nome exato: " +
+    "'$folderPattern'"
   )
 
-  # ====================================================
-  # Consultar todos os PDFs uma unica vez
-  # ====================================================
+  # ============================================================
+  # CONEXAO COM O VAULT
+  # ============================================================
 
+  # A conexao e reutilizada, mas os PDFs serao consultados somente
+  # nas pastas correspondentes ao termo pesquisado.
   $vault =
   Get-DcaVault
 
-  $allAvailablePdfs =
-  @()
-
-  if ($null -ne $vault) {
-
-    Write-Info "Consultando os PDFs no Vault..."
-
-    $allAvailablePdfs =
-    @(
-      Search-DcaVaultPdfEntries `
-        -Vault $vault `
-        -SearchText "*"
-    )
-  }
-  else {
+  if ($null -eq $vault) {
 
     Write-Warn (
       "API do PDM indisponivel. " +
@@ -646,11 +736,27 @@ function Select-DcaPdfsByFolder {
 
     if ($null -ne $vault) {
 
-      # Apenas PDFs diretamente dentro da pasta.
-      # Subpastas aparecem separadamente.
+      if ($Details) {
+
+        Write-Info (
+          "Consultando PDFs da pasta: " +
+          $matchingFolder.RelativePath
+        )
+      }
+
+      $folderSearchResults =
+      @(
+        Search-DcaVaultPdfEntries `
+          -Vault $vault `
+          -SearchText "*" `
+          -StartFolderPath $matchingFolder.FullName
+      )
+
+      # O PDM pode retornar resultados das subpastas. Mantemos
+      # somente os PDFs diretamente dentro da pasta atual.
       $folderPdfEntries =
       @(
-        $allAvailablePdfs |
+        $folderSearchResults |
           Where-Object {
 
           $pdfFullName =
@@ -669,10 +775,8 @@ function Select-DcaPdfsByFolder {
             $pdfFullName
           )
 
-          return (
-            $pdfDirectory -ieq
-            $matchingFolder.FullName
-          )
+          $pdfDirectory -ieq
+          $matchingFolder.FullName
         } |
           Sort-Object FullName
       )
@@ -737,6 +841,9 @@ function Select-DcaPdfsByFolder {
         }
       )
     }
+
+    # Depois de montar os resultados basicos, complementa cada
+    # documento com revisao e descricao lidas do cartao do PDM.
     foreach ($folderDocument in $folderDocuments) {
 
       Update-DcaMatchRevisionFromCard `
@@ -745,8 +852,8 @@ function Select-DcaPdfsByFolder {
       Update-DcaMatchDescriptionFromCard `
         -Match $folderDocument
     }
-    # Pastas sem PDFs diretamente dentro delas não são
-    # apresentadas como opções.
+
+    # Pastas sem PDFs diretamente dentro delas nao sao exibidas.
     if ($folderDocuments.Count -eq 0) {
       continue
     }
@@ -814,13 +921,13 @@ function Select-DcaPdfsByFolder {
     $index + 1
   }
 
-  # ====================================================
-  # Pasta exata e unica: seleciona automaticamente
-  # ====================================================
-  if (
-    -not $usesWildcard -and
-    $folderOptions.Count -eq 1
-  ) {
+  # ============================================================
+  # SELECAO AUTOMATICA DE PASTA EXATA
+  # ============================================================
+  #
+  # Quando a pesquisa nao usa curinga e retorna apenas uma pasta,
+  # nao e necessario pedir que o usuario selecione a mesma pasta.
+  if ($folderOptions.Count -eq 1) {
 
     $selectedFolder =
     $folderOptions[0]
@@ -1129,10 +1236,13 @@ function Select-DcaPdfsByFolder {
 
       return @($selectedDocuments)
     }
-    # ==================================================
-    # Juntar os documentos das pastas selecionadas
-    # ==================================================
 
+    # ============================================================
+    # UNIAO DOS DOCUMENTOS DAS PASTAS SELECIONADAS
+    # ============================================================
+    #
+    # O HashSet de caminhos impede que o mesmo PDF seja adicionado
+    # mais de uma vez ao lote.
     $selectedDocuments =
     [System.Collections.Generic.List[object]]::new()
 
@@ -1190,6 +1300,14 @@ function Select-DcaPdfsByFolder {
     return $selectedDocuments.ToArray()
   }
 }
+
+# ============================================================
+# PESQUISA E SELECAO POR CODIGO
+# ============================================================
+
+# Pesquisa o codigo nas categorias permitidas, complementa os
+# resultados com o cartao do PDM e permite selecionar um ou
+# varios PDFs para o lote.
 function Select-DcaPdfByCode {
 
   param(
@@ -1217,8 +1335,8 @@ function Select-DcaPdfByCode {
     throw "O codigo de pesquisa ficou vazio."
   }
 
-  # A pesquisa por codigo e sempre parcial.
-  # Se o usuario nao informar wildcard, o script adiciona.
+  # A pesquisa por codigo e parcial. Quando nenhum curinga e
+  # informado, o termo e envolvido automaticamente por asteriscos.
   if (
     $searchText.Contains("*") -or
     $searchText.Contains("?")
@@ -1237,7 +1355,15 @@ function Select-DcaPdfByCode {
     "Pesquisando todas as correspondencias de: " +
     "[$searchText]"
   )
-  $rootFolders = @(Get-ChildItem -LiteralPath $FolderPath -Directory -Force -ErrorAction Stop)
+
+  $rootFolders =
+  @(
+    Get-ChildItem `
+      -LiteralPath $FolderPath `
+      -Directory `
+      -Force `
+      -ErrorAction Stop
+  )
 
   $documentationFolder = $rootFolders |
     Where-Object { $_.Name -like "Documenta*" } |
@@ -1273,7 +1399,14 @@ function Select-DcaPdfByCode {
     }
   )
 
-  $documentationSubfolders = @(Get-ChildItem -LiteralPath $documentationFolder.FullName -Directory -Force -ErrorAction Stop)
+  $documentationSubfolders =
+  @(
+    Get-ChildItem `
+      -LiteralPath $documentationFolder.FullName `
+      -Directory `
+      -Force `
+      -ErrorAction Stop
+  )
 
   $searchFolders = [System.Collections.Generic.List[object]]::new()
 
@@ -1310,11 +1443,16 @@ function Select-DcaPdfByCode {
 
   $matchingFiles = [System.Collections.Generic.List[object]]::new()
 
+  # A mesma busca pode localizar o arquivo em diferentes etapas.
+  # O HashSet garante um unico resultado por caminho completo.
   $knownMatchingPaths =
   [System.Collections.Generic.HashSet[string]]::new(
     [System.StringComparer]::OrdinalIgnoreCase
   )
 
+  # A API do PDM e priorizada porque encontra arquivos que ainda
+  # nao estao no cache local. Em caso de falha, a pesquisa utiliza
+  # os PDFs disponiveis no sistema de arquivos.
   $apiEntries = $null
   $vault = Get-DcaVault
 
@@ -1352,7 +1490,10 @@ function Select-DcaPdfByCode {
 
     if ($null -ne $apiEntries) {
 
-      $categoryPrefix = $searchFolder.DirectoryPath.TrimEnd($separator) + $separator
+      $categoryPrefix =
+      $searchFolder.DirectoryPath.TrimEnd(
+        $separator
+      ) + $separator
 
       $pdfEntries = @(
         $apiEntries |
@@ -1431,6 +1572,9 @@ function Select-DcaPdfByCode {
       )
     }
   }
+
+  # A revisao e a descricao do cartao substituem os valores
+  # obtidos apenas pelo nome do arquivo quando estiverem preenchidas.
   foreach ($matchingFile in $matchingFiles) {
 
     Update-DcaMatchRevisionFromCard `
@@ -1568,7 +1712,7 @@ function Select-DcaPdfByCode {
     Write-SearchResultLine ""
   }
 
-  # Este bloco precisa ficar FORA do for acima.
+  # Um unico resultado dispensa a etapa de selecao manual.
   if ($matchCount -eq 1) {
 
     Write-Success (
@@ -1578,7 +1722,8 @@ function Select-DcaPdfByCode {
     return $matchingFiles[0]
   }
 
-  # Esta pergunta tambem precisa ficar FORA do for.
+  # Com mais de um resultado, mantem a pergunta em repeticao ate
+  # que o usuario informe uma selecao valida.
   while ($true) {
 
     $selectionText =

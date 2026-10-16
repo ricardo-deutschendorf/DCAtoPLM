@@ -1,4 +1,15 @@
+# Funcoes de integracao com o SOLIDWORKS PDM.
+# Este arquivo gerencia o acesso ao Vault, pesquisa PDFs, consulta
+# estados e variaveis dos cartoes e normaliza os dados encontrados.
+
+# ============================================================
+# CONEXAO COM O VAULT
+# ============================================================
 function Get-DcaVault {
+
+  # Retorna uma conexao reutilizavel com o Vault.
+  # Quando a API estiver desativada ou o login falhar, retorna NULL
+  # para permitir que a pesquisa continue pelo sistema de arquivos.
   if ($NoVaultApi) {
     return $null
   }
@@ -7,6 +18,8 @@ function Get-DcaVault {
     return $script:DcaVault
   }
 
+  # Evita repetir uma tentativa de login que ja falhou durante
+  # a mesma execucao do script.
   if ($script:DcaVaultTried) {
     return $null
   }
@@ -17,23 +30,41 @@ function Get-DcaVault {
   try {
 
     if (
-      [string]::IsNullOrWhiteSpace($PdmLibraryPath) -or
+      [string]::IsNullOrWhiteSpace(
+        [string]$PdmLibraryPath
+      ) -or
       $PdmLibraryPath -like "<*>" -or
-      -not (Test-Path -LiteralPath $PdmLibraryPath -PathType Leaf)
+      -not (
+        Test-Path `
+          -LiteralPath $PdmLibraryPath `
+          -PathType Leaf
+      )
     ) {
+
       throw (
-        "Interop.EdmLib.dll nao encontrada em '$PdmLibraryPath'. " +
-        "Informe -PdmLibraryPath (mesmo valor de `$pdmLibraryPath do PDMtoPLM)."
+        "Interop.EdmLib.dll nao encontrada em " +
+        "'$PdmLibraryPath'. Verifique DCA_PDM_LIB no arquivo .env."
       )
     }
 
+    # A biblioteca EdmLib disponibiliza os objetos COM utilizados
+    # para login, pesquisa e leitura dos cartoes do PDM.
     Add-Type -Path $PdmLibraryPath
 
     $vault = New-Object EdmLib.EdmVault5Class
 
-    $hasCredentialFile = -not [string]::IsNullOrWhiteSpace($VaultCredentialPath) -and
+    # O arquivo de credenciais e opcional. Sem ele, o script utiliza
+    # a sessao do usuario autenticado no Windows por meio de LoginAuto.
+    $hasCredentialFile =
+    -not [string]::IsNullOrWhiteSpace(
+      [string]$VaultCredentialPath
+    ) -and
     $VaultCredentialPath -notlike "<*>" -and
-    (Test-Path -LiteralPath $VaultCredentialPath -PathType Leaf)
+    (
+      Test-Path `
+        -LiteralPath $VaultCredentialPath `
+        -PathType Leaf
+    )
 
     if ($hasCredentialFile) {
 
@@ -64,8 +95,24 @@ function Get-DcaVault {
         )
       }
 
-      if ([string]::IsNullOrWhiteSpace($credentialUser)) {
-        throw "O usuario do vault nao foi encontrado no arquivo de credencial."
+      if (
+        [string]::IsNullOrWhiteSpace(
+          [string]$credentialUser
+        )
+      ) {
+
+        throw (
+          "O usuario do Vault nao foi encontrado no arquivo " +
+          "de credenciais."
+        )
+      }
+
+      if ($null -eq $securePassword) {
+
+        throw (
+          "A senha do Vault nao foi encontrada no arquivo " +
+          "de credenciais."
+        )
       }
 
       $passwordPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePassword)
@@ -110,6 +157,8 @@ function Get-DcaVault {
   }
   finally {
 
+    # Remove da memoria nao gerenciada a representacao temporaria
+    # da senha utilizada pelo metodo Login.
     if ($passwordPointer -ne [System.IntPtr]::Zero) {
       [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordPointer)
     }
@@ -117,81 +166,175 @@ function Get-DcaVault {
     Remove-Variable plainTextPassword -ErrorAction SilentlyContinue
   }
 }
+
+# ============================================================
+# PESQUISA E DISPONIBILIZACAO DOS PDFS
+# ============================================================
+
 function Search-DcaVaultPdfEntries {
 
+  # Pesquisa PDFs no indice do Vault. Quando uma pasta inicial
+  # for informada, limita a consulta a essa parte do Vault.
   param(
     [Parameter(Mandatory = $true)]
+    [ValidateNotNull()]
     $Vault,
 
     [Parameter(Mandatory = $true)]
-    [string]$SearchText
+    [ValidateNotNullOrEmpty()]
+    [string]$SearchText,
+
+    [string]$StartFolderPath
   )
 
-  $likePattern = $SearchText.Replace("*", "%").Replace("?", "_")
+  # A API do PDM utiliza os curingas SQL "%" e "_", enquanto a
+  # interface do script aceita os curingas "*" e "?".
+  $likePattern =
+  $SearchText.Replace(
+    "*",
+    "%"
+  ).Replace(
+  "?",
+  "_"
+)
 
-  if ($likePattern -notmatch "[%_]") {
-    $likePattern = "%$likePattern%"
-  }
+if ($likePattern -notmatch "[%_]") {
 
-  $search = $Vault.CreateSearch()
-  $search.FileName = $likePattern
-  $search.FindHistoricStates = $false
-
-  $entries = [System.Collections.Generic.List[object]]::new()
-  $currentResult = $search.GetFirstResult()
-
-  while ($null -ne $currentResult) {
-
-    $resultName = [string]$currentResult.Name
-
-    if (
-      -not [string]::IsNullOrWhiteSpace(
-        $resultName
-      ) -and
-      $resultName.EndsWith(
-        ".pdf",
-        [System.StringComparison]::OrdinalIgnoreCase
-      )
-    ) {
-
-      $entries.Add(
-        [PSCustomObject]@{
-          Name = $resultName
-          BaseName = [System.IO.Path]::GetFileNameWithoutExtension($resultName).Trim()
-          FullName = [string]$currentResult.Path
-          FromVault = $true
-        }
-      )
-    }
-
-    $currentResult = $search.GetNextResult()
-  }
-
-  return $entries.ToArray()
+  $likePattern =
+  "%$likePattern%"
 }
+
+$search =
+$Vault.CreateSearch()
+
+if ($null -eq $search) {
+
+  throw (
+    "A API do PDM nao retornou um objeto de pesquisa."
+  )
+}
+
+$search.FileName =
+$likePattern
+
+$search.FindHistoricStates =
+$false
+
+# Limita a consulta a pasta informada. Sem esse filtro, a API
+# pesquisa os arquivos a partir da raiz do Vault.
+if (
+  -not [string]::IsNullOrWhiteSpace(
+    $StartFolderPath
+  )
+) {
+
+  $startFolder =
+  $Vault.GetFolderFromPath(
+    $StartFolderPath
+  )
+
+  if ($null -eq $startFolder) {
+
+    throw (
+      "A pasta nao foi encontrada pela API do PDM: " +
+      "'$StartFolderPath'."
+    )
+  }
+
+  $search.StartFolderID =
+  [int]$startFolder.ID
+}
+
+$entries =
+[System.Collections.Generic.List[object]]::new()
+
+$currentResult =
+$search.GetFirstResult()
+
+while ($null -ne $currentResult) {
+
+  $resultName =
+  [string]$currentResult.Name
+
+  if (
+    -not [string]::IsNullOrWhiteSpace(
+      $resultName
+    ) -and
+    $resultName.EndsWith(
+      ".pdf",
+      [System.StringComparison]::OrdinalIgnoreCase
+    )
+  ) {
+
+    $baseName =
+    [System.IO.Path]::GetFileNameWithoutExtension(
+      $resultName
+    )
+
+    $entries.Add(
+      [PSCustomObject]@{
+        Name = $resultName
+        BaseName = ([string]$baseName).Trim()
+        FullName = [string]$currentResult.Path
+        FromVault = $true
+      }
+    )
+  }
+
+  $currentResult =
+  $search.GetNextResult()
+}
+
+return $entries.ToArray()
+}
+
 function Get-DcaDiskPdfEntries {
 
+  # Alternativa utilizada quando a API do PDM esta indisponivel.
+  # Retorna somente os PDFs existentes no cache ou no disco local.
   param(
     [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
     [string]$FolderPath
   )
 
-  $entries = [System.Collections.Generic.List[object]]::new()
+  if (-not (
+      Test-Path `
+        -LiteralPath $FolderPath `
+        -PathType Container
+    )) {
 
-  $pdfFiles = @(Get-ChildItem `
-    -LiteralPath $FolderPath `
-    -Filter "*.pdf" `
-    -File `
-    -Recurse `
-    -Force `
-    -ErrorAction SilentlyContinue)
+    throw (
+      "A pasta de pesquisa local nao foi encontrada: " +
+      "'$FolderPath'."
+    )
+  }
+
+  $entries =
+  [System.Collections.Generic.List[object]]::new()
+
+  $pdfFiles =
+  @(
+    Get-ChildItem `
+      -LiteralPath $FolderPath `
+      -Filter "*.pdf" `
+      -File `
+      -Recurse `
+      -Force `
+      -ErrorAction SilentlyContinue
+  )
 
   foreach ($pdfFile in $pdfFiles) {
+
+    $baseName =
+    [System.IO.Path]::GetFileNameWithoutExtension(
+      $pdfFile.Name
+    )
 
     $entries.Add(
       [PSCustomObject]@{
         Name = $pdfFile.Name
-        BaseName = [System.IO.Path]::GetFileNameWithoutExtension($pdfFile.Name).Trim()
+        BaseName = ([string]$baseName).Trim()
         FullName = $pdfFile.FullName
         FromVault = $false
       }
@@ -202,8 +345,12 @@ function Get-DcaDiskPdfEntries {
 }
 function Confirm-DcaLocalPdf {
 
+  # Garante que o PDF esteja disponivel localmente. Quando o
+  # resultado veio do Vault e ainda nao esta no cache, solicita
+  # uma copia local antes da importacao no Teamcenter.
   param(
     [Parameter(Mandatory = $true)]
+    [ValidateNotNull()]
     $Entry
   )
 
@@ -245,8 +392,14 @@ function Confirm-DcaLocalPdf {
   return $localCachePath
 }
 
+# ============================================================
+# INTERPRETACAO DOS NOMES DOS ARQUIVOS
+# ============================================================
 function Get-NormaCodeFromText {
 
+  # Separa o codigo tecnico e o titulo de uma Norma Externa.
+  # Regras especificas sao avaliadas antes das regras genericas
+  # para evitar que prefixos curtos capturem codigos compostos.
   param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
@@ -270,7 +423,8 @@ function Get-NormaCodeFromText {
     }
   }
 
-  # Test longer prefixes first so generic prefixes do not capture specific codes.
+  # Prefixos maiores sao avaliados primeiro para impedir que uma
+  # regra generica capture apenas parte de um codigo especifico.
   $knownPrefixes = @(
     "COL-ASQR-PRO",
     "AMS-QQ-C",
@@ -364,7 +518,7 @@ function Get-NormaCodeFromText {
     } -Descending
   )
 
-  # Special AMS patterns.
+  # Formatos especiais utilizados pelas normas AMS.
 
   $specialPatterns = @(
     [PSCustomObject]@{
@@ -468,11 +622,11 @@ function Get-NormaCodeFromText {
     }
   }
 
-  # Known-prefix rules.
+  # Regras baseadas nos prefixos tecnicos conhecidos.
 
   foreach ($prefix in $knownPrefixes) {
 
-    # Allow variable whitespace in compound prefixes.
+    # Prefixos compostos aceitam variacao na quantidade de espacos.
     $prefixRegex = [regex]::Escape($prefix)
 
     $prefixRegex = $prefixRegex.Replace(
@@ -480,7 +634,8 @@ function Get-NormaCodeFromText {
       "\s+"
     )
 
-    # The identifier must contain at least one number.
+    # O identificador deve conter pelo menos um numero para nao
+    # confundir uma descricao comum com um codigo tecnico.
     $pattern = (
       "^(?<Code>" +
       $prefixRegex +
@@ -546,7 +701,8 @@ function Get-NormaCodeFromText {
     }
   }
 
-  # Accept a complete technical code when it has no spaces and contains a number.
+  # Aceita diretamente codigos sem espacos que contenham pelo
+  # menos um numero.
   if (
     $normalizedText -notmatch '\s' -and
     $normalizedText -match '\d' -and
@@ -567,7 +723,8 @@ function Get-NormaCodeFromText {
     }
   }
 
-  # Generic fallback for separating a technical code from its description.
+  # Ultima tentativa para separar um codigo tecnico de sua
+  # descricao quando nenhum prefixo conhecido foi identificado.
   $genericPattern = (
     "^(?<Code>" +
     "[A-Z][A-Z0-9-]*" +
@@ -627,13 +784,22 @@ function Get-NormaCodeFromText {
     Pattern = $null
   }
 }
+
 function ConvertFrom-PdfFileName {
 
+  # Extrai codigo, revisao e titulo do nome fisico do PDF.
+  # Os dados do cartao podem substituir posteriormente os
+  # valores obtidos somente pelo nome do arquivo.
   param(
     [Parameter(Mandatory = $true)]
     [string]$BaseName,
 
     [Parameter(Mandatory = $true)]
+    [ValidateSet(
+      "Original",
+      "Processo",
+      "NormaExterna"
+    )]
     [string]$DocumentType
   )
 
@@ -669,11 +835,14 @@ function ConvertFrom-PdfFileName {
       $possibleRevision -match
       '^[A-Z0-9]{1,2}$'
     }
+
     elseif ($DocumentType -eq "NormaExterna") {
 
-      # Norma Externa usa 000 automaticamente.
+      # Aceita uma revisao tecnica entre colchetes. Durante a
+      # pesquisa, a revisao do cartao ainda possui prioridade.
       $validRevision =
-      $possibleRevision -eq "000"
+      $possibleRevision -match
+      '^[A-Z0-9.-]{1,10}$'
     }
 
     if ($validRevision) {
@@ -723,6 +892,8 @@ function ConvertFrom-PdfFileName {
 
 function Test-DcaCodeMatch {
 
+  # Compara o termo pesquisado com o nome original do PDF e com
+  # o codigo tecnico extraido desse nome.
   param(
     [string]$BaseName,
     [string]$ParsedCode,
@@ -736,10 +907,17 @@ function Test-DcaCodeMatch {
 
   return (($BaseName -ieq $Pattern) -or ($ParsedCode -ieq $Pattern))
 }
+
+# ============================================================
+# ESTADO E VARIAVEIS DOS CARTOES DO PDM
+# ============================================================
 function Get-DcaPdmFileState {
 
+  # Retorna o estado atual do arquivo no workflow do PDM.
+  # Sem uma conexao com o Vault, o estado nao pode ser consultado.
   param(
     [Parameter(Mandatory = $true)]
+    [ValidateNotNull()]
     $Entry
   )
 
@@ -792,10 +970,15 @@ function Get-DcaPdmFileState {
     return $null
   }
 }
+
 function Get-DcaPdmCardVariableValue {
 
+  # Le uma variavel especifica do cartao. Prioriza GetVar2 e
+  # utiliza GetVar como compatibilidade com versoes anteriores
+  # da biblioteca EdmLib.
   param(
     [Parameter(Mandatory = $true)]
+    [ValidateNotNull()]
     $VariableReader,
 
     [Parameter(Mandatory = $true)]
@@ -846,7 +1029,8 @@ function Get-DcaPdmCardVariableValue {
       $getVar2Arguments[0] =
       [string]$variableNameClean
 
-      # PDF nao possui configuracoes como arquivos CAD.
+      # PDFs nao possuem configuracoes como os arquivos CAD.
+      # A configuracao enviada ao GetVar2 permanece vazia.
       $getVar2Arguments[1] =
       [string]""
 
@@ -952,10 +1136,15 @@ function Get-DcaPdmCardVariableValue {
     Error = $null
   }
 }
+
 function Get-DcaPdmCardVariables {
 
+  # Enumera as variaveis cadastradas no PDM e tenta ler cada
+  # valor no cartao do arquivo. Esta funcao e utilizada
+  # principalmente pelo modo de diagnostico.
   param(
     [Parameter(Mandatory = $true)]
+    [ValidateNotNull()]
     $Entry,
 
     [switch]$IncludeEmpty
@@ -1161,6 +1350,7 @@ function Get-DcaPdmCardVariables {
         [string]$readResult.Value
 
         if (
+          $Details -and
           -not [string]::IsNullOrWhiteSpace(
             [string]$readResult.Error
           )
@@ -1175,10 +1365,13 @@ function Get-DcaPdmCardVariables {
       }
       catch {
 
-        Write-Host (
-          "  Erro inesperado ao ler '$variableName': " +
-          $_.Exception.Message
-        ) -ForegroundColor DarkGray
+        if ($Details) {
+
+          Write-Host (
+            "  Erro inesperado ao ler '$variableName': " +
+            $_.Exception.Message
+          ) -ForegroundColor DarkGray
+        }
 
         continue
       }
@@ -1265,6 +1458,7 @@ function Get-DcaPdmCardVariables {
       Sort-Object Name
   )
 }
+
 function Show-DcaPdmCardVariables {
 
   param(
@@ -1275,7 +1469,7 @@ function Show-DcaPdmCardVariables {
   Write-AnimatedLine ""
 
   Write-Host (
-    "  Procurando variaveis preenchidas no cartao de:"
+    "  Consultando as variaveis do cartao de:"
   ) -ForegroundColor Cyan
 
   Write-Host (
@@ -1292,7 +1486,7 @@ function Show-DcaPdmCardVariables {
   if ($cardVariables.Count -eq 0) {
 
     Write-Warn (
-      "Nenhuma variavel preenchida foi encontrada no cartao."
+      "Nenhuma variavel foi encontrada no cartao."
     )
 
     return
@@ -1301,7 +1495,7 @@ function Show-DcaPdmCardVariables {
   Write-Host ""
 
   Write-Host (
-    "  Variaveis preenchidas no cartao:"
+    "  Variaveis encontradas no cartao:"
   ) -ForegroundColor Cyan
 
   Write-Host (
@@ -1376,6 +1570,7 @@ function Show-DcaPdmCardVariables {
     "  Copie exatamente o nome exibido antes de 'Valor'."
   ) -ForegroundColor DarkGray
 }
+
 function Get-DcaCardRevisionVariableNames {
 
   param(
@@ -1416,6 +1611,7 @@ function Get-DcaCardRevisionVariableNames {
 
   return $variableNames.ToArray()
 }
+
 function Get-DcaPdmVariableValue {
   param(
     [Parameter(Mandatory = $true)]
@@ -1579,6 +1775,7 @@ function Get-DcaPdmVariableValue {
     return $null
   }
 }
+
 function Convert-DcaOriginalDescription {
 
   param(
@@ -1638,6 +1835,7 @@ function Convert-DcaOriginalDescription {
     ).ToLowerInvariant()
   )
 }
+
 function Update-DcaMatchDescriptionFromCard {
 
   param(
@@ -1744,6 +1942,7 @@ function Update-DcaMatchDescriptionFromCard {
     ) -ForegroundColor Cyan
   }
 }
+
 function Update-DcaMatchRevisionFromCard {
 
   param(
@@ -1833,18 +2032,6 @@ function Update-DcaMatchRevisionFromCard {
       $cardRevision =
       ([string]$cardRevision).Trim().ToUpperInvariant()
 
-      if (
-        -not [string]::IsNullOrWhiteSpace($fileRevision) -and
-        $cardRevision -ne $fileRevision
-      ) {
-
-        Write-Warn (
-          "Revisao diferente em '$($Match.File.Name)': " +
-          "arquivo [$fileRevision] x cartao [$cardRevision]. " +
-          "Usando o cartao."
-        )
-      }
-
       $Match.ClientRevision =
       $cardRevision
 
@@ -1852,10 +2039,31 @@ function Update-DcaMatchRevisionFromCard {
       "cartao de dados"
     }
   }
+
   if (
     $variableNames.Count -eq 0 -and
     $Details
   ) {
+
+    $configurationName =
+    switch ($Match.DocumentType) {
+
+      "Original" {
+        "DCA_PDM_VAR_ORIGINAL_REVISION"
+      }
+
+      "Processo" {
+        "DCA_PDM_VAR_PROCESS_REVISION"
+      }
+
+      "NormaExterna" {
+        "DCA_PDM_VAR_STANDARD_REVISION"
+      }
+
+      default {
+        "a variavel de revisao correspondente"
+      }
+    }
 
     Write-Warn (
       "Nenhuma variavel de revisao do cartao foi configurada " +
@@ -1863,9 +2071,10 @@ function Update-DcaMatchRevisionFromCard {
     )
 
     Write-Host (
-      "  Configure DCA_PDM_VAR_PROCESS_REVISION no arquivo .env."
+      "  Configure $configurationName no arquivo .env."
     ) -ForegroundColor DarkGray
   }
+
   Add-Member `
     -InputObject $Match `
     -NotePropertyName "FileRevision" `

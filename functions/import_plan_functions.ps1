@@ -1,5 +1,15 @@
+# Funcoes de preparacao e validacao do lote de importacao.
+# Este arquivo trata a copia temporaria dos PDFs, interpreta os
+# modos de pesquisa e apresenta o plano antes da criacao.
+
+# ============================================================
+# PREPARACAO DO PDF TEMPORARIO
+# ============================================================
 function Copy-PdfToTemporaryFolder {
 
+  # Cria uma copia controlada do PDF para o importador.
+  # A copia e validada por extensao, tamanho e leitura antes
+  # de ser enviada ao Teamcenter.
   param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
@@ -10,11 +20,22 @@ function Copy-PdfToTemporaryFolder {
     [string]$ItemCode
   )
 
-  if (-not (Test-Path -LiteralPath $SourcePdfPath -PathType Leaf)) {
-    throw "PDF de origem nao encontrado: $SourcePdfPath"
+  if (-not (
+      Test-Path `
+        -LiteralPath $SourcePdfPath `
+        -PathType Leaf
+    )) {
+
+    throw (
+      "PDF de origem nao encontrado: " +
+      "'$SourcePdfPath'."
+    )
   }
 
-  $sourceFile = Get-Item -LiteralPath $SourcePdfPath -ErrorAction Stop
+  $sourceFile =
+  Get-Item `
+    -LiteralPath $SourcePdfPath `
+    -ErrorAction Stop
 
   if ($sourceFile.Extension -ine ".pdf") {
     throw "O arquivo de origem nao possui extensao PDF."
@@ -27,23 +48,68 @@ function Copy-PdfToTemporaryFolder {
   $temporaryFolder = $env:DCA_TEMP_FOLDER
 
   if ([string]::IsNullOrWhiteSpace($temporaryFolder)) {
-    throw "DCA_TEMP_FOLDER must be configured."
+    throw (
+      "DCA_TEMP_FOLDER deve ser configurado no arquivo .env."
+    )
   }
 
-  if (-not (Test-Path -LiteralPath $temporaryFolder -PathType Container)) {
-    $null = New-Item -Path $temporaryFolder -ItemType Directory -Force -ErrorAction Stop
+  if (-not (
+      Test-Path `
+        -LiteralPath $temporaryFolder `
+        -PathType Container
+    )) {
+
+    $null =
+    New-Item `
+      -Path $temporaryFolder `
+      -ItemType Directory `
+      -Force `
+      -ErrorAction Stop
   }
 
-  $safeItemCode = $ItemCode -replace '[\\/:*?"<>|]', '_'
-  $temporaryPdfPath = Join-Path -Path $temporaryFolder -ChildPath "$safeItemCode.pdf"
+  # Remove caracteres que nao podem fazer parte de um nome de
+  # arquivo no Windows.
+  $safeItemCode =
+  $ItemCode.Trim() -replace '[\\/:*?"<>|]', '_'
 
-  if (Test-Path -LiteralPath $temporaryPdfPath -PathType Leaf) {
-    Remove-Item -LiteralPath $temporaryPdfPath -Force -ErrorAction Stop
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $safeItemCode
+    )
+  ) {
+
+    throw (
+      "O codigo do Item ficou vazio depois da normalizacao " +
+      "do nome do arquivo."
+    )
+  }
+
+  $temporaryPdfPath =
+  Join-Path `
+    -Path $temporaryFolder `
+    -ChildPath "$safeItemCode.pdf"
+
+  # Remove uma copia anterior para impedir que o importador utilize
+  # um PDF desatualizado.
+  if (
+    Test-Path `
+      -LiteralPath $temporaryPdfPath `
+      -PathType Leaf
+  ) {
+
+    Remove-Item `
+      -LiteralPath $temporaryPdfPath `
+      -Force `
+      -ErrorAction Stop
   }
 
   Write-Info "Preparando o PDF para importacao..."
 
-  Copy-Item -LiteralPath $SourcePdfPath -Destination $temporaryPdfPath -Force -ErrorAction Stop
+  Copy-Item `
+    -LiteralPath $SourcePdfPath `
+    -Destination $temporaryPdfPath `
+    -Force `
+    -ErrorAction Stop
 
   if (-not (Test-Path -LiteralPath $temporaryPdfPath -PathType Leaf)) {
     throw "O PDF nao foi criado na pasta temporaria."
@@ -51,6 +117,8 @@ function Copy-PdfToTemporaryFolder {
 
   $temporaryFile = Get-Item -LiteralPath $temporaryPdfPath -ErrorAction Stop
 
+  # A comparacao de tamanho detecta copias incompletas antes que
+  # o arquivo seja entregue ao importador.
   if ($temporaryFile.Length -ne $sourceFile.Length) {
     throw (
       "O tamanho da copia temporaria e diferente do original. " +
@@ -59,6 +127,8 @@ function Copy-PdfToTemporaryFolder {
     )
   }
 
+  # A abertura em modo de leitura confirma que o arquivo pode ser
+  # acessado pelo processo antes da chamada ao Importar GD.
   $stream = $null
 
   try {
@@ -83,8 +153,15 @@ function Copy-PdfToTemporaryFolder {
   Write-Success "PDF copiado e validado na pasta temporaria."
   return $temporaryFile.FullName
 }
+
+# ============================================================
+# INTERPRETACAO DOS MODOS DE PESQUISA
+# ============================================================
+
 function Get-DcaSearchCodeList {
 
+  # Separa os termos informados por virgula e remove repeticoes
+  # sem diferenciar letras maiusculas e minusculas.
   param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
@@ -112,7 +189,8 @@ function Get-DcaSearchCodeList {
       continue
     }
 
-    # Add retorna false quando o mesmo padrao ja existe.
+    # O HashSet impede que o mesmo termo seja pesquisado mais de
+    # uma vez no mesmo lote.
     if ($knownCodes.Add($currentCode)) {
 
       $codes.Add($currentCode)
@@ -126,8 +204,12 @@ function Get-DcaSearchCodeList {
 
   return $codes.ToArray()
 }
+
 function Get-DcaFolderSearchMode {
 
+  # Interpreta os prefixos usados na entrada:
+  # uma barra pesquisa pastas;
+  # duas barras pesquisam a pasta e abrem seus documentos.
   param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
@@ -167,8 +249,10 @@ function Get-DcaFolderSearchMode {
     SearchText = $normalizedSearch
   }
 }
+
 function Test-DcaFolderSearch {
 
+  # Retorna apenas se o texto representa uma pesquisa por pasta.
   param(
     [string]$SearchText
   )
@@ -187,8 +271,11 @@ function Test-DcaFolderSearch {
 
   return [bool]$folderSearchMode.IsFolderSearch
 }
+
 function Get-DcaFolderSearchPattern {
 
+  # Remove o prefixo do modo de pesquisa e valida o nome completo
+  # da pasta antes de iniciar a busca.
   param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
@@ -200,41 +287,77 @@ function Get-DcaFolderSearchPattern {
     -SearchText $SearchText
 
   if (-not $folderSearchMode.IsFolderSearch) {
+
     throw (
       "A pesquisa informada nao e uma pesquisa de pasta: " +
       "'$SearchText'."
     )
   }
 
-  $folderPattern =
+  $folderName =
   ([string]$folderSearchMode.SearchText).Trim()
+
+  # Remove barras que tenham permanecido no inicio da entrada.
+  $folderName =
+  $folderName.TrimStart(
+    [char]'\',
+    [char]'/'
+  ).Trim()
 
   if (
     [string]::IsNullOrWhiteSpace(
-      $folderPattern
+      $folderName
     )
   ) {
-    throw "O nome ou padrao da pasta ficou vazio."
+
+    throw "O nome completo da pasta ficou vazio."
   }
 
-  if ($folderPattern.Contains("..")) {
+  # A pesquisa de pastas exige o nome completo e nao aceita
+  # curingas ou correspondencias parciais.
+  if (
+    $folderName.Contains("*") -or
+    $folderName.Contains("?")
+  ) {
+
     throw (
-      "O padrao de pasta nao pode conter '..': " +
-      "'$folderPattern'."
+      "A pesquisa de pasta nao aceita curingas. " +
+      "Digite o nome completo da pasta."
     )
   }
 
-  if ($folderPattern -match '[:"<>\|]') {
+  # Impede navegacao relativa para fora da raiz Documentacao.
+  if ($folderName.Contains("..")) {
+
     throw (
-      "O padrao de pasta possui caracteres invalidos: " +
-      "'$folderPattern'."
+      "O nome da pasta nao pode conter '..': " +
+      "'$folderName'."
     )
   }
 
-  return $folderPattern.Replace("/", "\")
+  if (
+    $folderName -match
+    '[:"<>\|]'
+  ) {
+
+    throw (
+      "O nome da pasta possui caracteres invalidos: " +
+      "'$folderName'."
+    )
+  }
+
+  return $folderName.Replace(
+    "/",
+    "\"
+  )
 }
+# ============================================================
+# CONFIGURACAO DO AMBIENTE
+# ============================================================
 function Get-DcaConfiguredEnvironmentName {
 
+  # Prioriza o ambiente confirmado durante a conexao. Antes da
+  # conexao, utiliza o valor configurado no arquivo .env.
   if (
     -not [string]::IsNullOrWhiteSpace(
       $script:TeamcenterEnvironment
@@ -260,12 +383,26 @@ function Get-DcaConfiguredEnvironmentName {
   )
 }
 
+# ============================================================
+# PLANO DE IMPORTACAO
+# ============================================================
 function Show-DcaImportPlan {
 
+  # Consolida a configuracao dos documentos, tipos, revisoes,
+  # estados e workflows antes da etapa que cria os objetos.
   param(
     [Parameter(Mandatory = $true)]
+    [ValidateNotNull()]
     [object[]]$Documents
   )
+
+  if ($Documents.Count -eq 0) {
+
+    throw (
+      "Nenhum documento foi fornecido para montar o plano " +
+      "de importacao."
+    )
+  }
 
   $environmentName =
   Get-DcaConfiguredEnvironmentName
@@ -291,14 +428,18 @@ function Show-DcaImportPlan {
   $obsoleteTemplate =
   [string]$env:DCA_TC_OBSOLETE_WORKFLOW
 
-  # ====================================================
-  # Montar o plano de cada documento
-  # ====================================================
+  # ============================================================
+  # MONTAGEM DO PLANO POR DOCUMENTO
+  # ============================================================
 
   $planItems =
   [System.Collections.Generic.List[object]]::new()
 
   foreach ($document in $Documents) {
+
+    if ($null -eq $document) {
+      continue
+    }
 
     $pdmState =
     ([string]$document.PdmState).Trim()
@@ -334,6 +475,8 @@ function Show-DcaImportPlan {
 
     try {
 
+      # Erros de configuracao sao armazenados no plano para que todos
+      # os documentos possam ser apresentados antes da confirmacao.
       $configuration =
       Get-DcaTypeConfiguration `
         -DocumentType $document.DocumentType `
@@ -397,11 +540,20 @@ function Show-DcaImportPlan {
     )
   }
 
-  # ====================================================
-  # Cabecalho
-  # ====================================================
+  if ($planItems.Count -eq 0) {
 
-  Write-Section -Title "Log antes da importacao"
+    throw (
+      "Nenhum documento valido ficou disponivel para montar " +
+      "o plano de importacao."
+    )
+  }
+
+  # ============================================================
+  # CABECALHO DO PLANO
+  # ============================================================
+
+  Write-Section `
+    -Title "Plano antes da importacao"
 
   Write-Host ""
 
@@ -415,17 +567,21 @@ function Show-DcaImportPlan {
     "  Ambiente:   {0}" -f $environmentName
   ) -ForegroundColor $environmentColor
 
-  Write-Host (
-    "  Servidor:   {0}" -f $serverUrl
-  ) -ForegroundColor Gray
+  if ($Details) {
+
+    Write-Host (
+      "  Servidor:   {0}" -f
+      $serverUrl
+    ) -ForegroundColor Gray
+  }
 
   Write-Host (
     "  Documentos: {0}" -f $planItems.Count
   ) -ForegroundColor White
 
-  # ====================================================
-  # Configuracao por tipo de documento
-  # ====================================================
+  # ============================================================
+  # CONFIGURACAO POR TIPO DE DOCUMENTO
+  # ============================================================
 
   Write-Host ""
   Write-Host "  Configuracao por tipo:" -ForegroundColor Cyan
@@ -499,9 +655,9 @@ function Show-DcaImportPlan {
     ) -ForegroundColor Gray
   }
 
-  # ====================================================
-  # Workflows
-  # ====================================================
+  # ============================================================
+  # RESUMO DOS WORKFLOWS
+  # ============================================================
 
   $approvedCount =
   @(
@@ -568,9 +724,9 @@ function Show-DcaImportPlan {
     $withoutWorkflowCount
   ) -ForegroundColor Yellow
 
-  # ====================================================
-  # Lista de documentos
-  # ====================================================
+  # ============================================================
+  # LISTA DOS DOCUMENTOS
+  # ============================================================
 
   Write-Host ""
   Write-Host "  Documentos:" -ForegroundColor Cyan
@@ -705,17 +861,17 @@ function Show-DcaImportPlan {
     }
   }
 
-  # ====================================================
-  # Avisos finais
-  # ====================================================
+  # ============================================================
+  # AVISOS FINAIS
+  # ============================================================
 
   if ($errorCount -gt 0) {
 
     Write-Host ""
 
     Write-Warn (
-      "$errorCount documento(s) com erro de configuracao " +
-      "vao falhar na criacao."
+      "$errorCount documento(s) possuem erro de configuracao " +
+      "e nao poderao ser criados."
     )
   }
 
