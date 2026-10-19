@@ -473,20 +473,34 @@ function Show-DcaImportPlan {
     $configurationError =
     $null
 
-    try {
+    if ($document.DocumentType -eq "DatasetOnly") {
 
-      # Erros de configuracao sao armazenados no plano para que todos
-      # os documentos possam ser apresentados antes da confirmacao.
       $configuration =
-      Get-DcaTypeConfiguration `
-        -DocumentType $document.DocumentType `
-        -ClientRevision $document.ClientRevision `
-        -TeamcenterEnvironment $environmentName
+      [PSCustomObject]@{
+        Environment = $environmentName
+        ItemType = "Item existente"
+        RevisionType = "Revisao existente"
+        ClientProperty = ""
+        ClientValue = ""
+        TeamcenterRevisionId = [string]$document.ClientRevision
+        RevisionProperties = @{}
+      }
     }
-    catch {
+    else {
 
-      $configurationError =
-      $_.Exception.Message
+      try {
+
+        $configuration =
+        Get-DcaTypeConfiguration `
+          -DocumentType $document.DocumentType `
+          -ClientRevision $document.ClientRevision `
+          -TeamcenterEnvironment $environmentName
+      }
+      catch {
+
+        $configurationError =
+        $_.Exception.Message
+      }
     }
 
     $teamcenterRevisionId =

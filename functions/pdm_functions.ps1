@@ -798,7 +798,8 @@ function ConvertFrom-PdfFileName {
     [ValidateSet(
       "Original",
       "Processo",
-      "NormaExterna"
+      "NormaExterna",
+      "DatasetOnly"
     )]
     [string]$DocumentType
   )
@@ -821,7 +822,10 @@ function ConvertFrom-PdfFileName {
     $validRevision =
     $false
 
-    if ($DocumentType -eq "Processo") {
+    if (
+      $DocumentType -eq "Processo" -or
+      $DocumentType -eq "DatasetOnly"
+    ) {
 
       # Processo: A1, BA4, AA4 ou --4.
       $validRevision =
@@ -1595,6 +1599,11 @@ function Get-DcaCardRevisionVariableNames {
     $configuredValue =
     [string]$env:DCA_PDM_VAR_STANDARD_REVISION
   }
+  elseif ($DocumentType -eq "DatasetOnly") {
+
+    $configuredValue =
+    [string]$env:DCA_PDM_VAR_DATASET_REVISION
+  }
 
   $variableNames =
   [System.Collections.Generic.List[string]]::new()
@@ -1837,11 +1846,25 @@ function Convert-DcaOriginalDescription {
 }
 
 function Update-DcaMatchDescriptionFromCard {
-
   param(
     [Parameter(Mandatory = $true)]
     $Match
   )
+
+  if ($Match.DocumentType -eq "DatasetOnly") {
+
+    if (
+      [string]::IsNullOrWhiteSpace(
+        [string]$Match.DocumentTitle
+      )
+    ) {
+
+      $Match.DocumentTitle =
+      [string]$Match.SourceCode
+    }
+
+    return
+  }
 
   $descriptionVariableName =
   $null
@@ -1944,11 +1967,11 @@ function Update-DcaMatchDescriptionFromCard {
 }
 
 function Update-DcaMatchRevisionFromCard {
-
   param(
     [Parameter(Mandatory = $true)]
     $Match
   )
+
   $discoverCardVariables =
   ([string]$env:DCA_PDM_DISCOVER_CARD_VARIABLES).Trim()
 
@@ -2058,6 +2081,10 @@ function Update-DcaMatchRevisionFromCard {
 
       "NormaExterna" {
         "DCA_PDM_VAR_STANDARD_REVISION"
+      }
+
+      "DatasetOnly" {
+        "DCA_PDM_VAR_DATASET_REVISION"
       }
 
       default {

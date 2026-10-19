@@ -110,6 +110,13 @@ $ErrorActionPreference = "Stop"
 $script:DcaVault = $null
 $script:DcaVaultTried = $false
 
+# Armazena o resultado das consultas de existencia no Teamcenter.
+# Evita consultar o mesmo Item mais de uma vez durante a execucao.
+$script:TeamcenterItemLookupCache =
+[System.Collections.Generic.Dictionary[string, object]]::new(
+  [System.StringComparer]::OrdinalIgnoreCase
+)
+
 if (-not [string]::IsNullOrWhiteSpace($env:DCA_VAULT_NAME)) {
   $VaultName = $env:DCA_VAULT_NAME
 }
@@ -220,6 +227,7 @@ $requiredFunctions =
   "Update-DcaMatchDescriptionFromCard",
 
   # Pesquisa e selecao.
+  "Select-DcaDocumentsWithFolderNavigation",
   "Select-DcaDocumentsFromFolder",
   "Select-DcaPdfsByFolder",
   "Select-DcaPdfByCode",
@@ -236,6 +244,9 @@ $requiredFunctions =
   "Connect-Teamcenter",
   "Get-TeamcenterMethod",
   "Get-TeamcenterRevision",
+  "Get-TeamcenterModelPropertyText",
+  "Test-DcaTeamcenterItemExists",
+  "Find-DcaTeamcenterItemRevision",
   "Get-TeamcenterDataManagementService",
   "Get-TeamcenterServiceErrors",
   "Import-TeamcenterPdf",
@@ -526,19 +537,19 @@ function Invoke-DcaMain {
           "Digite a revisao da Norma Externa para " +
           "'$itemCodeFromFile' ou Enter para ignorar"
         )
+      }
+      elseif ($documentType -eq "DatasetOnly") {
 
-        if (
-          [string]::IsNullOrWhiteSpace(
-            $clientRevision
-          )
-        ) {
+        Write-Warn (
+          "A revisao do documento dimensional nao foi encontrada " +
+          "no cartao de dados."
+        )
 
-          Write-Warn (
-            "Arquivo ignorado: '$($selectedPdf.File.Name)'."
-          )
-
-          continue
-        }
+        $clientRevision =
+        Read-Host (
+          "Digite a revisao existente no Teamcenter para " +
+          "'$itemCodeFromFile' ou Enter para ignorar"
+        )
       }
       else {
 
@@ -560,23 +571,24 @@ function Invoke-DcaMain {
           "$revisionPrompt para '$itemCodeFromFile' " +
           "ou Enter para ignorar"
         )
+      }
 
-        if (
-          [string]::IsNullOrWhiteSpace(
-            $clientRevision
-          )
-        ) {
+      if (
+        [string]::IsNullOrWhiteSpace(
+          $clientRevision
+        )
+      ) {
 
-          Write-Warn (
-            "Arquivo ignorado: '$($selectedPdf.File.Name)'."
-          )
+        Write-Warn (
+          "Arquivo ignorado: '$($selectedPdf.File.Name)'."
+        )
 
-          continue
-        }
+        continue
       }
     }
+
     $clientRevision =
-    $clientRevision.Trim().ToUpper()
+    $clientRevision.Trim().ToUpperInvariant()
 
     # A descricao do cartao tem prioridade sobre o nome informado
     # manualmente e sera usada como nome e descricao no Teamcenter.
@@ -648,6 +660,9 @@ function Invoke-DcaMain {
         DocumentType = $documentType
         DisplayType = $selectedPdf.TypeDisplayName
         PdmState = [string]$selectedPdf.PdmState
+        TeamcenterStatus = [string]$selectedPdf.TeamcenterStatus
+        TeamcenterItem = $selectedPdf.TeamcenterItem
+        TeamcenterRevision = $selectedPdf.TeamcenterRevision
       }
     )
   }
@@ -676,6 +691,14 @@ function Invoke-DcaMain {
     }
   ).Count
 
+  $datasetOnlyPrepared =
+  @(
+    $preparedDocuments |
+      Where-Object {
+      $_.DocumentType -eq "DatasetOnly"
+    }
+  ).Count
+
   $withoutWorkflowPrepared =
   $totalPrepared -
   $approvedPrepared -
@@ -697,6 +720,10 @@ function Invoke-DcaMain {
   Write-Host (
     "  Sem workflow:           $withoutWorkflowPrepared"
   ) -ForegroundColor Yellow
+
+  Write-Host (
+    "  Somente Dataset:        $datasetOnlyPrepared"
+  ) -ForegroundColor Cyan
 
   if ($Details -or $totalPrepared -le 10) {
 
@@ -744,6 +771,49 @@ function Invoke-DcaMain {
   $null =
   Connect-Teamcenter
 
+  # Consulta somente os documentos que adicionam Dataset em uma
+  # revisao existente. Isso evita consultar centenas de Items antes
+  # que o usuario selecione os documentos desejados.
+  foreach ($document in $preparedDocuments) {
+
+    if ($document.DocumentType -ne "DatasetOnly") {
+      continue
+    }
+
+    Write-Info (
+      "Consultando no Teamcenter: " +
+      "$($document.ItemCode), revisao $($document.ClientRevision)"
+    )
+
+    $lookupResult =
+    Find-DcaTeamcenterItemRevision `
+      -ItemCode $document.ItemCode `
+      -ExpectedRevision $document.ClientRevision
+
+    $document.TeamcenterStatus =
+    [string]$lookupResult.Status
+
+    $document.TeamcenterItem =
+    $lookupResult.Item
+
+    $document.TeamcenterRevision =
+    $lookupResult.Revision
+
+    if ($lookupResult.Status -eq "Sim") {
+
+      Write-Success (
+        "Item e revisao encontrados: " +
+        "$($document.ItemCode)/$($document.ClientRevision)"
+      )
+    }
+    else {
+
+      Write-Warn (
+        "Destino nao localizado para '$($document.ItemCode)': " +
+        $lookupResult.ErrorMessage
+      )
+    }
+  }
   # ============================================================
   # PROTECAO PARA O AMBIENTE DE PROCESSO
   # ============================================================
@@ -762,7 +832,7 @@ function Invoke-DcaMain {
 
     $productionConfirmation =
     Read-Host (
-      "Digite PROCESSO para confirmar a criacao " +
+      "Digite PROCESSO para confirmar o processamento " +
       "no servidor normal"
     )
 
@@ -773,7 +843,7 @@ function Invoke-DcaMain {
       Write-AnimatedLine ""
 
       Write-Warn (
-        "Operacao cancelada. Nenhum item foi criado."
+        "Operacao cancelada. Nenhuma alteracao foi realizada."
       )
 
       return 0
@@ -788,14 +858,27 @@ function Invoke-DcaMain {
 
   Show-DcaImportPlan -Documents $preparedDocuments.ToArray()
 
+  $datasetOnlyCount =
+  @(
+    $preparedDocuments |
+      Where-Object {
+      $_.DocumentType -eq "DatasetOnly"
+    }
+  ).Count
+
+  $createItemCount =
+  $preparedDocuments.Count -
+  $datasetOnlyCount
+
   Write-Section `
-    -Title "Criar itens e importar documentos"
+    -Title "Processar documentos no Teamcenter"
 
   Write-AnimatedLine ""
 
   Write-Warn (
     "Esta etapa vai processar $($preparedDocuments.Count) " +
-    "documento(s) no Teamcenter."
+    "documento(s) no Teamcenter: $createItemCount com criacao " +
+    "de Item e $datasetOnlyCount somente como Dataset."
   )
 
   $confirmation =
@@ -810,7 +893,7 @@ function Invoke-DcaMain {
     Write-AnimatedLine ""
 
     Write-Warn (
-      "Abortado pelo usuario. Nenhum item foi criado."
+      "Abortado pelo usuario. Nenhuma alteracao foi realizada."
     )
 
     return 0
@@ -853,104 +936,176 @@ function Invoke-DcaMain {
       $document.ItemCode
     )
 
+    # ==================================================
+    # 1. Localizar ou criar o destino no Teamcenter
+    # ==================================================
     try {
 
-      # ==================================================
-      # 1. Criar Item e revisao
-      # ==================================================
-
-      $teamcenterDestination =
-      New-DcaTeamcenterItem `
-        -SourceCode $document.ItemCode `
-        -ItemName $document.ItemName `
-        -ClientRevision $document.ClientRevision `
-        -DocumentType $document.DocumentType
-
-      if ($null -eq $teamcenterDestination) {
-
-        throw (
-          "New-DcaTeamcenterItem nao retornou resultado " +
-          "para '$($document.ItemCode)'."
-        )
-      }
-
-      $createdCode =
-      [string]$teamcenterDestination.Code
-
-      if (
-        [string]::IsNullOrWhiteSpace(
-          $createdCode
-        )
-      ) {
-
-        throw "O codigo criado nao foi retornado."
-      }
-
-      $itemCreated =
-      $true
-
-      Write-Success (
-        "Item criado: $createdCode"
-      )
-
-      # ==================================================
-      # 2. Validar o Item retornado pelo CreateObjects
-      # ==================================================
-
       $teamcenterItem =
-      $teamcenterDestination.Item
-
-      if ($null -ne $teamcenterItem) {
-
-        $teamcenterItem =
-        $teamcenterItem.PSObject.BaseObject
-      }
-
-      if ($null -eq $teamcenterItem) {
-
-        throw (
-          "O Item criado nao foi retornado para " +
-          "'$createdCode'."
-        )
-      }
-
-      # ==================================================
-      # 3. Localizar e validar a revisao criada
-      # ==================================================
+      $null
 
       $teamcenterRevision =
-      $teamcenterDestination.Revision
+      $null
 
-      if ($null -ne $teamcenterRevision) {
+      if ($document.DocumentType -eq "DatasetOnly") {
+
+        # O Item e a revisao ja existem. O script utiliza os objetos
+        # encontrados anteriormente e importa somente o Dataset.
+        $createdCode =
+        [string]$document.ItemCode
+
+        $teamcenterItem =
+        $document.TeamcenterItem
 
         $teamcenterRevision =
+        $document.TeamcenterRevision
+
+        if (
+          $document.TeamcenterStatus -ne "Sim" -or
+          $null -eq $teamcenterItem -or
+          $null -eq $teamcenterRevision
+        ) {
+
+          throw (
+            "O Item '$createdCode' e a revisao " +
+            "'$($document.ClientRevision)' nao foram encontrados " +
+            "no Teamcenter. O Dataset nao sera importado."
+          )
+        }
+
+        $itemBaseObject =
+        $teamcenterItem.PSObject.BaseObject
+
+        if ($null -ne $itemBaseObject) {
+
+          $teamcenterItem =
+          $itemBaseObject
+        }
+
+        $revisionBaseObject =
         $teamcenterRevision.PSObject.BaseObject
-      }
 
-      if ($null -eq $teamcenterRevision) {
+        if ($null -ne $revisionBaseObject) {
 
-        Write-Info (
-          "Localizando a revisao do item..."
+          $teamcenterRevision =
+          $revisionBaseObject
+        }
+
+        if ($null -eq $teamcenterItem) {
+
+          throw (
+            "O Item existente ficou NULL para '$createdCode'."
+          )
+        }
+
+        if ($null -eq $teamcenterRevision) {
+
+          throw (
+            "A revisao existente ficou NULL para '$createdCode'."
+          )
+        }
+
+        # Neste fluxo nenhum Item novo foi criado.
+        $itemCreated =
+        $false
+
+        Write-Success (
+          "Destino existente localizado: " +
+          "$createdCode/$($document.ClientRevision)"
         )
+      }
+      else {
+
+        # Para os demais tipos, cria o Item e a revisao normalmente.
+        $teamcenterDestination =
+        New-DcaTeamcenterItem `
+          -SourceCode $document.ItemCode `
+          -ItemName $document.ItemName `
+          -ClientRevision $document.ClientRevision `
+          -DocumentType $document.DocumentType
+
+        if ($null -eq $teamcenterDestination) {
+
+          throw (
+            "New-DcaTeamcenterItem nao retornou resultado " +
+            "para '$($document.ItemCode)'."
+          )
+        }
+
+        $createdCode =
+        [string]$teamcenterDestination.Code
+
+        if (
+          [string]::IsNullOrWhiteSpace(
+            $createdCode
+          )
+        ) {
+
+          throw "O codigo criado nao foi retornado."
+        }
+
+        $teamcenterItem =
+        $teamcenterDestination.Item
+
+        if ($null -ne $teamcenterItem) {
+
+          $teamcenterItem =
+          $teamcenterItem.PSObject.BaseObject
+        }
+
+        if ($null -eq $teamcenterItem) {
+
+          throw (
+            "O Item criado nao foi retornado para " +
+            "'$createdCode'."
+          )
+        }
 
         $teamcenterRevision =
-        Get-TeamcenterRevision `
-          -Item $teamcenterItem
+        $teamcenterDestination.Revision
 
         if ($null -ne $teamcenterRevision) {
 
           $teamcenterRevision =
           $teamcenterRevision.PSObject.BaseObject
         }
-      }
 
-      if ($null -eq $teamcenterRevision) {
+        if ($null -eq $teamcenterRevision) {
 
-        throw (
-          "A revisao do Teamcenter nao foi encontrada " +
-          "para '$createdCode'."
+          Write-Info (
+            "Localizando a revisao do item..."
+          )
+
+          $teamcenterRevision =
+          Get-TeamcenterRevision `
+            -Item $teamcenterItem
+
+          if ($null -ne $teamcenterRevision) {
+
+            $teamcenterRevision =
+            $teamcenterRevision.PSObject.BaseObject
+          }
+        }
+
+        if ($null -eq $teamcenterRevision) {
+
+          throw (
+            "A revisao do Teamcenter nao foi encontrada " +
+            "para '$createdCode'."
+          )
+        }
+
+        $itemCreated =
+        $true
+
+        Write-Success (
+          "Item criado: $createdCode"
         )
       }
+
+      # ==================================================
+      # 2. Validar a revisao de destino
+      # ==================================================
 
       $revisionTypeName =
       $teamcenterRevision.GetType().FullName
@@ -975,6 +1130,7 @@ function Invoke-DcaMain {
           "Tipo tecnico: $revisionTypeName"
         )
       }
+
       # ==================================================
       # 4. Garantir que o PDF esteja no cache local
       # ==================================================
@@ -1087,13 +1243,27 @@ function Invoke-DcaMain {
       $pdmState =
       ([string]$document.PdmState).Trim()
 
+      if ($document.DocumentType -eq "DatasetOnly") {
+
+        Write-Info (
+          "Documento dimensional: somente o Dataset sera importado. " +
+          "Nenhum workflow sera iniciado."
+        )
+
+        $workflowStarted =
+        $false
+      }
+
       $workflowTemplate =
       $null
 
       $workflowLabel =
       $null
 
-      if ($pdmState -ieq "Aprovado") {
+      if (
+        $document.DocumentType -ne "DatasetOnly" -and
+        $pdmState -ieq "Aprovado"
+      ) {
 
         $workflowTemplate =
         [string]$env:DCA_TC_APPROVED_WORKFLOW
@@ -1101,7 +1271,10 @@ function Invoke-DcaMain {
         $workflowLabel =
         "aprovacao"
       }
-      elseif ($pdmState -ieq "Obsoleto") {
+      elseif (
+        $document.DocumentType -ne "DatasetOnly" -and
+        $pdmState -ieq "Obsoleto"
+      ) {
 
         $workflowTemplate =
         [string]$env:DCA_TC_OBSOLETE_WORKFLOW
@@ -1110,7 +1283,12 @@ function Invoke-DcaMain {
         "obsolescencia"
       }
 
-      if ($null -eq $workflowLabel) {
+      if ($document.DocumentType -eq "DatasetOnly") {
+
+        # O documento dimensional apenas recebe o Dataset.
+        # Nenhum workflow e iniciado nesse fluxo.
+      }
+      elseif ($null -eq $workflowLabel) {
 
         if (
           [string]::IsNullOrWhiteSpace(
@@ -1169,6 +1347,14 @@ function Invoke-DcaMain {
           ItemCode = $document.ItemCode
           ItemName = $document.ItemName
           TeamcenterCode = $createdCode
+          Operation = if (
+            $document.DocumentType -eq "DatasetOnly"
+          ) {
+            "DatasetOnly"
+          }
+          else {
+            "CreateItem"
+          }
           ItemCreated = $itemCreated
           PdfImported = $pdfImported
           WorkflowStarted = $workflowStarted
@@ -1235,12 +1421,20 @@ function Invoke-DcaMain {
       }
       $batchResults.Add(
         [PSCustomObject]@{
-          SearchText = $document.SearchText
           ItemCode = $document.ItemCode
           ItemName = $document.ItemName
           TeamcenterCode = $createdCode
+          Operation = if (
+            $document.DocumentType -eq "DatasetOnly"
+          ) {
+            "DatasetOnly"
+          }
+          else {
+            "CreateItem"
+          }
           ItemCreated = $itemCreated
           PdfImported = $pdfImported
+          WorkflowStarted = $workflowStarted
           Succeeded = $false
           ErrorMessage = $_.Exception.Message
         }
@@ -1267,6 +1461,32 @@ function Invoke-DcaMain {
   Write-AnimatedLine ""
 
   foreach ($result in $batchResults) {
+
+    if (
+      $result.Operation -eq "DatasetOnly" -and
+      $result.PdfImported
+    ) {
+
+      Write-Success (
+        "$($result.ItemCode) -> " +
+        "$($result.TeamcenterCode) - Dataset PDF importado"
+      )
+
+      continue
+    }
+
+    if (
+      $result.Operation -eq "DatasetOnly" -and
+      -not $result.PdfImported
+    ) {
+
+      Write-Failure (
+        "$($result.ItemCode) -> Dataset nao importado: " +
+        $result.ErrorMessage
+      )
+
+      continue
+    }
 
     if (
       $result.ItemCreated -and

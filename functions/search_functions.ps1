@@ -2,6 +2,1006 @@
 # Este arquivo permite pesquisar PDFs por codigo, localizar pastas
 # da Documentacao e selecionar os documentos que formarao o lote.
 
+function Get-DcaDocumentsFromFolderPath {
+
+  # Carrega somente os PDFs diretamente dentro da pasta informada.
+  # As subpastas sao tratadas separadamente pelo navegador.
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNull()]
+    $FolderOption,
+
+    $Vault
+  )
+
+  $pdfEntries =
+  @()
+
+  if ($null -ne $Vault) {
+
+    $searchResults =
+    @(
+      Search-DcaVaultPdfEntries `
+        -Vault $Vault `
+        -SearchText "*" `
+        -StartFolderPath $FolderOption.FullName
+    )
+
+    $pdfEntries =
+    @(
+      $searchResults |
+        Where-Object {
+
+        $pdfPath =
+        [string]$_.FullName
+
+        if (
+          [string]::IsNullOrWhiteSpace(
+            $pdfPath
+          )
+        ) {
+          return $false
+        }
+
+        $pdfDirectory =
+        [System.IO.Path]::GetDirectoryName(
+          $pdfPath
+        )
+
+        $pdfDirectory -ieq
+        $FolderOption.FullName
+      } |
+        Sort-Object FullName
+    )
+  }
+  else {
+
+    $diskFiles =
+    @(
+      Get-ChildItem `
+        -LiteralPath $FolderOption.FullName `
+        -Filter "*.pdf" `
+        -File `
+        -Force `
+        -ErrorAction SilentlyContinue
+    )
+
+    $pdfEntries =
+    @(
+      foreach ($diskFile in $diskFiles) {
+
+        [PSCustomObject]@{
+          Name = $diskFile.Name
+          BaseName = $diskFile.BaseName.Trim()
+          FullName = $diskFile.FullName
+          FromVault = $false
+        }
+      }
+    )
+  }
+
+  $documents =
+  [System.Collections.Generic.List[object]]::new()
+
+  foreach ($pdfEntry in $pdfEntries) {
+
+    $parsedName =
+    ConvertFrom-PdfFileName `
+      -BaseName $pdfEntry.BaseName `
+      -DocumentType $FolderOption.DocumentType
+
+    $pdmState =
+    Get-DcaPdmFileState `
+      -Entry $pdfEntry
+
+    $document =
+    [PSCustomObject]@{
+      File = $pdfEntry
+      SourceCode = $parsedName.SourceCode
+      ClientRevision = [string]$parsedName.ClientRevision
+      DocumentTitle = $parsedName.DocumentTitle
+      DocumentType = $FolderOption.DocumentType
+      TypeDisplayName = $FolderOption.DisplayName
+      CodeParsed = $parsedName.CodeParsed
+      PdmState = $pdmState
+      FolderImport = $true
+      SourceFolder = $FolderOption.RelativePath
+      CategoryFolder = $FolderOption.CategoryFolder
+      TeamcenterStatus = "Verificar"
+      TeamcenterItem = $null
+      TeamcenterRevision = $null
+    }
+
+    Update-DcaMatchRevisionFromCard `
+      -Match $document
+
+    Update-DcaMatchDescriptionFromCard `
+      -Match $document
+
+    $documents.Add(
+      $document
+    )
+  }
+
+  return $documents.ToArray()
+}
+
+function Select-DcaDocumentsWithFolderNavigation {
+
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNull()]
+    $RootFolderOption
+  )
+
+  $vault =
+  Get-DcaVault
+
+  # Os documentos DatasetOnly precisam consultar o Teamcenter antes
+  # da tabela para preencher a coluna "Existe no TC".
+  $checkTeamcenterExistence =
+  $RootFolderOption.DocumentType -eq "DatasetOnly"
+
+  if ($checkTeamcenterExistence) {
+
+    Write-AnimatedLine ""
+
+    Write-Info (
+      "Conectando ao Teamcenter para verificar os Items..."
+    )
+
+    $null =
+    Connect-Teamcenter
+  }
+
+  $navigationStack =
+  [System.Collections.Generic.Stack[object]]::new()
+
+  $currentFolder =
+  $RootFolderOption
+
+  while ($true) {
+
+    $childFolders =
+    @(
+      Get-ChildItem `
+        -LiteralPath $currentFolder.FullName `
+        -Directory `
+        -Force `
+        -ErrorAction SilentlyContinue |
+        Sort-Object Name
+    )
+
+    $documents =
+    @(
+      Get-DcaDocumentsFromFolderPath `
+        -FolderOption $currentFolder `
+        -Vault $vault
+    )
+
+    # Consulta cada codigo no Teamcenter antes de apresentar a tabela.
+    if ($checkTeamcenterExistence) {
+
+      Write-AnimatedLine ""
+
+      Write-Info (
+        "Verificando $($documents.Count) Item(s) no Teamcenter..."
+      )
+
+      $existingItemCount =
+      0
+
+      $missingItemCount =
+      0
+
+      $lookupErrorCount =
+      0
+
+      for (
+        $lookupIndex = 0
+        $lookupIndex -lt $documents.Count
+        $lookupIndex++
+      ) {
+
+        $lookupDocument =
+        $documents[$lookupIndex]
+
+        $lookupCode =
+        ([string]$lookupDocument.SourceCode).Trim()
+
+        if (
+          [string]::IsNullOrWhiteSpace(
+            $lookupCode
+          )
+        ) {
+
+          $lookupDocument.TeamcenterStatus =
+          "Erro"
+
+          $lookupErrorCount++
+
+          continue
+        }
+
+        try {
+
+          $lookupResult =
+          Test-DcaTeamcenterItemExists `
+            -ItemCode $lookupCode
+
+          $lookupDocument.TeamcenterStatus =
+          [string]$lookupResult.Status
+
+          $lookupDocument.TeamcenterItem =
+          $lookupResult.Item
+
+          if ($lookupResult.Exists) {
+
+            $existingItemCount++
+          }
+          elseif ($lookupResult.Status -eq "Erro") {
+
+            $lookupErrorCount++
+          }
+          else {
+
+            $missingItemCount++
+          }
+
+          if (
+            $Details -and
+            $lookupResult.Status -eq "Erro"
+          ) {
+
+            Write-Warn (
+              "Falha ao consultar '$lookupCode': " +
+              $lookupResult.ErrorMessage
+            )
+          }
+        }
+        catch {
+
+          $lookupDocument.TeamcenterStatus =
+          "Erro"
+
+          $lookupDocument.TeamcenterItem =
+          $null
+
+          $lookupErrorCount++
+
+          if ($Details) {
+
+            Write-Warn (
+              "Erro ao consultar '$lookupCode' no Teamcenter: " +
+              $_.Exception.Message
+            )
+          }
+        }
+
+        if (
+          (($lookupIndex + 1) % 25) -eq 0 -or
+          ($lookupIndex + 1) -eq $documents.Count
+        ) {
+
+          Write-Host (
+            "`r  Consultados: {0}/{1}" -f
+            ($lookupIndex + 1),
+            $documents.Count
+          ) -ForegroundColor DarkGray -NoNewline
+        }
+      }
+
+      if ($documents.Count -gt 0) {
+        Write-Host ""
+      }
+
+      Write-Host (
+        "  Existem no TC:    $existingItemCount"
+      ) -ForegroundColor Green
+
+      Write-Host (
+        "  Nao existem:      $missingItemCount"
+      ) -ForegroundColor Red
+
+      Write-Host (
+        "  Erros de consulta: $lookupErrorCount"
+      ) -ForegroundColor Magenta
+    }
+
+    Write-AnimatedLine ""
+
+    # Para documentos que adicionam somente Dataset, verifica se o
+    # Item de destino existe antes de apresentar a tabela.
+    if ($checkTeamcenterExistence) {
+
+      Write-Info (
+        "Verificando $($documents.Count) Item(s) no Teamcenter..."
+      )
+
+      for (
+        $lookupIndex = 0
+        $lookupIndex -lt $documents.Count
+        $lookupIndex++
+      ) {
+
+        $lookupDocument =
+        $documents[$lookupIndex]
+
+        $lookupCode =
+        [string]$lookupDocument.SourceCode
+
+        if (
+          [string]::IsNullOrWhiteSpace(
+            $lookupCode
+          )
+        ) {
+
+          $lookupDocument.TeamcenterStatus =
+          "Erro"
+
+          continue
+        }
+
+        $lookupResult =
+        Test-DcaTeamcenterItemExists `
+          -ItemCode $lookupCode
+
+        $lookupDocument.TeamcenterStatus =
+        [string]$lookupResult.Status
+
+        $lookupDocument.TeamcenterItem =
+        $lookupResult.Item
+
+        if (
+          $Details -and
+          $lookupResult.Status -eq "Erro"
+        ) {
+
+          Write-Warn (
+            "Falha ao consultar '$lookupCode': " +
+            $lookupResult.ErrorMessage
+          )
+        }
+
+        # Exibe progresso a cada 25 consultas sem poluir a tela.
+        if (
+          (($lookupIndex + 1) % 25) -eq 0 -or
+          ($lookupIndex + 1) -eq $documents.Count
+        ) {
+
+          Write-Host (
+            "`r  Consultados: {0}/{1}" -f
+            ($lookupIndex + 1),
+            $documents.Count
+          ) -ForegroundColor DarkGray -NoNewline
+        }
+      }
+
+      if ($documents.Count -gt 0) {
+
+        Write-Host ""
+      }
+    }
+
+    Write-AnimatedLine ""
+
+    Write-Host (
+      "  Pasta atual: \{0}" -f
+      $currentFolder.RelativePath
+    ) -ForegroundColor Cyan
+
+    Write-Host (
+      "  Tipo: {0}" -f
+      $currentFolder.DisplayName
+    ) -ForegroundColor Gray
+
+    Write-Host (
+      "  Subpastas: {0} | Documentos: {1}" -f
+      $childFolders.Count,
+      $documents.Count
+    ) -ForegroundColor Gray
+
+    Write-Host (
+      "  " + ("-" * 72)
+    ) -ForegroundColor DarkGray
+
+    if (
+      $childFolders.Count -gt 0 -or
+      $documents.Count -gt 0
+    ) {
+
+      Write-Host (
+        "  Itens encontrados:"
+      ) -ForegroundColor Cyan
+
+      Write-Host (
+        "  " + ("-" * 124)
+      ) -ForegroundColor DarkGray
+
+      Write-Host (
+        "  {0,-7} {1,-44} {2,-9} {3,-17} {4,-15} {5}" -f
+        "Item",
+        "Codigo",
+        "Tipo",
+        "Existe no TC",
+        "Revisao",
+        "Estado"
+      ) -ForegroundColor White
+
+      Write-Host (
+        "  {0,-7} {1,-44} {2,-9} {3,-17} {4,-15} {5}" -f
+        ("-" * 5),
+        ("-" * 42),
+        ("-" * 7),
+        ("-" * 15),
+        ("-" * 13),
+        ("-" * 20)
+      ) -ForegroundColor DarkGray
+
+      # As pastas aparecem antes dos documentos.
+      for (
+        $folderIndex = 0
+        $folderIndex -lt $childFolders.Count
+        $folderIndex++
+      ) {
+
+        $folderNumber =
+        "P" + ($folderIndex + 1)
+
+        $folderName =
+        [string]$childFolders[$folderIndex].Name
+
+        $folderNameDisplay =
+        $folderName
+
+        if ($folderNameDisplay.Length -gt 44) {
+
+          $folderNameDisplay =
+          $folderNameDisplay.Substring(
+            0,
+            41
+          ) + "..."
+        }
+
+        Write-Host (
+          "  {0,-7} {1,-44} {2,-9} {3,-17} {4,-15} {5}" -f
+          $folderNumber,
+          $folderNameDisplay,
+          "Pasta",
+          "-",
+          "-",
+          "-"
+        ) -ForegroundColor Cyan
+      }
+
+      # Os documentos aparecem depois das pastas.
+      for (
+        $documentIndex = 0
+        $documentIndex -lt $documents.Count
+        $documentIndex++
+      ) {
+
+        $document =
+        $documents[$documentIndex]
+
+        $documentNumber =
+        "D" + ($documentIndex + 1)
+
+        $sourceCode =
+        [string]$document.SourceCode
+
+        if (
+          [string]::IsNullOrWhiteSpace(
+            $sourceCode
+          )
+        ) {
+
+          $sourceCode =
+          [string]$document.File.BaseName
+        }
+
+        $sourceCodeDisplay =
+        $sourceCode
+
+        if ($sourceCodeDisplay.Length -gt 44) {
+
+          $sourceCodeDisplay =
+          $sourceCodeDisplay.Substring(
+            0,
+            41
+          ) + "..."
+        }
+
+        $revisionDisplay =
+        [string]$document.ClientRevision
+
+        if (
+          [string]::IsNullOrWhiteSpace(
+            $revisionDisplay
+          )
+        ) {
+
+          $revisionDisplay =
+          "nao informada"
+        }
+
+        if ($revisionDisplay.Length -gt 15) {
+
+          $revisionDisplay =
+          $revisionDisplay.Substring(
+            0,
+            12
+          ) + "..."
+        }
+
+        $stateDisplay =
+        [string]$document.PdmState
+
+        if (
+          [string]::IsNullOrWhiteSpace(
+            $stateDisplay
+          )
+        ) {
+
+          $stateDisplay =
+          "nao informado"
+        }
+
+        # Esta propriedade sera preenchida pela consulta real ao
+        # Teamcenter. Enquanto isso, informa que nao houve consulta.
+        $teamcenterStatus =
+        [string]$document.TeamcenterStatus
+
+        if (
+          [string]::IsNullOrWhiteSpace(
+            $teamcenterStatus
+          )
+        ) {
+
+          $teamcenterStatus =
+          "Verificar"
+        }
+
+        $teamcenterColor =
+        [System.ConsoleColor]::DarkGray
+
+        if ($teamcenterStatus -ieq "Sim") {
+
+          $teamcenterColor =
+          [System.ConsoleColor]::Green
+        }
+        elseif ($teamcenterStatus -ieq "Nao") {
+
+          $teamcenterColor =
+          [System.ConsoleColor]::Red
+        }
+        elseif ($teamcenterStatus -ieq "Erro") {
+
+          $teamcenterColor =
+          [System.ConsoleColor]::Magenta
+        }
+
+        $stateColor =
+        [System.ConsoleColor]::Yellow
+
+        if ($stateDisplay -ieq "Aprovado") {
+
+          $stateColor =
+          [System.ConsoleColor]::Green
+        }
+        elseif ($stateDisplay -ieq "Verificado") {
+
+          $stateColor =
+          [System.ConsoleColor]::Cyan
+        }
+        elseif ($stateDisplay -ieq "Obsoleto") {
+
+          $stateColor =
+          [System.ConsoleColor]::Red
+        }
+        elseif ($stateDisplay -ieq "Corrigir") {
+
+          $stateColor =
+          [System.ConsoleColor]::Magenta
+        }
+        elseif (
+          $stateDisplay -ieq "Em verificacao" -or
+          $stateDisplay -ieq "Em verificação"
+        ) {
+
+          $stateColor =
+          [System.ConsoleColor]::DarkCyan
+        }
+        elseif (
+          $stateDisplay -ieq "Em elaboracao" -or
+          $stateDisplay -ieq "Em elaboração"
+        ) {
+
+          $stateColor =
+          [System.ConsoleColor]::DarkYellow
+        }
+        elseif (
+          $stateDisplay -ieq "Em revisao" -or
+          $stateDisplay -ieq "Em revisão"
+        ) {
+
+          $stateColor =
+          [System.ConsoleColor]::Blue
+        }
+
+        Write-Host (
+          "  {0,-7} {1,-44} {2,-9} " -f
+          $documentNumber,
+          $sourceCodeDisplay,
+          "Item"
+        ) -ForegroundColor Gray -NoNewline
+
+        Write-Host (
+          "{0,-17} " -f
+          $teamcenterStatus
+        ) -ForegroundColor $teamcenterColor -NoNewline
+
+        Write-Host (
+          "{0,-15} " -f
+          $revisionDisplay
+        ) -ForegroundColor Gray -NoNewline
+
+        Write-Host (
+          $stateDisplay
+        ) -ForegroundColor $stateColor
+
+        if ($Details) {
+
+          $documentTitle =
+          [string]$document.DocumentTitle
+
+          if (
+            [string]::IsNullOrWhiteSpace(
+              $documentTitle
+            )
+          ) {
+
+            $documentTitle =
+            "nao informado"
+          }
+
+          Write-Host (
+            "          Nome:    {0}" -f
+            $documentTitle
+          ) -ForegroundColor DarkGray
+
+          Write-Host (
+            "          Arquivo: {0}" -f
+            $document.File.Name
+          ) -ForegroundColor DarkGray
+        }
+      }
+
+      Write-Host (
+        "  " + ("-" * 124)
+      ) -ForegroundColor DarkGray
+
+      Write-Host ""
+    }
+    if (
+      $childFolders.Count -eq 0 -and
+      $documents.Count -eq 0
+    ) {
+
+      Write-Warn (
+        "A pasta atual nao possui subpastas nem documentos."
+      )
+    }
+
+    Write-Host (
+      "  Opcoes disponiveis:"
+    ) -ForegroundColor Cyan
+
+    if ($childFolders.Count -gt 0) {
+
+      Write-Host (
+        "    P1              abrir a pasta P1"
+      ) -ForegroundColor DarkGray
+    }
+
+    if ($documents.Count -gt 0) {
+
+      Write-Host (
+        "    D1              selecionar o documento D1"
+      ) -ForegroundColor DarkGray
+
+      Write-Host (
+        "    D1,D3,D5        selecionar varios documentos"
+      ) -ForegroundColor DarkGray
+
+      Write-Host (
+        "    D1-D5           selecionar um intervalo"
+      ) -ForegroundColor DarkGray
+
+      Write-Host (
+        "    T               selecionar todos os documentos"
+      ) -ForegroundColor DarkGray
+    }
+
+    if ($navigationStack.Count -gt 0) {
+
+      Write-Host (
+        "    V               voltar para a pasta anterior"
+      ) -ForegroundColor DarkGray
+    }
+
+    Write-Host (
+      "    S               sair sem selecionar"
+    ) -ForegroundColor DarkGray
+
+    Write-Host ""
+
+    $selection =
+    Read-Host (
+      "Digite a opcao"
+    )
+
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $selection
+      )
+    ) {
+
+      Write-Warn "Nenhuma opcao foi informada."
+      continue
+    }
+
+    $selection =
+    $selection.Trim()
+
+    if (
+      $selection -ieq "S" -or
+      $selection -ieq "SAIR"
+    ) {
+      return @()
+    }
+
+    if (
+      $selection -ieq "V" -or
+      $selection -ieq "VOLTAR"
+    ) {
+
+      if ($navigationStack.Count -eq 0) {
+
+        Write-Warn "Nao existe uma pasta anterior."
+        continue
+      }
+
+      $currentFolder =
+      $navigationStack.Pop()
+
+      continue
+    }
+
+    if (
+      $selection -ieq "T" -or
+      $selection -ieq "TODOS"
+    ) {
+
+      if ($documents.Count -eq 0) {
+
+        Write-Warn (
+          "A pasta atual nao possui documentos para selecionar."
+        )
+
+        continue
+      }
+
+      return $documents
+    }
+
+    if (
+      $selection -match
+      '^(?i:P)(?<Number>\d+)$'
+    ) {
+
+      $selectedFolderNumber =
+      [int]$Matches["Number"]
+
+      if (
+        $selectedFolderNumber -lt 1 -or
+        $selectedFolderNumber -gt $childFolders.Count
+      ) {
+
+        Write-Warn (
+          "Pasta invalida. Use um numero entre 1 e " +
+          "$($childFolders.Count)."
+        )
+
+        continue
+      }
+
+      $selectedChildFolder =
+      $childFolders[$selectedFolderNumber - 1]
+
+      $childFullPath =
+      [System.IO.Path]::GetFullPath(
+        $selectedChildFolder.FullName
+      ).TrimEnd("\")
+
+      $childRelativePath =
+      $childFullPath.Substring(
+        $RootFolderOption.FullName.Length
+      ).TrimStart("\")
+
+      if (
+        [string]::IsNullOrWhiteSpace(
+          $childRelativePath
+        )
+      ) {
+        $childRelativePath =
+        $selectedChildFolder.Name
+      }
+      else {
+        $childRelativePath =
+        $RootFolderOption.RelativePath +
+        "\" +
+        $childRelativePath
+      }
+
+      $navigationStack.Push(
+        $currentFolder
+      )
+
+      $currentFolder =
+      [PSCustomObject]@{
+        Name = $selectedChildFolder.Name
+        RelativePath = $childRelativePath
+        FullName = $childFullPath
+        CategoryFolder = $RootFolderOption.CategoryFolder
+        DocumentType = $RootFolderOption.DocumentType
+        DisplayName = $RootFolderOption.DisplayName
+      }
+
+      continue
+    }
+
+    $documentSelection =
+    $selection -replace '(?i)D', ''
+
+    $selectedNumbers =
+    [System.Collections.Generic.List[int]]::new()
+
+    $knownNumbers =
+    [System.Collections.Generic.HashSet[int]]::new()
+
+    $selectionIsValid =
+    $true
+
+    foreach (
+      $selectionPart in (
+        $documentSelection -split ","
+      )
+    ) {
+
+      $currentPart =
+      ([string]$selectionPart).Trim()
+
+      if (
+        [string]::IsNullOrWhiteSpace(
+          $currentPart
+        )
+      ) {
+        continue
+      }
+
+      if (
+        $currentPart -match
+        '^(?<Start>\d+)\s*-\s*(?<End>\d+)$'
+      ) {
+
+        $rangeStart =
+        [int]$Matches["Start"]
+
+        $rangeEnd =
+        [int]$Matches["End"]
+
+        if (
+          $rangeStart -lt 1 -or
+          $rangeEnd -gt $documents.Count -or
+          $rangeStart -gt $rangeEnd
+        ) {
+
+          Write-Warn (
+            "Intervalo de documentos invalido: '$currentPart'."
+          )
+
+          $selectionIsValid =
+          $false
+
+          break
+        }
+
+        for (
+          $rangeNumber = $rangeStart
+          $rangeNumber -le $rangeEnd
+          $rangeNumber++
+        ) {
+
+          if ($knownNumbers.Add($rangeNumber)) {
+            $selectedNumbers.Add($rangeNumber)
+          }
+        }
+
+        continue
+      }
+
+      $selectedNumber =
+      0
+
+      $validNumber =
+      [System.Int32]::TryParse(
+        $currentPart,
+        [ref]$selectedNumber
+      )
+
+      if (
+        -not $validNumber -or
+        $selectedNumber -lt 1 -or
+        $selectedNumber -gt $documents.Count
+      ) {
+
+        Write-Warn (
+          "Documento invalido: '$currentPart'."
+        )
+
+        $selectionIsValid =
+        $false
+
+        break
+      }
+
+      if ($knownNumbers.Add($selectedNumber)) {
+        $selectedNumbers.Add($selectedNumber)
+      }
+    }
+
+    if (-not $selectionIsValid) {
+      continue
+    }
+
+    if ($selectedNumbers.Count -eq 0) {
+
+      Write-Warn (
+        "Use Pnumero para abrir uma pasta ou Dnumero para " +
+        "selecionar documentos."
+      )
+
+      continue
+    }
+
+    $selectedDocuments =
+    [System.Collections.Generic.List[object]]::new()
+
+    foreach (
+      $selectedNumber in (
+        $selectedNumbers |
+          Sort-Object
+      )
+    ) {
+
+      $selectedDocument =
+      $documents[$selectedNumber - 1]
+
+      $selectedDocuments.Add(
+        $selectedDocument
+      )
+
+      Write-Success (
+        "PDF selecionado [D$selectedNumber]: " +
+        $selectedDocument.File.Name
+      )
+    }
+
+    return $selectedDocuments.ToArray()
+  }
+}
+
 # ============================================================
 # SELECAO DOS DOCUMENTOS DE UMA PASTA
 # ============================================================
@@ -495,6 +1495,11 @@ function Select-DcaPdfsByFolder {
       FolderName = "Normas Externas"
       DocumentType = "NormaExterna"
       DisplayName = "DCA Norma Externa"
+    },
+    [PSCustomObject]@{
+      FolderName = "FP - XXRE Dimensional"
+      DocumentType = "DatasetOnly"
+      DisplayName = "XXRE Dimensional - somente Dataset"
     }
   )
 
@@ -932,38 +1937,41 @@ function Select-DcaPdfsByFolder {
     $selectedFolder =
     $folderOptions[0]
 
-    Write-AnimatedLine ""
+    if (-not $ListFolderItems) {
 
-    Write-Success (
-      "Pasta selecionada: " +
-      "\$($selectedFolder.RelativePath)"
-    )
+      Write-AnimatedLine ""
 
-    Write-Host (
-      "  Tipo:       $($selectedFolder.DisplayName)"
-    ) -ForegroundColor Cyan
+      Write-Success (
+        "Pasta selecionada: " +
+        "\$($selectedFolder.RelativePath)"
+      )
 
-    Write-Host (
-      "  PDFs:       $($selectedFolder.Total)"
-    ) -ForegroundColor White
+      Write-Host (
+        "  Tipo:       $($selectedFolder.DisplayName)"
+      ) -ForegroundColor Cyan
 
-    Write-Host (
-      "  Aprovados:  $($selectedFolder.ApprovedCount)"
-    ) -ForegroundColor Green
+      Write-Host (
+        "  PDFs:       $($selectedFolder.Total)"
+      ) -ForegroundColor White
 
-    Write-Host (
-      "  Obsoletos:  $($selectedFolder.ObsoleteCount)"
-    ) -ForegroundColor Red
+      Write-Host (
+        "  Aprovados:  $($selectedFolder.ApprovedCount)"
+      ) -ForegroundColor Green
 
-    Write-Host (
-      "  Outros:     $($selectedFolder.OtherCount)"
-    ) -ForegroundColor Yellow
+      Write-Host (
+        "  Obsoletos:  $($selectedFolder.ObsoleteCount)"
+      ) -ForegroundColor Red
+
+      Write-Host (
+        "  Outros:     $($selectedFolder.OtherCount)"
+      ) -ForegroundColor Yellow
+    }
 
     if ($ListFolderItems) {
 
       $selectedDocuments =
-      Select-DcaDocumentsFromFolder `
-        -FolderOption $selectedFolder
+      Select-DcaDocumentsWithFolderNavigation `
+        -RootFolderOption $selectedFolder
 
       return @($selectedDocuments)
     }
@@ -1396,6 +2404,11 @@ function Select-DcaPdfByCode {
       FolderName = "Normas Externas"
       DocumentType = "NormaExterna"
       DisplayName = "DCA Norma Externa"
+    },
+    [PSCustomObject]@{
+      FolderName = "FP - XXRE Dimensional"
+      DocumentType = "DatasetOnly"
+      DisplayName = "XXRE Dimensional - somente Dataset"
     }
   )
 

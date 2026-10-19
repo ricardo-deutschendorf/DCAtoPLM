@@ -197,6 +197,15 @@ function Get-TeamcenterSettings {
 
 function Connect-Teamcenter {
 
+  # Reutiliza a sessao autenticada durante a mesma execucao.
+  if (
+    $null -ne $script:TeamcenterSession -and
+    $null -ne $script:TeamcenterFunctions
+  ) {
+
+    return $script:TeamcenterSession
+  }
+
   # Carrega o assembly do importador, cria a sessao e autentica
   # o usuario no ambiente configurado.
   $importerExecutablePath = Confirm-TeamcenterImporter
@@ -267,6 +276,62 @@ function Connect-Teamcenter {
   }
 
   return $script:TeamcenterSession
+}
+
+function Show-TeamcenterLookupMethods {
+
+  # Exibe os metodos disponibilizados pelo Importar GD que podem
+  # localizar Items e revisoes existentes no Teamcenter.
+  if ($null -eq $script:TeamcenterFunctions) {
+
+    throw (
+      "As funcoes do Teamcenter nao foram carregadas. " +
+      "Execute Connect-Teamcenter primeiro."
+    )
+  }
+
+  Write-Host ""
+
+  Write-Host (
+    "  Metodos de consulta encontrados no Importar GD:"
+  ) -ForegroundColor Cyan
+
+  Write-Host (
+    "  " + ("-" * 90)
+  ) -ForegroundColor DarkGray
+
+  $lookupMethods =
+  @(
+    $script:TeamcenterFunctions.GetMethods() |
+      Where-Object {
+      $_.Name -match
+      "(?i)item|revision|find|search|get"
+    } |
+      Sort-Object Name
+  )
+
+  foreach ($lookupMethod in $lookupMethods) {
+
+    $parameterText =
+    @(
+      $lookupMethod.GetParameters() |
+        ForEach-Object {
+
+        "{0} {1}" -f
+        $_.ParameterType.FullName,
+        $_.Name
+      }
+    ) -join ", "
+
+    Write-Host (
+      "  {0}({1}) -> {2}" -f
+      $lookupMethod.Name,
+      $parameterText,
+      $lookupMethod.ReturnType.FullName
+    ) -ForegroundColor Gray
+  }
+
+  Write-Host ""
 }
 
 function Get-TeamcenterMethod {
@@ -381,6 +446,496 @@ function Get-TeamcenterDataManagementService {
   }
 
   return $service
+}
+
+function Get-TeamcenterModelPropertyText {
+
+  # Recupera uma propriedade textual de um objeto retornado
+  # pela API do Teamcenter.
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNull()]
+    $ModelObject,
+
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$PropertyName
+  )
+
+  $baseObject =
+  $ModelObject.PSObject.BaseObject
+
+  if ($null -ne $baseObject) {
+
+    $ModelObject =
+    $baseObject
+  }
+
+  $getPropertyMethod =
+  $ModelObject.GetType().GetMethods() |
+    Where-Object {
+    $_.Name -match
+    "^(?i)getPropertyObject$" -and
+    $_.GetParameters().Count -eq 1
+  } |
+    Select-Object -First 1
+
+  if ($null -eq $getPropertyMethod) {
+
+    return ""
+  }
+
+  try {
+
+    $propertyObject =
+    $getPropertyMethod.Invoke(
+      $ModelObject,
+      @([string]$PropertyName)
+    )
+
+    if ($null -eq $propertyObject) {
+
+      return ""
+    }
+
+    $propertyType =
+    $propertyObject.GetType()
+
+    foreach (
+      $candidatePropertyName in @(
+        "StringValue",
+        "DisplayableValue",
+        "StringArrayValue"
+      )
+    ) {
+
+      $candidateProperty =
+      $propertyType.GetProperty(
+        $candidatePropertyName
+      )
+
+      if ($null -eq $candidateProperty) {
+        continue
+      }
+
+      $candidateValue =
+      $candidateProperty.GetValue(
+        $propertyObject,
+        $null
+      )
+
+      if (
+        $candidateValue -is
+        [System.Collections.IEnumerable] -and
+        $candidateValue -isnot [string]
+      ) {
+
+        $candidateValue =
+        @($candidateValue) -join ", "
+      }
+
+      $candidateText =
+      ([string]$candidateValue).Trim()
+
+      if (
+        -not [string]::IsNullOrWhiteSpace(
+          $candidateText
+        )
+      ) {
+
+        return $candidateText
+      }
+    }
+
+    return ""
+  }
+  catch {
+
+    return ""
+  }
+}
+
+function Test-DcaTeamcenterItemExists {
+
+  # Consulta um Item pelo codigo sem criar ou modificar objetos.
+  # O resultado e mantido em cache para evitar consultas repetidas.
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$ItemCode
+  )
+
+  if ($null -eq $script:TeamcenterFunctions) {
+
+    throw (
+      "As funcoes do Teamcenter nao foram carregadas. " +
+      "Execute Connect-Teamcenter primeiro."
+    )
+  }
+
+  $itemCodeClean =
+  $ItemCode.Trim().ToUpperInvariant()
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $itemCodeClean
+    )
+  ) {
+
+    return [PSCustomObject]@{
+      Status = "Erro"
+      Exists = $false
+      ItemCode = ""
+      Item = $null
+      ErrorMessage = "O codigo do Item ficou vazio."
+    }
+  }
+
+  # Retorna o resultado em cache quando o mesmo codigo ja foi
+  # consultado durante esta execucao.
+  if (
+    $null -ne $script:TeamcenterItemLookupCache -and
+    $script:TeamcenterItemLookupCache.ContainsKey(
+      $itemCodeClean
+    )
+  ) {
+
+    return $script:TeamcenterItemLookupCache[
+    $itemCodeClean
+    ]
+  }
+
+  $companyValue =
+  ([string]$env:DCA_TC_DATASET_COMPANY).Trim()
+
+  # Localiza o metodo antes de tentar executa-lo.
+  $getItemMethod =
+  Get-TeamcenterMethod `
+    -MethodName "getItem" `
+    -ParameterCount 2
+
+  $result =
+  $null
+
+  try {
+
+    if ($Details) {
+
+      Write-Host (
+        "  Consultando Item '$itemCodeClean', " +
+        "empresa '$companyValue'..."
+      ) -ForegroundColor DarkGray
+    }
+
+    $item =
+    $getItemMethod.Invoke(
+      $null,
+      @(
+        [string]$itemCodeClean,
+        [string]$companyValue
+      )
+    )
+
+    if ($Details) {
+
+      $resultType =
+      if ($null -eq $item) {
+        "NULL"
+      }
+      else {
+        $item.GetType().FullName
+      }
+
+      Write-Host (
+        "  Resultado de '$itemCodeClean': $resultType"
+      ) -ForegroundColor DarkGray
+    }
+
+    if ($null -ne $item) {
+
+      $itemBaseObject =
+      $item.PSObject.BaseObject
+
+      if ($null -ne $itemBaseObject) {
+
+        $item =
+        $itemBaseObject
+      }
+    }
+
+    if ($null -eq $item) {
+
+      $result =
+      [PSCustomObject]@{
+        Status = "Nao"
+        Exists = $false
+        ItemCode = $itemCodeClean
+        Item = $null
+        ErrorMessage = $null
+      }
+    }
+    else {
+
+      $result =
+      [PSCustomObject]@{
+        Status = "Sim"
+        Exists = $true
+        ItemCode = $itemCodeClean
+        Item = $item
+        ErrorMessage = $null
+      }
+    }
+  }
+  catch {
+
+    $realException =
+    $_.Exception
+
+    while (
+      $null -ne $realException.InnerException
+    ) {
+
+      $realException =
+      $realException.InnerException
+    }
+
+    $errorMessage =
+    ([string]$realException.Message).Trim()
+
+    # Algumas versoes do importador geram excecao quando o Item
+    # pesquisado nao existe.
+    if (
+      $errorMessage -match
+      "(?i)not found|nao encontrado|não encontrado|" +
+      "does not exist|cannot find|unable to find"
+    ) {
+
+      $result =
+      [PSCustomObject]@{
+        Status = "Nao"
+        Exists = $false
+        ItemCode = $itemCodeClean
+        Item = $null
+        ErrorMessage = $null
+      }
+    }
+    else {
+
+      $result =
+      [PSCustomObject]@{
+        Status = "Erro"
+        Exists = $false
+        ItemCode = $itemCodeClean
+        Item = $null
+        ErrorMessage = $errorMessage
+      }
+    }
+  }
+
+  if (
+    $null -ne $script:TeamcenterItemLookupCache -and
+    $null -ne $result
+  ) {
+
+    $script:TeamcenterItemLookupCache[
+    $itemCodeClean
+    ] =
+    $result
+  }
+
+  return $result
+}
+
+function Find-DcaTeamcenterItemRevision {
+
+  # Localiza um Item existente pelo codigo e recupera a revisao
+  # retornada pelo Importar GD. Nenhum objeto novo e criado.
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$ItemCode,
+
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$ExpectedRevision
+  )
+
+  if ($null -eq $script:TeamcenterFunctions) {
+
+    throw (
+      "As funcoes do Teamcenter nao foram carregadas. " +
+      "Execute Connect-Teamcenter primeiro."
+    )
+  }
+
+  $itemCodeClean =
+  $ItemCode.Trim().ToUpperInvariant()
+
+  $expectedRevisionClean =
+  $ExpectedRevision.Trim().ToUpperInvariant()
+
+  $companyValue =
+  [string]$env:DCA_TC_DATASET_COMPANY
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $companyValue
+    )
+  ) {
+
+    $companyValue =
+    ""
+  }
+
+  if ($Details) {
+
+    Write-Host (
+      "  Consultando Item '$itemCodeClean', " +
+      "empresa '$companyValue'..."
+    ) -ForegroundColor DarkGray
+  }
+
+  $item =
+  $null
+
+  $itemLookup =
+  Test-DcaTeamcenterItemExists `
+    -ItemCode $itemCodeClean
+
+  if ($itemLookup.Status -eq "Erro") {
+
+    return [PSCustomObject]@{
+      Status = "Erro"
+      ItemExists = $false
+      RevisionExists = $false
+      ItemCode = $itemCodeClean
+      ExpectedRevision = $expectedRevisionClean
+      FoundRevision = ""
+      Item = $null
+      Revision = $null
+      ErrorMessage = $itemLookup.ErrorMessage
+    }
+  }
+
+  if ($itemLookup.Exists) {
+
+    $item =
+    $itemLookup.Item
+  }
+  if ($null -eq $item) {
+
+    return [PSCustomObject]@{
+      Status = "Nao"
+      ItemExists = $false
+      RevisionExists = $false
+      ItemCode = $itemCodeClean
+      ExpectedRevision = $expectedRevisionClean
+      FoundRevision = ""
+      Item = $null
+      Revision = $null
+      ErrorMessage = "Item nao encontrado no Teamcenter."
+    }
+  }
+
+  $itemBaseObject =
+  $item.PSObject.BaseObject
+
+  if ($null -ne $itemBaseObject) {
+
+    $item =
+    $itemBaseObject
+  }
+
+  $revisionMethod =
+  Get-TeamcenterMethod `
+    -MethodName "getItemRevisionfromItem" `
+    -ParameterCount 1
+
+  $revision =
+  $revisionMethod.Invoke(
+    $null,
+    @($item)
+  )
+
+  if ($null -eq $revision) {
+
+    return [PSCustomObject]@{
+      Status = "Item existe"
+      ItemExists = $true
+      RevisionExists = $false
+      ItemCode = $itemCodeClean
+      ExpectedRevision = $expectedRevisionClean
+      FoundRevision = ""
+      Item = $item
+      Revision = $null
+      ErrorMessage = "A revisao do Item nao foi retornada."
+    }
+  }
+
+  $revisionBaseObject =
+  $revision.PSObject.BaseObject
+
+  if ($null -ne $revisionBaseObject) {
+
+    $revision =
+    $revisionBaseObject
+  }
+
+  $foundRevision =
+  Get-TeamcenterModelPropertyText `
+    -ModelObject $revision `
+    -PropertyName "item_revision_id"
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $foundRevision
+    )
+  ) {
+
+    return [PSCustomObject]@{
+      Status = "Item existe"
+      ItemExists = $true
+      RevisionExists = $false
+      ItemCode = $itemCodeClean
+      ExpectedRevision = $expectedRevisionClean
+      FoundRevision = ""
+      Item = $item
+      Revision = $revision
+      ErrorMessage = (
+        "O Teamcenter retornou uma revisao, mas nao foi possivel " +
+        "ler item_revision_id."
+      )
+    }
+  }
+
+  $revisionMatches =
+  $foundRevision -ieq
+  $expectedRevisionClean
+
+  return [PSCustomObject]@{
+    Status = if ($revisionMatches) {
+      "Sim"
+    }
+    else {
+      "Revisao diferente"
+    }
+    ItemExists = $true
+    RevisionExists = $revisionMatches
+    ItemCode = $itemCodeClean
+    ExpectedRevision = $expectedRevisionClean
+    FoundRevision = $foundRevision
+    Item = $item
+    Revision = $revision
+    ErrorMessage = if ($revisionMatches) {
+      $null
+    }
+    else {
+      (
+        "Revisao esperada: '$expectedRevisionClean'. " +
+        "Revisao retornada: '$foundRevision'."
+      )
+    }
+  }
 }
 
 # ============================================================
@@ -1951,16 +2506,6 @@ function New-DcaTeamcenterItem {
     Select-Object -First 1
 
   $createdRevision =
-  $createdObjects |
-    Where-Object {
-
-    $null -ne $_ -and
-    (
-      $_.GetType().Name -eq "ItemRevision" -or
-      $_.GetType().FullName -match "ItemRevision"
-    )
-  } |
-    Select-Object -First 1
   $createdObjects |
     Where-Object {
 
