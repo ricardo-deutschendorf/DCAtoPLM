@@ -243,6 +243,10 @@ $requiredFunctions =
   # Teamcenter.
   "Connect-Teamcenter",
   "Get-TeamcenterMethod",
+  "Show-DcaTeamcenterLookupMethods",
+  "Import-TeamcenterQueryAssemblies",
+  "Show-TeamcenterQueryServiceTypes",
+  "Show-TeamcenterSavedQueryTypeDetails",
   "Get-TeamcenterRevision",
   "Get-TeamcenterModelPropertyText",
   "Test-DcaTeamcenterItemExists",
@@ -660,7 +664,6 @@ function Invoke-DcaMain {
         DocumentType = $documentType
         DisplayType = $selectedPdf.TypeDisplayName
         PdmState = [string]$selectedPdf.PdmState
-        TeamcenterStatus = [string]$selectedPdf.TeamcenterStatus
         TeamcenterItem = $selectedPdf.TeamcenterItem
         TeamcenterRevision = $selectedPdf.TeamcenterRevision
       }
@@ -675,22 +678,6 @@ function Invoke-DcaMain {
   $totalPrepared =
   $preparedDocuments.Count
 
-  $approvedPrepared =
-  @(
-    $preparedDocuments |
-      Where-Object {
-      $_.PdmState -ieq "Aprovado"
-    }
-  ).Count
-
-  $obsoletePrepared =
-  @(
-    $preparedDocuments |
-      Where-Object {
-      $_.PdmState -ieq "Obsoleto"
-    }
-  ).Count
-
   $datasetOnlyPrepared =
   @(
     $preparedDocuments |
@@ -699,10 +686,29 @@ function Invoke-DcaMain {
     }
   ).Count
 
+  $approvedPrepared =
+  @(
+    $preparedDocuments |
+      Where-Object {
+      $_.DocumentType -ne "DatasetOnly" -and
+      $_.PdmState -ieq "Aprovado"
+    }
+  ).Count
+
+  $obsoletePrepared =
+  @(
+    $preparedDocuments |
+      Where-Object {
+      $_.DocumentType -ne "DatasetOnly" -and
+      $_.PdmState -ieq "Obsoleto"
+    }
+  ).Count
+
   $withoutWorkflowPrepared =
   $totalPrepared -
   $approvedPrepared -
-  $obsoletePrepared
+  $obsoletePrepared -
+  $datasetOnlyPrepared
 
   Write-Host ""
   Write-Host (
@@ -790,8 +796,30 @@ function Invoke-DcaMain {
       -ItemCode $document.ItemCode `
       -ExpectedRevision $document.ClientRevision
 
-    $document.TeamcenterStatus =
-    [string]$lookupResult.Status
+    Write-Info (
+      "Resultado da consulta: " +
+      "status='$($lookupResult.Status)', " +
+      "revisao esperada='$($lookupResult.ExpectedRevision)', " +
+      "revisao encontrada='$($lookupResult.FoundRevision)'."
+    )
+
+    if (
+      -not [string]::IsNullOrWhiteSpace(
+        [string]$lookupResult.ErrorMessage
+      )
+    ) {
+
+      Write-Warn (
+        "Detalhe da consulta: " +
+        $lookupResult.ErrorMessage
+      )
+    }
+
+    Add-Member `
+      -InputObject $document `
+      -NotePropertyName "TeamcenterStatus" `
+      -NotePropertyValue ([string]$lookupResult.Status) `
+      -Force
 
     $document.TeamcenterItem =
     $lookupResult.Item
@@ -962,24 +990,38 @@ function Invoke-DcaMain {
 
         if (
           $document.TeamcenterStatus -ne "Sim" -or
-          $null -eq $teamcenterItem -or
           $null -eq $teamcenterRevision
         ) {
 
+          $statusText =
+          [string]$document.TeamcenterStatus
+
+          if (
+            [string]::IsNullOrWhiteSpace(
+              $statusText
+            )
+          ) {
+
+            $statusText =
+            "nao informado"
+          }
+
           throw (
-            "O Item '$createdCode' e a revisao " +
-            "'$($document.ClientRevision)' nao foram encontrados " +
-            "no Teamcenter. O Dataset nao sera importado."
+            "O destino '$createdCode/$($document.ClientRevision)' " +
+            "nao esta disponivel para receber o Dataset. " +
+            "Status da consulta: '$statusText'."
           )
         }
+        if ($null -ne $teamcenterItem) {
 
-        $itemBaseObject =
-        $teamcenterItem.PSObject.BaseObject
+          $itemBaseObject =
+          $teamcenterItem.PSObject.BaseObject
 
-        if ($null -ne $itemBaseObject) {
+          if ($null -ne $itemBaseObject) {
 
-          $teamcenterItem =
-          $itemBaseObject
+            $teamcenterItem =
+            $itemBaseObject
+          }
         }
 
         $revisionBaseObject =
@@ -989,13 +1031,6 @@ function Invoke-DcaMain {
 
           $teamcenterRevision =
           $revisionBaseObject
-        }
-
-        if ($null -eq $teamcenterItem) {
-
-          throw (
-            "O Item existente ficou NULL para '$createdCode'."
-          )
         }
 
         if ($null -eq $teamcenterRevision) {
@@ -1110,9 +1145,11 @@ function Invoke-DcaMain {
       $revisionTypeName =
       $teamcenterRevision.GetType().FullName
 
-      if (
-        $revisionTypeName -notmatch "ItemRevision"
-      ) {
+      $isRevisionObject =
+      $revisionTypeName -match
+      '(?i)(ItemRevision|Revision)$'
+
+      if (-not $isRevisionObject) {
 
         throw (
           "O objeto retornado nao e uma revisao valida. " +
@@ -1224,17 +1261,33 @@ function Invoke-DcaMain {
       # 6. Importar o PDF na revisao
       # ==================================================
 
+      $datasetName =
+      if ($document.DocumentType -eq "DatasetOnly") {
+        "=TESTE="
+      }
+      else {
+        $createdCode
+      }
+
       Write-Info (
         "Importando o PDF no Teamcenter..."
+      )
+
+      Write-Info (
+        "Nome do Dataset: '$datasetName'"
+      )
+
+      Write-Info (
+        "Revisao do Dataset: '$($document.ClientRevision)'"
       )
 
       $null =
       Import-TeamcenterPdf `
         -Revision $teamcenterRevision `
         -ItemCode $createdCode `
+        -DatasetName $datasetName `
         -DatasetRevision $document.ClientRevision `
         -FilePath $temporaryPdfPath
-
       # O metodo pode ser void e retornar NULL.
       # A ausencia de excecao indica que a chamada terminou.
       $pdfImported =

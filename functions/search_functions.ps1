@@ -107,7 +107,6 @@ function Get-DcaDocumentsFromFolderPath {
       FolderImport = $true
       SourceFolder = $FolderOption.RelativePath
       CategoryFolder = $FolderOption.CategoryFolder
-      TeamcenterStatus = "Verificar"
       TeamcenterItem = $null
       TeamcenterRevision = $null
     }
@@ -137,23 +136,6 @@ function Select-DcaDocumentsWithFolderNavigation {
   $vault =
   Get-DcaVault
 
-  # Os documentos DatasetOnly precisam consultar o Teamcenter antes
-  # da tabela para preencher a coluna "Existe no TC".
-  $checkTeamcenterExistence =
-  $RootFolderOption.DocumentType -eq "DatasetOnly"
-
-  if ($checkTeamcenterExistence) {
-
-    Write-AnimatedLine ""
-
-    Write-Info (
-      "Conectando ao Teamcenter para verificar os Items..."
-    )
-
-    $null =
-    Connect-Teamcenter
-  }
-
   $navigationStack =
   [System.Collections.Generic.Stack[object]]::new()
 
@@ -178,210 +160,6 @@ function Select-DcaDocumentsWithFolderNavigation {
         -FolderOption $currentFolder `
         -Vault $vault
     )
-
-    # Consulta cada codigo no Teamcenter antes de apresentar a tabela.
-    if ($checkTeamcenterExistence) {
-
-      Write-AnimatedLine ""
-
-      Write-Info (
-        "Verificando $($documents.Count) Item(s) no Teamcenter..."
-      )
-
-      $existingItemCount =
-      0
-
-      $missingItemCount =
-      0
-
-      $lookupErrorCount =
-      0
-
-      for (
-        $lookupIndex = 0
-        $lookupIndex -lt $documents.Count
-        $lookupIndex++
-      ) {
-
-        $lookupDocument =
-        $documents[$lookupIndex]
-
-        $lookupCode =
-        ([string]$lookupDocument.SourceCode).Trim()
-
-        if (
-          [string]::IsNullOrWhiteSpace(
-            $lookupCode
-          )
-        ) {
-
-          $lookupDocument.TeamcenterStatus =
-          "Erro"
-
-          $lookupErrorCount++
-
-          continue
-        }
-
-        try {
-
-          $lookupResult =
-          Test-DcaTeamcenterItemExists `
-            -ItemCode $lookupCode
-
-          $lookupDocument.TeamcenterStatus =
-          [string]$lookupResult.Status
-
-          $lookupDocument.TeamcenterItem =
-          $lookupResult.Item
-
-          if ($lookupResult.Exists) {
-
-            $existingItemCount++
-          }
-          elseif ($lookupResult.Status -eq "Erro") {
-
-            $lookupErrorCount++
-          }
-          else {
-
-            $missingItemCount++
-          }
-
-          if (
-            $Details -and
-            $lookupResult.Status -eq "Erro"
-          ) {
-
-            Write-Warn (
-              "Falha ao consultar '$lookupCode': " +
-              $lookupResult.ErrorMessage
-            )
-          }
-        }
-        catch {
-
-          $lookupDocument.TeamcenterStatus =
-          "Erro"
-
-          $lookupDocument.TeamcenterItem =
-          $null
-
-          $lookupErrorCount++
-
-          if ($Details) {
-
-            Write-Warn (
-              "Erro ao consultar '$lookupCode' no Teamcenter: " +
-              $_.Exception.Message
-            )
-          }
-        }
-
-        if (
-          (($lookupIndex + 1) % 25) -eq 0 -or
-          ($lookupIndex + 1) -eq $documents.Count
-        ) {
-
-          Write-Host (
-            "`r  Consultados: {0}/{1}" -f
-            ($lookupIndex + 1),
-            $documents.Count
-          ) -ForegroundColor DarkGray -NoNewline
-        }
-      }
-
-      if ($documents.Count -gt 0) {
-        Write-Host ""
-      }
-
-      Write-Host (
-        "  Existem no TC:    $existingItemCount"
-      ) -ForegroundColor Green
-
-      Write-Host (
-        "  Nao existem:      $missingItemCount"
-      ) -ForegroundColor Red
-
-      Write-Host (
-        "  Erros de consulta: $lookupErrorCount"
-      ) -ForegroundColor Magenta
-    }
-
-    Write-AnimatedLine ""
-
-    # Para documentos que adicionam somente Dataset, verifica se o
-    # Item de destino existe antes de apresentar a tabela.
-    if ($checkTeamcenterExistence) {
-
-      Write-Info (
-        "Verificando $($documents.Count) Item(s) no Teamcenter..."
-      )
-
-      for (
-        $lookupIndex = 0
-        $lookupIndex -lt $documents.Count
-        $lookupIndex++
-      ) {
-
-        $lookupDocument =
-        $documents[$lookupIndex]
-
-        $lookupCode =
-        [string]$lookupDocument.SourceCode
-
-        if (
-          [string]::IsNullOrWhiteSpace(
-            $lookupCode
-          )
-        ) {
-
-          $lookupDocument.TeamcenterStatus =
-          "Erro"
-
-          continue
-        }
-
-        $lookupResult =
-        Test-DcaTeamcenterItemExists `
-          -ItemCode $lookupCode
-
-        $lookupDocument.TeamcenterStatus =
-        [string]$lookupResult.Status
-
-        $lookupDocument.TeamcenterItem =
-        $lookupResult.Item
-
-        if (
-          $Details -and
-          $lookupResult.Status -eq "Erro"
-        ) {
-
-          Write-Warn (
-            "Falha ao consultar '$lookupCode': " +
-            $lookupResult.ErrorMessage
-          )
-        }
-
-        # Exibe progresso a cada 25 consultas sem poluir a tela.
-        if (
-          (($lookupIndex + 1) % 25) -eq 0 -or
-          ($lookupIndex + 1) -eq $documents.Count
-        ) {
-
-          Write-Host (
-            "`r  Consultados: {0}/{1}" -f
-            ($lookupIndex + 1),
-            $documents.Count
-          ) -ForegroundColor DarkGray -NoNewline
-        }
-      }
-
-      if ($documents.Count -gt 0) {
-
-        Write-Host ""
-      }
-    }
 
     Write-AnimatedLine ""
 
@@ -415,25 +193,23 @@ function Select-DcaDocumentsWithFolderNavigation {
       ) -ForegroundColor Cyan
 
       Write-Host (
-        "  " + ("-" * 124)
+        "  " + ("-" * 104)
       ) -ForegroundColor DarkGray
 
       Write-Host (
-        "  {0,-7} {1,-44} {2,-9} {3,-17} {4,-15} {5}" -f
+        "  {0,-7} {1,-44} {2,-9} {3,-15} {4}" -f
         "Item",
         "Codigo",
         "Tipo",
-        "Existe no TC",
         "Revisao",
         "Estado"
       ) -ForegroundColor White
 
       Write-Host (
-        "  {0,-7} {1,-44} {2,-9} {3,-17} {4,-15} {5}" -f
+        "  {0,-7} {1,-44} {2,-9} {3,-15} {4}" -f
         ("-" * 5),
         ("-" * 42),
         ("-" * 7),
-        ("-" * 15),
         ("-" * 13),
         ("-" * 20)
       ) -ForegroundColor DarkGray
@@ -464,11 +240,10 @@ function Select-DcaDocumentsWithFolderNavigation {
         }
 
         Write-Host (
-          "  {0,-7} {1,-44} {2,-9} {3,-17} {4,-15} {5}" -f
+          "  {0,-7} {1,-44} {2,-9} {3,-15} {4}" -f
           $folderNumber,
           $folderNameDisplay,
           "Pasta",
-          "-",
           "-",
           "-"
         ) -ForegroundColor Cyan
@@ -547,40 +322,6 @@ function Select-DcaDocumentsWithFolderNavigation {
           "nao informado"
         }
 
-        # Esta propriedade sera preenchida pela consulta real ao
-        # Teamcenter. Enquanto isso, informa que nao houve consulta.
-        $teamcenterStatus =
-        [string]$document.TeamcenterStatus
-
-        if (
-          [string]::IsNullOrWhiteSpace(
-            $teamcenterStatus
-          )
-        ) {
-
-          $teamcenterStatus =
-          "Verificar"
-        }
-
-        $teamcenterColor =
-        [System.ConsoleColor]::DarkGray
-
-        if ($teamcenterStatus -ieq "Sim") {
-
-          $teamcenterColor =
-          [System.ConsoleColor]::Green
-        }
-        elseif ($teamcenterStatus -ieq "Nao") {
-
-          $teamcenterColor =
-          [System.ConsoleColor]::Red
-        }
-        elseif ($teamcenterStatus -ieq "Erro") {
-
-          $teamcenterColor =
-          [System.ConsoleColor]::Magenta
-        }
-
         $stateColor =
         [System.ConsoleColor]::Yellow
 
@@ -630,19 +371,10 @@ function Select-DcaDocumentsWithFolderNavigation {
         }
 
         Write-Host (
-          "  {0,-7} {1,-44} {2,-9} " -f
+          "  {0,-7} {1,-44} {2,-9} {3,-15} " -f
           $documentNumber,
           $sourceCodeDisplay,
-          "Item"
-        ) -ForegroundColor Gray -NoNewline
-
-        Write-Host (
-          "{0,-17} " -f
-          $teamcenterStatus
-        ) -ForegroundColor $teamcenterColor -NoNewline
-
-        Write-Host (
-          "{0,-15} " -f
+          "Item",
           $revisionDisplay
         ) -ForegroundColor Gray -NoNewline
 
@@ -678,7 +410,7 @@ function Select-DcaDocumentsWithFolderNavigation {
       }
 
       Write-Host (
-        "  " + ("-" * 124)
+        "  " + ("-" * 104)
       ) -ForegroundColor DarkGray
 
       Write-Host ""
@@ -1843,6 +1575,8 @@ function Select-DcaPdfsByFolder {
           FolderPattern = $folderPattern
           SourceFolder = $matchingFolder.RelativePath
           CategoryFolder = $matchingFolder.CategoryFolder
+          TeamcenterItem = $null
+          TeamcenterRevision = $null
         }
       )
     }
@@ -2581,6 +2315,8 @@ function Select-DcaPdfByCode {
           TypeDisplayName = $searchFolder.DisplayName
           CodeParsed = $parsedName.CodeParsed
           PdmState = $pdmState
+          TeamcenterItem = $null
+          TeamcenterRevision = $null
         }
       )
     }
@@ -2596,6 +2332,7 @@ function Select-DcaPdfByCode {
     Update-DcaMatchDescriptionFromCard `
       -Match $matchingFile
   }
+
   [int]$matchCount = $matchingFiles.Count
 
   if ($matchCount -eq 0) {
