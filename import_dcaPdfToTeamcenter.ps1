@@ -144,8 +144,6 @@ $ErrorActionPreference =
 $script:DcaVault = $null
 $script:DcaVaultTried = $false
 
-# Armazena o resultado das consultas de existencia no Teamcenter.
-# Evita consultar o mesmo Item mais de uma vez durante a execucao.
 $script:TeamcenterItemLookupCache =
 [System.Collections.Generic.Dictionary[string, object]]::new(
   [System.StringComparer]::OrdinalIgnoreCase
@@ -271,6 +269,13 @@ $requiredFunctions =
   "Find-DcaTeamcenterItemRevision",
   "Get-TeamcenterDataManagementService",
   "Get-TeamcenterServiceErrors",
+  "Get-DcaClientRevisionInfo",
+  "Get-DcaTypeConfiguration",
+  "Get-DcaIntegerPropertyNames",
+  "Get-DcaCreateInputPropertyText",
+  "New-DcaCreateInputObject",
+  "Get-DcaCreatedObjects",
+  "Set-DcaObjectMemberValue",
   "Import-TeamcenterPdf",
   "New-DcaTeamcenterItem",
   "Start-TeamcenterWorkflow"
@@ -939,10 +944,10 @@ function Invoke-DcaMain {
   }
 
   # ============================================================
-  # PROTECAO PARA O AMBIENTE DE PROCESSO
+  # VALIDACAO FINAL ANTES DA CRIACAO
   # ============================================================
-  # Exige uma confirmacao exclusiva antes da confirmacao geral
-  # para reduzir o risco de criacao acidental no ambiente oficial.
+  # O plano e exibido novamente depois da conexao para garantir
+  # que o usuario veja o ambiente e os documentos que serao criados.
 
   if (
     $script:TeamcenterEnvironment -eq "Processo"
@@ -951,34 +956,10 @@ function Invoke-DcaMain {
     Write-AnimatedLine ""
 
     Write-Warn (
-      "Voce esta conectado ao Teamcenter de PROCESSO."
+      "ATENCAO: o processamento sera realizado no " +
+      "Teamcenter de PROCESSO."
     )
-
-    $productionConfirmation =
-    Read-Host (
-      "Digite PROCESSO para confirmar o processamento " +
-      "no servidor normal"
-    )
-
-    if (
-      $productionConfirmation.Trim() -cne "PROCESSO"
-    ) {
-
-      Write-AnimatedLine ""
-
-      Write-Warn (
-        "Operacao cancelada. Nenhuma alteracao foi realizada."
-      )
-
-      return 0
-    }
   }
-
-  # ============================================================
-  # VALIDACAO FINAL ANTES DA CRIACAO
-  # ============================================================
-  # O plano e exibido novamente depois da conexao para garantir
-  # que o usuario veja o ambiente e os documentos que serao criados.
 
   Show-DcaImportPlan -Documents $preparedDocuments.ToArray()
 
@@ -1384,6 +1365,7 @@ function Invoke-DcaMain {
           "'$($document.ItemCode)'."
         )
       }
+
       Write-Info (
         "Importando o PDF no Teamcenter..."
       )
@@ -1543,7 +1525,10 @@ function Invoke-DcaMain {
         }
       )
     }
+    # Uma falha neste documento e registrada no lote, mas nao
+    # interrompe o processamento dos documentos seguintes.
     catch {
+
       if ($Details) {
         $errorRecord =
         $_

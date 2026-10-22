@@ -3720,3 +3720,745 @@ function New-DcaTeamcenterItem {
     Revision = $createdRevision
   }
 }
+
+function Get-DcaTypeConfiguration {
+
+  # Retorna os tipos tecnicos e as propriedades da revisao
+  # conforme o ambiente e o tipo de documento selecionados.
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateSet(
+      "Original",
+      "Processo",
+      "NormaExterna"
+    )]
+    [string]$DocumentType,
+
+    [string]$ClientRevision,
+
+    [ValidateSet(
+      "Teste",
+      "Processo"
+    )]
+    [string]$TeamcenterEnvironment
+  )
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $TeamcenterEnvironment
+    )
+  ) {
+
+    if (
+      -not [string]::IsNullOrWhiteSpace(
+        $script:TeamcenterEnvironment
+      )
+    ) {
+
+      $TeamcenterEnvironment = $script:TeamcenterEnvironment
+    }
+    else {
+
+      $teamcenterSettings = Get-TeamcenterSettings
+
+      $TeamcenterEnvironment = [string]$teamcenterSettings.Environment
+    }
+  }
+
+  if (
+    $TeamcenterEnvironment -notin @(
+      "Teste",
+      "Processo"
+    )
+  ) {
+
+    throw (
+      "O ambiente do Teamcenter nao foi identificado. " +
+      "Ambiente recebido: '$TeamcenterEnvironment'."
+    )
+  }
+  $processTypes = @{
+
+    Original = @{
+      ItemType = $env:DCA_TC_PROCESS_ORIGINAL_ITEM_TYPE
+      RevisionType = $env:DCA_TC_PROCESS_ORIGINAL_REVISION_TYPE
+      ClientProperty = $env:DCA_TC_PROCESS_ORIGINAL_CLIENT_PROPERTY
+      ClientValue = $env:DCA_TC_PROCESS_ORIGINAL_CLIENT_VALUE
+    }
+
+    Processo = @{
+      ItemType = $env:DCA_TC_PROCESS_PROCESS_ITEM_TYPE
+      RevisionType = $env:DCA_TC_PROCESS_PROCESS_REVISION_TYPE
+      ClientProperty = $env:DCA_TC_PROCESS_PROCESS_CLIENT_PROPERTY
+      ClientValue = $env:DCA_TC_PROCESS_PROCESS_CLIENT_VALUE
+    }
+
+    NormaExterna = @{
+      ItemType = $env:DCA_TC_PROCESS_STANDARD_ITEM_TYPE
+      RevisionType = $env:DCA_TC_PROCESS_STANDARD_REVISION_TYPE
+      ClientProperty = $env:DCA_TC_PROCESS_STANDARD_CLIENT_PROPERTY
+      ClientValue = $env:DCA_TC_PROCESS_STANDARD_CLIENT_VALUE
+    }
+  }
+
+  $testTypes = @{
+
+    Original = @{
+      ItemType = $env:DCA_TC_TEST_ORIGINAL_ITEM_TYPE
+      RevisionType = $env:DCA_TC_TEST_ORIGINAL_REVISION_TYPE
+      ClientProperty = $env:DCA_TC_TEST_ORIGINAL_CLIENT_PROPERTY
+      ClientValue = $env:DCA_TC_TEST_ORIGINAL_CLIENT_VALUE
+    }
+
+    Processo = @{
+      ItemType = $env:DCA_TC_TEST_PROCESS_ITEM_TYPE
+      RevisionType = $env:DCA_TC_TEST_PROCESS_REVISION_TYPE
+      ClientProperty = $env:DCA_TC_TEST_PROCESS_CLIENT_PROPERTY
+      ClientValue = $env:DCA_TC_TEST_PROCESS_CLIENT_VALUE
+    }
+
+    NormaExterna = @{
+      ItemType = $env:DCA_TC_TEST_STANDARD_ITEM_TYPE
+      RevisionType = $env:DCA_TC_TEST_STANDARD_REVISION_TYPE
+      ClientProperty = $env:DCA_TC_TEST_STANDARD_CLIENT_PROPERTY
+      ClientValue = $env:DCA_TC_TEST_STANDARD_CLIENT_VALUE
+    }
+  }
+  $selectedTypes =
+  if ($TeamcenterEnvironment -eq "Processo") {
+    $processTypes
+  }
+  else {
+    $testTypes
+  }
+
+  if (-not $selectedTypes.ContainsKey($DocumentType)) {
+
+    throw (
+      "Tipo de documento '$DocumentType' nao configurado " +
+      "para o ambiente '$TeamcenterEnvironment'."
+    )
+  }
+
+  $selectedDocumentTypes = $selectedTypes[$DocumentType]
+
+  $itemType = [string]$selectedDocumentTypes.ItemType
+
+  $revisionType = [string]$selectedDocumentTypes.RevisionType
+
+  $clientProperty = [string]$selectedDocumentTypes.ClientProperty
+
+  $clientValue = [string]$selectedDocumentTypes.ClientValue
+
+  # Bloqueia a criacao quando os nomes tecnicos do Item ou da
+  # revisao nao estiverem configurados no arquivo .env.
+  if (
+    [string]::IsNullOrWhiteSpace($itemType) -or
+    $itemType -like "<*>"
+  ) {
+
+    throw (
+      "ItemType de '$DocumentType' ainda nao foi " +
+      "configurado para o ambiente " +
+      "'$TeamcenterEnvironment'."
+    )
+  }
+
+  if (
+    [string]::IsNullOrWhiteSpace($revisionType) -or
+    $revisionType -like "<*>"
+  ) {
+
+    throw (
+      "RevisionType de '$DocumentType' ainda nao foi " +
+      "configurado para o ambiente " +
+      "'$TeamcenterEnvironment'."
+    )
+  }
+
+  if ($DocumentType -eq "Original") {
+
+    $info = Get-DcaClientRevisionInfo `
+      -ClientRevision $ClientRevision
+
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $info.Revision
+      )
+    ) {
+
+      throw (
+        "ClientRevision ficou vazia para " +
+        "'$DocumentType'."
+      )
+    }
+
+    if ($info.Revision.Length -gt 5) {
+
+      throw (
+        "Revisao Cliente '$($info.Revision)' possui " +
+        "$($info.Revision.Length) caracteres. " +
+        "O limite configurado e 5."
+      )
+    }
+
+    return [PSCustomObject]@{
+      Environment = $TeamcenterEnvironment
+      ItemType = $itemType
+      RevisionType = $revisionType
+      ClientProperty = $clientProperty
+      ClientValue = $clientValue
+      TeamcenterRevisionId = $info.Revision
+
+      RevisionProperties = @{
+        "gd5revcliente" = $info.Revision
+      }
+    }
+  }
+
+  if ($DocumentType -eq "Processo") {
+
+    $processValueRaw =
+    ([string]$ClientRevision).Trim().ToUpperInvariant()
+
+    $clientRevisionValue =
+    $null
+
+    $internalRevisionValue =
+    $null
+
+    $processValue =
+    $null
+
+    # O cartao pode retornar a revisao de Processo com ou sem
+    # separador. Exemplos aceitos: AH-3, AH3, BA-4 e BA4.
+    $processRevisionWithSeparatorMatch =
+    [System.Text.RegularExpressions.Regex]::Match(
+      $processValueRaw,
+      '^([A-Z0-9]{2})-([0-9])$'
+    )
+
+    $processRevisionWithoutSeparatorMatch =
+    [System.Text.RegularExpressions.Regex]::Match(
+      $processValueRaw,
+      '^([A-Z0-9-]{1,2})([0-9])$'
+    )
+
+    if ($processRevisionWithSeparatorMatch.Success) {
+
+      $clientRevisionValue =
+      $processRevisionWithSeparatorMatch.Groups[1].Value
+
+      $internalRevisionValue =
+      $processRevisionWithSeparatorMatch.Groups[2].Value
+    }
+    elseif ($processRevisionWithoutSeparatorMatch.Success) {
+
+      $clientRevisionValue =
+      $processRevisionWithoutSeparatorMatch.Groups[1].Value
+
+      $internalRevisionValue =
+      $processRevisionWithoutSeparatorMatch.Groups[2].Value
+    }
+    else {
+
+      throw (
+        "A revisao '$processValueRaw' nao segue o padrao " +
+        "de DCA Processo. Formatos aceitos: AH-3, AH3, " +
+        "BA-4, BA4 ou --4."
+      )
+    }
+
+    $clientRevisionValue =
+    ([string]$clientRevisionValue).Trim().ToUpperInvariant()
+
+    $internalRevisionValue =
+    ([string]$internalRevisionValue).Trim()
+
+    if (
+      $clientRevisionValue -notmatch
+      '^[A-Z0-9-]{1,2}$'
+    ) {
+
+      throw (
+        "A revisao cliente '$clientRevisionValue' e invalida."
+      )
+    }
+
+    if (
+      $internalRevisionValue -notmatch
+      '^[0-9]$'
+    ) {
+
+      throw (
+        "A revisao interna '$internalRevisionValue' e invalida. " +
+        "Era esperado exatamente um digito."
+      )
+    }
+
+    # O ID da revisao no Teamcenter e formado pela concatenacao
+    # da revisao cliente com a revisao interna.
+    $processValue =
+    $clientRevisionValue + $internalRevisionValue
+    if ($Details) {
+
+      Write-Host (
+        "  Revisao recebida do cartao: " +
+        "[$processValueRaw]"
+      ) -ForegroundColor DarkGray
+
+      Write-Host (
+        "  Revisao cliente: " +
+        "[$clientRevisionValue]"
+      ) -ForegroundColor DarkGray
+
+      Write-Host (
+        "  Revisao interna: " +
+        "[$internalRevisionValue]"
+      ) -ForegroundColor DarkGray
+
+      Write-Host (
+        "  Revision ID do Teamcenter: " +
+        "[$processValue]"
+      ) -ForegroundColor Cyan
+    }
+    return [PSCustomObject]@{
+      Environment = $TeamcenterEnvironment
+      ItemType = $itemType
+      RevisionType = $revisionType
+      ClientProperty = $clientProperty
+      ClientValue = $clientValue
+      TeamcenterRevisionId = $processValue
+
+      RevisionProperties = @{
+        "gd5revcliente" = $clientRevisionValue
+        "gd5revinterna" = $internalRevisionValue
+      }
+    }
+  }
+  if ($DocumentType -eq "NormaExterna") {
+
+    # Revisao documental obtida do PDF ou do cartao de dados.
+    # Exemplo: REV-U.
+    $standardRevision =
+    ([string]$ClientRevision).Trim().ToUpperInvariant()
+
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $standardRevision
+      )
+    ) {
+
+      throw (
+        "A revisao da Norma Externa ficou vazia."
+      )
+    }
+
+    if (
+      $standardRevision -notmatch
+      '^[A-Z0-9.-]{1,20}$'
+    ) {
+
+      throw (
+        "A revisao da Norma Externa possui formato invalido: " +
+        "'$standardRevision'."
+      )
+    }
+
+    # O tipo GD5_DCA_NORMARevision exige que item_revision_id
+    # siga o padrao numerico NNN. A revisao documental, como
+    # REV-U, nao pode ser usada diretamente nesse campo.
+    $teamcenterRevisionId =
+    ([string]$env:DCA_TC_STANDARD_INITIAL_REVISION).Trim()
+
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $teamcenterRevisionId
+      )
+    ) {
+
+      $teamcenterRevisionId =
+      "001"
+    }
+
+    if (
+      $teamcenterRevisionId -notmatch
+      '^[0-9]{3}$'
+    ) {
+
+      throw (
+        "DCA_TC_STANDARD_INITIAL_REVISION possui valor invalido: " +
+        "'$teamcenterRevisionId'. Era esperado exatamente " +
+        "tres numeros, por exemplo 001."
+      )
+    }
+
+    if ($Details) {
+
+      Write-Host (
+        "  Revisao documental da Norma Externa: " +
+        "[$standardRevision]"
+      ) -ForegroundColor DarkGray
+
+      Write-Host (
+        "  Revision ID usado no Teamcenter: " +
+        "[$teamcenterRevisionId]"
+      ) -ForegroundColor Cyan
+    }
+
+    return [PSCustomObject]@{
+      Environment = $TeamcenterEnvironment
+      ItemType = $itemType
+      RevisionType = $revisionType
+      ClientProperty = $clientProperty
+      ClientValue = $clientValue
+      TeamcenterRevisionId = $teamcenterRevisionId
+      DocumentRevision = $standardRevision
+      RevisionProperties = @{}
+    }
+  }
+  throw (
+    "Tipo de documento nao suportado: " +
+    "'$DocumentType'."
+  )
+}
+
+function Get-DcaIntegerPropertyNames {
+
+  # Determina quais propriedades devem ser enviadas em IntProps.
+  # Por padrao, gd5revinterna e inteira. Use o valor "none" no
+  # .env caso nenhuma propriedade deva ser enviada como inteiro.
+  $configuredValue =
+  ([string]$env:DCA_TC_INTEGER_PROPERTIES).Trim()
+
+  if ([string]::IsNullOrWhiteSpace($configuredValue)) {
+    return @("gd5revinterna")
+  }
+
+  if ($configuredValue -ieq "none") {
+    return @()
+  }
+
+  $names =
+  [System.Collections.Generic.List[string]]::new()
+
+  foreach ($part in ($configuredValue -split '[|;,]')) {
+
+    $name =
+    ([string]$part).Trim()
+
+    if (-not [string]::IsNullOrWhiteSpace($name)) {
+      $names.Add($name)
+    }
+  }
+
+  return $names.ToArray()
+}
+
+function Get-DcaCreateInputPropertyText {
+
+  # Recupera uma propriedade independentemente de ela ter sido
+  # enviada ao Teamcenter como texto ou como numero inteiro.
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNull()]
+    $InputObject,
+
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$PropertyName
+  )
+
+  if (
+    $null -ne $InputObject.StringProps -and
+    $InputObject.StringProps.ContainsKey($PropertyName)
+  ) {
+    return ([string]$InputObject.StringProps[$PropertyName]).Trim()
+  }
+
+  if (
+    $null -ne $InputObject.IntProps -and
+    $InputObject.IntProps.ContainsKey($PropertyName)
+  ) {
+    return ([string]$InputObject.IntProps[$PropertyName]).Trim()
+  }
+
+  return ""
+}
+
+function New-DcaCreateInputObject {
+
+  # Cria e preenche um objeto CreateInput compativel com a API SOA.
+  # As propriedades configuradas como inteiras sao separadas em
+  # IntProps; as demais sao armazenadas em StringProps.
+  param(
+    [Parameter(Mandatory = $true)]
+    [type]$InputType,
+
+    [Parameter(Mandatory = $true)]
+    [string]$BoName,
+
+    [Parameter(Mandatory = $true)]
+    [hashtable]$Properties,
+
+    [string[]]$IntegerPropertyNames = @()
+  )
+
+  $inputObject = [System.Activator]::CreateInstance($InputType)
+
+  if ($null -eq $inputObject) {
+    throw "Nao foi possivel criar o CreateInput de '$BoName'."
+  }
+
+  $inputObject.BoName = $BoName
+
+  $stringProps = New-Object System.Collections.Hashtable
+  $intProps = New-Object System.Collections.Hashtable
+
+  foreach ($key in $Properties.Keys) {
+
+    $isInteger = $false
+
+    foreach ($integerName in $IntegerPropertyNames) {
+
+      if ($key -ieq $integerName) {
+        $isInteger = $true
+        break
+      }
+    }
+
+    if ($isInteger) {
+
+      $parsedInteger = 0
+
+      if (-not [int]::TryParse(
+          ([string]$Properties[$key]).Trim(),
+          [ref]$parsedInteger
+        )) {
+
+        throw (
+          "A propriedade inteira '$key' recebeu um valor " +
+          "invalido: '$($Properties[$key])'."
+        )
+      }
+
+      $intProps[$key] = [int]$parsedInteger
+    }
+    else {
+
+      $stringProps[$key] = [string]$Properties[$key]
+    }
+  }
+
+  $inputObject.StringProps = $stringProps
+
+  if ($intProps.Count -gt 0) {
+
+    Set-DcaObjectMemberValue `
+      -InputObject $inputObject `
+      -MemberName "IntProps" `
+      -Value $intProps
+  }
+
+  if ($null -eq $inputObject.StringProps) {
+
+    throw (
+      "StringProps ficou NULL no CreateInput de '$BoName'."
+    )
+  }
+
+  Write-Output `
+    -NoEnumerate `
+    -InputObject $inputObject
+}
+
+function Get-DcaCreatedObjects {
+
+  # Reune os objetos criados que podem aparecer tanto na resposta
+  # direta do CreateObjects quanto no ServiceData.
+  param(
+    $CreateResponse,
+    $ServiceData
+  )
+
+  $createdObjects = [System.Collections.Generic.List[object]]::new()
+  $publicInstance = [System.Reflection.BindingFlags]::Public -bor
+  [System.Reflection.BindingFlags]::Instance
+
+  if ($null -ne $CreateResponse.Output) {
+
+    foreach ($outputEntry in $CreateResponse.Output) {
+
+      if ($null -eq $outputEntry) {
+        continue
+      }
+
+      foreach ($field in $outputEntry.GetType().GetFields($publicInstance)) {
+
+        $fieldValue = $field.GetValue($outputEntry)
+
+        if ($null -eq $fieldValue) {
+          continue
+        }
+
+        if (
+          $fieldValue -is [System.Collections.IEnumerable] -and
+          $fieldValue -isnot [string]
+        ) {
+
+          foreach ($returnedObject in $fieldValue) {
+
+            if (
+              $null -ne $returnedObject -and
+              -not $createdObjects.Contains($returnedObject)
+            ) {
+              $createdObjects.Add($returnedObject)
+            }
+          }
+        }
+        elseif ($fieldValue.GetType().FullName -like "Teamcenter.Soa.Client.Model.*") {
+
+          if (-not $createdObjects.Contains($fieldValue)) {
+            $createdObjects.Add($fieldValue)
+          }
+        }
+      }
+    }
+  }
+
+  if ($null -ne $ServiceData) {
+
+    $createdCount = $ServiceData.SizeOfCreatedObjects()
+
+    for ($objectIndex = 0; $objectIndex -lt $createdCount; $objectIndex++) {
+
+      $createdObject = $ServiceData.GetCreatedObject($objectIndex)
+
+      if (
+        $null -ne $createdObject -and
+        -not $createdObjects.Contains($createdObject)
+      ) {
+        $createdObjects.Add($createdObject)
+      }
+    }
+  }
+
+  if ($Details) {
+
+    Write-Host (
+      "  Quantidade de objetos criados: $($createdObjects.Count)"
+    ) -ForegroundColor DarkGray
+  }
+
+  return $createdObjects.ToArray()
+}
+
+function Set-DcaObjectMemberValue {
+
+  # Define um campo ou uma propriedade publica por reflexao.
+  # Isso e necessario porque algumas versoes da API SOA expoem
+  # os mesmos membros como campos e outras como propriedades.
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNull()]
+    $InputObject,
+
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$MemberName,
+
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNull()]
+    $Value
+  )
+
+  $objectType =
+  $InputObject.GetType()
+
+  $bindingFlags =
+  [System.Reflection.BindingFlags]::Public -bor
+  [System.Reflection.BindingFlags]::Instance -bor
+  [System.Reflection.BindingFlags]::IgnoreCase
+
+  $memberProperty =
+  $objectType.GetProperty(
+    $MemberName,
+    $bindingFlags
+  )
+
+  if ($null -ne $memberProperty) {
+
+    if (-not $memberProperty.CanWrite) {
+
+      throw (
+        "A propriedade '$MemberName' existe em " +
+        "'$($objectType.FullName)', mas nao permite escrita."
+      )
+    }
+
+    $memberProperty.SetValue(
+      $InputObject,
+      $Value,
+      $null
+    )
+
+    return
+  }
+
+  $memberField =
+  $objectType.GetField(
+    $MemberName,
+    $bindingFlags
+  )
+
+  if ($null -ne $memberField) {
+
+    $memberField.SetValue(
+      $InputObject,
+      $Value
+    )
+
+    return
+  }
+
+  $availableMembers =
+  @(
+    $objectType.GetMembers($bindingFlags) |
+      Where-Object {
+      $_.MemberType -eq
+      [System.Reflection.MemberTypes]::Field -or
+      $_.MemberType -eq
+      [System.Reflection.MemberTypes]::Property
+    } |
+      ForEach-Object {
+      $_.Name
+    } |
+      Sort-Object -Unique
+  )
+
+  throw (
+    "O membro '$MemberName' nao foi encontrado no tipo " +
+    "'$($objectType.FullName)'. Membros disponiveis: " +
+    ($availableMembers -join ", ")
+  )
+}
+
+function Get-DcaClientRevisionInfo {
+
+  # Normaliza a revisao do Desenho Original e remove o sufixo
+  # interno quando o cartao apresentar esse formato.
+  param(
+    [string]$ClientRevision
+  )
+
+  $value = ([string]$ClientRevision).Trim().ToUpper()
+  $revision = $value
+
+  if ($value -match '^(?<Revision>[A-Z0-9]{1,10})A[0-4]$') {
+    $revision = $Matches["Revision"]
+  }
+
+  return [PSCustomObject]@{
+    Original = $value
+    Revision = $revision
+  }
+}
