@@ -179,25 +179,66 @@ catch {
 # ============================================================
 # CARREGAMENTO DOS ARQUIVOS DE FUNCOES
 # ============================================================
+#
+# Os caminhos abaixo sao relativos a pasta raiz do projeto,
+# representada por $PSScriptRoot.
+#
+# Os modulos sao carregados por responsabilidade e em uma ordem
+# previsivel:
+#   1. interface do console;
+#   2. integracao com o PDM;
+#   3. preparacao e apresentacao do plano;
+#   4. pesquisa e selecao dos documentos;
+#   5. integracao com o Teamcenter.
+#
+# Cada caminho e relativo a pasta raiz representada por
+# $PSScriptRoot.
+
 $functionFiles =
 @(
-  "output_functions.ps1",
-  "pdm_functions.ps1",
-  "search_functions.ps1",
-  "import_plan_functions.ps1",
-  "teamcenter_functions.ps1"
+  # Saida e interface.
+  "functions\output_functions.ps1",
+
+  # PDM: conexao, arquivos, nomes e cartoes de dados.
+  "functions\pdm_modules\pdm_connection.ps1",
+  "functions\pdm_modules\pdm_files.ps1",
+  "functions\pdm_modules\pdm_filename_parser.ps1",
+  "functions\pdm_modules\pdm_card_reader.ps1",
+  "functions\pdm_modules\pdm_document_metadata.ps1",
+
+  # Preparacao do PDF, entrada da pesquisa e plano.
+  "functions\import_plan_modules\import_pdf_preparation.ps1",
+  "functions\import_plan_modules\import_search_input.ps1",
+  "functions\import_plan_modules\import_plan_display.ps1",
+
+  # Pesquisa e selecao dos documentos.
+  "functions\search_modules\search_folder_documents.ps1",
+  "functions\search_modules\search_folder_navigation.ps1",
+  "functions\search_modules\search_folder_selection.ps1",
+  "functions\search_modules\search_folder_lookup.ps1",
+  "functions\search_modules\search_code_lookup.ps1",
+
+  # Teamcenter: estado, conexao, consultas, criacao e workflow.
+  "functions\teamcenter_modules\teamcenter_state.ps1",
+  "functions\teamcenter_modules\teamcenter_connections.ps1",
+  "functions\teamcenter_modules\teamcenter_query_diagnostics.ps1",
+  "functions\teamcenter_modules\teamcenter_query_properties.ps1",
+  "functions\teamcenter_modules\teamcenter_item_lookup.ps1",
+  "functions\teamcenter_modules\teamcenter_dataset.ps1",
+  "functions\teamcenter_modules\teamcenter_creation_helpers.ps1",
+  "functions\teamcenter_modules\teamcenter_creation.ps1",
+  "functions\teamcenter_modules\teamcenter_workflow.ps1"
 )
 
-foreach ($functionFileName in $functionFiles) {
+# Valida cada arquivo antes do dot source. Se um modulo estiver
+# ausente, o fluxo e interrompido antes de qualquer pesquisa,
+# conexao ou alteracao externa.
+foreach ($functionRelativePath in $functionFiles) {
 
   $functionFilePath =
   Join-Path `
     -Path $PSScriptRoot `
-    -ChildPath (
-    Join-Path `
-      -Path "functions" `
-      -ChildPath $functionFileName
-  )
+    -ChildPath $functionRelativePath
 
   if (-not (
       Test-Path `
@@ -219,8 +260,12 @@ foreach ($functionFileName in $functionFiles) {
   . $functionFilePath
 }
 
-# Valida antecipadamente as funcoes obrigatorias para evitar
-# falhas somente no meio da importacao.
+# Verifica se todas as funcoes exigidas pelo fluxo estao disponiveis.
+# Essa validacao confirma tanto a existencia dos arquivos quanto a
+# presenca das funcoes esperadas dentro de cada modulo.
+#
+# A execucao e interrompida antes da pesquisa caso alguma funcao
+# obrigatoria nao tenha sido carregada.
 $requiredFunctions =
 @(
   # Saida e interface.
@@ -234,6 +279,15 @@ $requiredFunctions =
 
   # PDM e cartao de dados.
   "Get-DcaVault",
+  "Get-NormaCodeFromText",
+  "ConvertFrom-PdfFileName",
+  "Test-DcaCodeMatch",
+  "Get-DcaPdmFileState",
+  "Get-DcaPdmCardVariableValue",
+  "Get-DcaPdmCardVariables",
+  "Show-DcaPdmCardVariables",
+  "Get-DcaCardRevisionVariableNames",
+  "Convert-DcaOriginalDescription",
   "Search-DcaVaultPdfEntries",
   "Get-DcaDiskPdfEntries",
   "Confirm-DcaLocalPdf",
@@ -242,6 +296,7 @@ $requiredFunctions =
   "Update-DcaMatchDescriptionFromCard",
 
   # Pesquisa e selecao.
+  "Get-DcaDocumentsFromFolderPath",
   "Select-DcaDocumentsWithFolderNavigation",
   "Select-DcaDocumentsFromFolder",
   "Select-DcaPdfsByFolder",
@@ -251,13 +306,18 @@ $requiredFunctions =
   "Copy-PdfToTemporaryFolder",
   "Get-DcaSearchCodeList",
   "Get-DcaFolderSearchMode",
+  "Test-DcaFolderSearch",
   "Get-DcaFolderSearchPattern",
   "Get-DcaConfiguredEnvironmentName",
   "Show-DcaImportPlan",
 
-  # Teamcenter.
+  # Teamcenter: conexao, consultas, configuracao dos tipos,
+  # construcao das entradas SOA, criacao, Dataset e workflow.
+  "Confirm-TeamcenterImporter",
+  "Get-TeamcenterSettings",
   "Connect-Teamcenter",
   "Get-TeamcenterMethod",
+  "Get-TeamcenterConnection",
   "Show-DcaTeamcenterLookupMethods",
   "Import-TeamcenterQueryAssemblies",
   "Show-TeamcenterQueryServiceTypes",
@@ -321,6 +381,12 @@ if ($missingFunctions.Count -gt 0) {
 # FLUXO PRINCIPAL
 # ============================================================
 function Invoke-DcaMain {
+
+  # Coordena o fluxo completo da execucao.
+  #
+  # As operacoes especificas permanecem nos modulos da pasta
+  # functions. Esta funcao controla apenas a sequencia geral:
+  # pesquisa, preparacao, confirmacao, importacao e resumo.
 
   # ============================================================
   # 1. RECEBER E VALIDAR A PESQUISA
@@ -569,6 +635,9 @@ function Invoke-DcaMain {
       }
     }
 
+    # A revisao encontrada no cartao de dados ou no nome do arquivo
+    # tem prioridade. A entrada manual ocorre somente quando nenhuma
+    # revisao tiver sido identificada automaticamente.
     $clientRevision =
     [string]$selectedPdf.ClientRevision
 
@@ -650,8 +719,9 @@ function Invoke-DcaMain {
     $clientRevision =
     $clientRevision.Trim().ToUpperInvariant()
 
-    # A descricao do cartao tem prioridade sobre o nome informado
-    # manualmente e sera usada como nome e descricao no Teamcenter.
+    # A descricao obtida do cartao de dados tem prioridade sobre o
+    # parametro -ItemName. Quando nenhuma descricao estiver disponivel,
+    # o fluxo solicita um nome ou utiliza o codigo em importacoes por pasta.
     $itemNameText =
     [string]$ItemName
 
@@ -837,6 +907,10 @@ function Invoke-DcaMain {
   # ============================================================
   # 5. CONECTAR E VALIDAR OS DESTINOS EXISTENTES
   # ============================================================
+
+  # Somente documentos do tipo DatasetOnly precisam localizar
+  # antecipadamente um Item e uma revisao existentes. Os demais
+  # documentos criam um novo Item durante a execucao do lote.
   $null =
   Connect-Teamcenter
 
@@ -906,8 +980,9 @@ function Invoke-DcaMain {
     }
   }
 
-  # Interrompe o fluxo antes da confirmacao quando algum documento
-  # que depende de uma revisao existente nao possui destino valido.
+  # Impede que o lote avance para a confirmacao quando algum
+  # documento DatasetOnly nao possui Item e revisao de destino
+  # devidamente localizados no Teamcenter.
   $unavailableDatasetDestinations =
   @(
     $preparedDocuments |
@@ -944,11 +1019,12 @@ function Invoke-DcaMain {
   }
 
   # ============================================================
-  # VALIDACAO FINAL ANTES DA CRIACAO
+  # 6. VALIDACAO FINAL E CONFIRMACAO DO USUARIO
   # ============================================================
-  # O plano e exibido novamente depois da conexao para garantir
-  # que o usuario veja o ambiente e os documentos que serao criados.
 
+  # O plano e apresentado novamente depois da conexao para que o
+  # usuario confira o ambiente real, os documentos e as operacoes
+  # antes da unica confirmacao que permite alterar o Teamcenter.
   if (
     $script:TeamcenterEnvironment -eq "Processo"
   ) {
@@ -1005,7 +1081,7 @@ function Invoke-DcaMain {
   }
 
   # ============================================================
-  # EXECUCAO DO LOTE
+  # 7. EXECUCAO DO LOTE
   # ============================================================
   # Cada documento possui tratamento de erro independente.
   # Uma falha individual nao interrompe os documentos seguintes.
@@ -1022,6 +1098,16 @@ function Invoke-DcaMain {
     $document =
     $preparedDocuments[$index]
 
+    # Estado individual do documento atual.
+    #
+    # Os indicadores abaixo permitem diferenciar:
+    #   - falha durante a criacao do Item;
+    #   - Item criado com falha na importacao do PDF;
+    #   - PDF importado com falha no workflow;
+    #   - processamento totalmente concluido.
+    #
+    # Os valores sao registrados em $batchResults mesmo quando uma
+    # das etapas do documento atual falha.
     $createdCode =
     $null
 
@@ -1042,8 +1128,11 @@ function Invoke-DcaMain {
     )
 
     # ==================================================
-    # 1. Localizar ou criar o destino no Teamcenter
+    # A. Localizar ou criar o destino no Teamcenter
     # ==================================================
+
+    # DatasetOnly reutiliza um Item existente. Os demais tipos
+    # criam um novo Item e uma nova revisao.
     try {
 
       $teamcenterItem =
@@ -1216,9 +1305,11 @@ function Invoke-DcaMain {
       }
 
       # ==================================================
-      # 2. Validar a revisao de destino
+      # B. Validar a revisao de destino
       # ==================================================
 
+      # A importacao do PDF e o workflow exigem um objeto de revisao
+      # valido, incluindo tipos especializados derivados de ItemRevision.
       $revisionTypeName =
       $teamcenterRevision.GetType().FullName
 
@@ -1246,7 +1337,7 @@ function Invoke-DcaMain {
       }
 
       # ==================================================
-      # 3. Garantir que o PDF esteja no cache local
+      # C. Garantir que o PDF esteja no cache local
       # ==================================================
 
       $localPdfPath =
@@ -1278,9 +1369,11 @@ function Invoke-DcaMain {
       }
 
       # ==================================================
-      # 4. Preparar uma copia local validada para o importador
+      # D. Preparar uma copia local validada para o importador
       # ==================================================
 
+      # O Importar GD recebe uma copia local independente do cache
+      # do Vault. O arquivo e validado antes da chamada ao importador.
       $temporaryPdfPath =
       Copy-PdfToTemporaryFolder `
         -SourcePdfPath $localPdfPath `
@@ -1335,12 +1428,12 @@ function Invoke-DcaMain {
         )
       }
       # ==================================================
-      # 5. Importar o PDF na revisao
+      # E. Importar o PDF na revisao
       # ==================================================
 
-      # Para documentos dimensionais, o Dataset usa o codigo do Item
-      # existente. Para os demais documentos, usa o codigo efetivamente
-      # criado no Teamcenter.
+      # Define o identificador do Dataset enviado ao ImportarPDF.
+      # DatasetOnly utiliza o codigo do Item existente. Os demais
+      # documentos utilizam o codigo criado no Teamcenter.
       $datasetName =
       if ($document.DocumentType -eq "DatasetOnly") {
 
@@ -1400,7 +1493,7 @@ function Invoke-DcaMain {
       $true
 
       # ==================================================
-      # 6. Iniciar o workflow quando aplicavel
+      # F. Iniciar o workflow quando aplicavel
       # ==================================================
       $pdmState =
       ([string]$document.PdmState).Trim()
@@ -1447,8 +1540,7 @@ function Invoke-DcaMain {
 
       if ($document.DocumentType -eq "DatasetOnly") {
 
-        # O documento dimensional apenas recebe o Dataset.
-        # Nenhum workflow e iniciado nesse fluxo.
+        # Nenhuma acao adicional e necessaria para DatasetOnly.
       }
       elseif ($null -eq $workflowLabel) {
 
@@ -1502,7 +1594,7 @@ function Invoke-DcaMain {
       }
 
       # ==================================================
-      # 7. Registrar o resultado para o resumo final
+      # G. Registrar o resultado para o resumo final
       # ==================================================
       $batchResults.Add(
         [PSCustomObject]@{
@@ -1610,14 +1702,13 @@ function Invoke-DcaMain {
         $_.Exception.Message
       )
 
-      # O lote continua mesmo que um documento falhe. O erro sera
-      # consolidado no resumo final.
+      # O resultado de falha ja foi registrado em $batchResults.
       continue
     }
   }
 
   # ============================================================
-  # RESUMO FINAL E CODIGO DE SAIDA
+  # 8. RESUMO FINAL E CODIGO DE SAIDA
   # ============================================================
 
   Write-Section `
@@ -1625,6 +1716,8 @@ function Invoke-DcaMain {
 
   Write-AnimatedLine ""
 
+  # Apresenta um resultado individual para cada documento,
+  # diferenciando criacao, importacao do PDF e workflow.
   foreach ($result in $batchResults) {
 
     if (
@@ -1728,7 +1821,7 @@ function Invoke-DcaMain {
 }
 
 # ============================================================
-# PONTO DE ENTRADA E CODIGO DE SAIDA
+# 9. PONTO DE ENTRADA E CODIGO DE SAIDA
 # ============================================================
 #
 # Codigo 0:
@@ -1738,6 +1831,9 @@ function Invoke-DcaMain {
 # Codigo 1:
 #   O fluxo principal falhou ou pelo menos um documento do
 #   lote nao foi processado com sucesso.
+
+# O valor inicial indica falha por seguranca. O retorno de
+# Invoke-DcaMain substitui esse valor quando o fluxo termina.
 $exitCode = 1
 
 try {

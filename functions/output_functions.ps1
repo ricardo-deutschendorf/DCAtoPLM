@@ -1,13 +1,29 @@
-# Funcoes responsaveis pela apresentacao das mensagens no console.
-# Centralizar a saida neste arquivo mantem cores, recuos e atrasos
-# consistentes em todas as etapas do script.
+# ============================================================
+# SAIDA E INTERFACE DO CONSOLE
+# ============================================================
+#
+# Este arquivo centraliza a apresentacao das mensagens exibidas
+# pelo DCAtoPLM.
+#
+# Responsabilidades:
+#   1. escrever linhas com atraso configuravel;
+#   2. exibir cabecalhos de secao;
+#   3. apresentar resultados de pesquisa com atraso independente;
+#   4. padronizar mensagens de sucesso, falha, aviso e informacao.
+#
+# As funcoes deste arquivo nao pesquisam documentos, nao acessam
+# o PDM e nao realizam alteracoes no Teamcenter.
+# ============================================================
+
 
 # ============================================================
-# SECOES E LINHAS DO CONSOLE
+# CONFIGURACAO DA SAIDA
 # ============================================================
+#
+# Quando este arquivo for carregado fora do script principal,
+# utiliza atraso zero para evitar dependencia de variaveis que
+# ainda nao foram inicializadas.
 
-# Quando o arquivo for carregado sem o script principal, utiliza
-# atraso zero para evitar dependencia de uma variavel inexistente.
 if ($null -eq $OutputDelayMilliseconds) {
 
   $OutputDelayMilliseconds =
@@ -19,6 +35,43 @@ if ($null -eq $script:SearchResultDelayMilliseconds) {
   $script:SearchResultDelayMilliseconds =
   0
 }
+
+
+# ============================================================
+# ESCRITA BASICA NO CONSOLE
+# ============================================================
+function Write-AnimatedLine {
+
+  # Escreve uma linha no console utilizando a cor e o atraso
+  # informados. O atraso pode ser desativado com o valor zero.
+  param(
+    [Parameter(Mandatory = $true)]
+    [AllowEmptyString()]
+    [string]$Message,
+
+    [System.ConsoleColor]$Color =
+    [System.ConsoleColor]::Gray,
+
+    [ValidateRange(0, 2000)]
+    [int]$DelayMilliseconds =
+    $OutputDelayMilliseconds
+  )
+
+  Write-Host `
+    -Object $Message `
+    -ForegroundColor $Color
+
+  if ($DelayMilliseconds -gt 0) {
+
+    Start-Sleep `
+      -Milliseconds $DelayMilliseconds
+  }
+}
+
+
+# ============================================================
+# CABECALHOS DE SECAO
+# ============================================================
 function Write-Section {
 
   # Exibe um cabecalho destacado para separar as principais
@@ -27,6 +80,7 @@ function Write-Section {
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$Title,
+
     [switch]$NoLeadingBlank
   )
 
@@ -54,41 +108,24 @@ function Write-Section {
     -Color Gray
 }
 
-function Write-AnimatedLine {
-
-  # Escreve uma linha no console e aplica o atraso configurado.
-  # O atraso pode ser desativado usando o valor zero.
-  param(
-    [Parameter(Mandatory = $true)]
-    [AllowEmptyString()]
-    [string]$Message,
-    [System.ConsoleColor]$Color = [System.ConsoleColor]::Gray,
-    [ValidateRange(0, 2000)]
-    [int]$DelayMilliseconds = $OutputDelayMilliseconds
-  )
-
-  Write-Host `
-    -Object $Message `
-    -ForegroundColor $Color
-
-  if ($DelayMilliseconds -gt 0) {
-    Start-Sleep `
-      -Milliseconds $DelayMilliseconds
-  }
-}
 
 # ============================================================
 # RESULTADOS DE PESQUISA
 # ============================================================
 function Write-SearchResultLine {
 
-  # Usa um atraso menor durante a listagem dos resultados para
-  # evitar que pesquisas grandes deixem a interface muito lenta.
+  # Exibe uma linha dos resultados de pesquisa utilizando um
+  # atraso independente do restante das mensagens do console.
+  #
+  # Esse atraso pode ser reduzido durante pesquisas grandes para
+  # impedir que a apresentacao dos resultados fique muito lenta.
   param(
     [Parameter(Mandatory = $true)]
     [AllowEmptyString()]
     [string]$Message,
-    [System.ConsoleColor]$Color = [System.ConsoleColor]::Gray
+
+    [System.ConsoleColor]$Color =
+    [System.ConsoleColor]::Gray
   )
 
   $searchDelay =
@@ -106,13 +143,18 @@ function Write-SearchResultLine {
     -DelayMilliseconds $searchDelay
 }
 
+
 # ============================================================
 # MENSAGENS PADRONIZADAS
 # ============================================================
+#
+# As funcoes abaixo aplicam recuo, cor e prefixo padronizados.
+# Isso evita repetir as mesmas regras de apresentacao nos outros
+# arquivos do projeto.
+
 function Write-Success {
 
-  # As funcoes abaixo aplicam recuo, cor e prefixo padronizados
-  # sem repetir essas regras no restante do projeto.
+  # Exibe uma mensagem de operacao concluida com sucesso.
   param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
@@ -124,8 +166,10 @@ function Write-Success {
     -Color Green
 }
 
+
 function Write-Failure {
 
+  # Exibe uma mensagem de falha com o prefixo padronizado.
   param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
@@ -137,8 +181,11 @@ function Write-Failure {
     -Color Red
 }
 
+
 function Write-Warn {
 
+  # Exibe um aviso que exige atencao do usuario, mas que nem
+  # sempre representa uma falha definitiva do fluxo.
   param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
@@ -150,8 +197,10 @@ function Write-Warn {
     -Color Yellow
 }
 
+
 function Write-Info {
 
+  # Exibe uma mensagem informativa sem indicar sucesso ou falha.
   param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
