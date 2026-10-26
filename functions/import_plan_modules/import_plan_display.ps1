@@ -19,8 +19,12 @@
 # ============================================================
 function Get-DcaConfiguredEnvironmentName {
 
-  # Prioriza o ambiente confirmado durante a conexao. Antes da
-  # conexao, utiliza o valor configurado no arquivo .env.
+  # ============================================================
+  # 1. UTILIZAR O AMBIENTE CONFIRMADO PELA CONEXAO
+  # ============================================================
+  #
+  # Quando a conexao com o Teamcenter ja tiver sido realizada,
+  # utiliza o ambiente identificado durante essa conexao.
   if (
     -not [string]::IsNullOrWhiteSpace(
       $script:TeamcenterEnvironment
@@ -29,6 +33,12 @@ function Get-DcaConfiguredEnvironmentName {
     return [string]$script:TeamcenterEnvironment
   }
 
+  # ============================================================
+  # 2. LER O AMBIENTE CONFIGURADO
+  # ============================================================
+  #
+  # Antes da conexao, utiliza o valor informado no arquivo .env.
+  # Somente os ambientes Teste e Processo sao reconhecidos.
   $configuredValue =
   ([string]$env:DCA_TC_ENV).Trim()
 
@@ -40,11 +50,14 @@ function Get-DcaConfiguredEnvironmentName {
     return "Processo"
   }
 
+  # Impede a montagem do plano quando o ambiente estiver vazio
+  # ou possuir um valor diferente dos ambientes permitidos.
   throw (
     "DCA_TC_ENV nao foi configurado. " +
     "Use Teste ou Processo."
   )
 }
+
 function Show-DcaImportPlan {
 
   # Consolida a configuracao dos documentos, tipos, revisoes,
@@ -55,6 +68,12 @@ function Show-DcaImportPlan {
     [object[]]$Documents
   )
 
+  # ============================================================
+  # 1. VALIDAR OS DOCUMENTOS RECEBIDOS
+  # ============================================================
+  #
+  # O plano precisa receber pelo menos um documento para calcular
+  # as configuracoes e apresentar as operacoes previstas.
   if ($Documents.Count -eq 0) {
 
     throw (
@@ -63,15 +82,25 @@ function Show-DcaImportPlan {
     )
   }
 
+  # ============================================================
+  # 2. PREPARAR A CONFIGURACAO DO AMBIENTE
+  # ============================================================
+  #
+  # Identifica o ambiente utilizado no plano e seleciona a URL
+  # correspondente para apresentacao no modo Details.
   $environmentName =
   Get-DcaConfiguredEnvironmentName
 
+  # Teste e utilizado como configuracao inicial. Quando o ambiente
+  # for Processo, a URL e a cor serao substituidas abaixo.
   $serverUrl =
   [string]$env:DCA_TC_TEST_URL
 
   $environmentColor =
   [System.ConsoleColor]::Cyan
 
+  # O ambiente de Processo utiliza uma URL propria e recebe uma
+  # cor de destaque para chamar a atencao antes da importacao.
   if ($environmentName -eq "Processo") {
 
     $serverUrl =
@@ -81,6 +110,12 @@ function Show-DcaImportPlan {
     [System.ConsoleColor]::Yellow
   }
 
+  # ============================================================
+  # 3. LER OS WORKFLOWS CONFIGURADOS
+  # ============================================================
+  #
+  # Os templates sao utilizados somente para montar e apresentar
+  # o plano. Nenhum workflow e iniciado nesta funcao.
   $approvedTemplate =
   [string]$env:DCA_TC_APPROVED_WORKFLOW
 
@@ -88,21 +123,35 @@ function Show-DcaImportPlan {
   [string]$env:DCA_TC_OBSOLETE_WORKFLOW
 
   # ============================================================
-  # MONTAGEM DO PLANO POR DOCUMENTO
+  # 4. MONTAR O PLANO DE CADA DOCUMENTO
   # ============================================================
-
+  #
+  # Consolida tipo, estado, revisao, configuracao do Teamcenter e
+  # workflow previsto para cada documento recebido.
+  # A lista mantem somente as informacoes necessarias para a
+  # apresentacao e validacao do plano de importacao.
   $planItems =
   [System.Collections.Generic.List[object]]::new()
 
   foreach ($document in $Documents) {
 
+    # Entradas nulas sao ignoradas para que nao interrompam a
+    # montagem dos demais documentos do lote.
     if ($null -eq $document) {
       continue
     }
 
+    # ==========================================================
+    # A. DETERMINAR O WORKFLOW PREVISTO
+    # ==========================================================
+    #
+    # O estado atual do PDM define se o documento recebera um
+    # workflow de aprovacao, obsolescencia ou nenhum workflow.
     $pdmState =
     ([string]$document.PdmState).Trim()
 
+    # Os valores permanecem nulos quando o estado nao possuir um
+    # workflow associado.
     $workflowLabel =
     $null
 
@@ -126,12 +175,20 @@ function Show-DcaImportPlan {
       $obsoleteTemplate
     }
 
+    # ==========================================================
+    # B. OBTER A CONFIGURACAO DO TIPO DE DOCUMENTO
+    # ==========================================================
+    #
+    # A configuracao informa os tipos do Item e da revisao, as
+    # propriedades adicionais e a revisao usada no Teamcenter.
     $configuration =
     $null
 
     $configurationError =
     $null
 
+    # DatasetOnly reutiliza um Item e uma revisao existentes.
+    # Por isso, nao precisa consultar uma configuracao de criacao.
     if ($document.DocumentType -eq "DatasetOnly") {
 
       $configuration =
@@ -149,6 +206,8 @@ function Show-DcaImportPlan {
 
       try {
 
+        # Os demais tipos precisam de uma configuracao valida para
+        # criar o Item e sua revisao no ambiente selecionado.
         $configuration =
         Get-DcaTypeConfiguration `
           -DocumentType $document.DocumentType `
@@ -157,11 +216,19 @@ function Show-DcaImportPlan {
       }
       catch {
 
+        # A falha e registrada no plano sem interromper a analise
+        # dos demais documentos do lote.
         $configurationError =
         $_.Exception.Message
       }
     }
 
+    # ==========================================================
+    # C. PREPARAR OS DADOS DA REVISAO
+    # ==========================================================
+    #
+    # O identificador permanece como "?" quando a configuracao do
+    # documento nao puder ser determinada.
     $teamcenterRevisionId =
     "?"
 
@@ -173,6 +240,8 @@ function Show-DcaImportPlan {
       $teamcenterRevisionId =
       [string]$configuration.TeamcenterRevisionId
 
+      # As propriedades adicionais da revisao sao convertidas em
+      # um texto unico para apresentacao no modo Details.
       $revisionParts =
       @()
 
@@ -195,6 +264,12 @@ function Show-DcaImportPlan {
       $revisionParts -join "; "
     }
 
+    # ==========================================================
+    # D. REGISTRAR O DOCUMENTO NO PLANO
+    # ==========================================================
+    #
+    # Consolida os dados originais do documento com a configuracao
+    # calculada e o workflow previsto.
     $planItems.Add(
       [PSCustomObject]@{
         ItemCode = ([string]$document.ItemCode).Trim().ToUpper()
@@ -213,6 +288,8 @@ function Show-DcaImportPlan {
     )
   }
 
+  # Depois da remocao das entradas nulas, pelo menos um documento
+  # deve permanecer disponivel para apresentacao.
   if ($planItems.Count -eq 0) {
 
     throw (
@@ -222,9 +299,11 @@ function Show-DcaImportPlan {
   }
 
   # ============================================================
-  # CABECALHO DO PLANO
+  # 5. APRESENTAR O CABECALHO DO PLANO
   # ============================================================
-
+  #
+  # Informa o ambiente e a quantidade de documentos antes de
+  # apresentar os detalhes calculados para o lote.
   Write-Section `
     -Title "Plano antes da importacao"
 
@@ -240,6 +319,8 @@ function Show-DcaImportPlan {
     "  Ambiente:   {0}" -f $environmentName
   ) -ForegroundColor $environmentColor
 
+  # A URL do servidor e exibida somente no modo Details para
+  # confirmar tecnicamente o destino selecionado.
   if ($Details) {
 
     Write-Host (
@@ -253,12 +334,17 @@ function Show-DcaImportPlan {
   ) -ForegroundColor White
 
   # ============================================================
-  # CONFIGURACAO POR TIPO DE DOCUMENTO
+  # 6. APRESENTAR A CONFIGURACAO POR TIPO
   # ============================================================
+  #
+  # Agrupa os documentos para evitar repetir a mesma configuracao
+  # de Item, revisao e cliente em cada linha do plano.
 
   Write-Host ""
   Write-Host "  Configuracao por tipo:" -ForegroundColor Cyan
 
+  # Cada grupo representa um tipo interno de documento presente
+  # no lote atual.
   foreach (
     $typeGroup in @(
       $planItems |
@@ -275,6 +361,8 @@ function Show-DcaImportPlan {
       $typeGroup.Count
     ) -ForegroundColor White
 
+    # Seleciona o primeiro documento com configuracao valida para
+    # representar os dados comuns do grupo.
     $sampleItem =
     $typeGroup.Group |
       Where-Object {
@@ -282,6 +370,8 @@ function Show-DcaImportPlan {
     } |
       Select-Object -First 1
 
+    # Quando nenhum documento do grupo possuir configuracao
+    # valida, os erros individuais serao apresentados mais abaixo.
     if ($null -eq $sampleItem) {
 
       Write-Host (
@@ -294,6 +384,8 @@ function Show-DcaImportPlan {
     $typeConfiguration =
     $sampleItem.Configuration
 
+    # O texto permanece como "nenhum" quando o tipo nao exige uma
+    # propriedade adicional para identificar o cliente.
     $clientText =
     "nenhum"
 
@@ -329,9 +421,11 @@ function Show-DcaImportPlan {
   }
 
   # ============================================================
-  # RESUMO DOS WORKFLOWS
+  # 7. CALCULAR E APRESENTAR OS WORKFLOWS
   # ============================================================
-
+  #
+  # Conta os documentos de aprovacao, obsolescencia e aqueles que
+  # permanecerao sem workflow.
   $approvedCount =
   @(
     $planItems |
@@ -348,11 +442,15 @@ function Show-DcaImportPlan {
     }
   ).Count
 
+  # Todo documento que nao estiver associado aos dois workflows
+  # conhecidos sera contabilizado como sem workflow.
   $withoutWorkflowCount =
   $planItems.Count -
   $approvedCount -
   $obsoleteCount
 
+  # Os nomes configurados sao preparados para apresentacao. Um
+  # valor vazio recebe o texto NAO CONFIGURADO.
   $approvedText =
   $approvedTemplate
 
@@ -398,12 +496,17 @@ function Show-DcaImportPlan {
   ) -ForegroundColor Yellow
 
   # ============================================================
-  # LISTA DOS DOCUMENTOS
+  # 8. APRESENTAR OS DOCUMENTOS DO LOTE
   # ============================================================
+  #
+  # Exibe a revisao prevista, o estado do PDM, o workflow e os
+  # erros encontrados durante a montagem da configuracao.
 
   Write-Host ""
   Write-Host "  Documentos:" -ForegroundColor Cyan
 
+  # Os contadores permitem apresentar avisos consolidados depois
+  # da lista individual dos documentos.
   $errorCount =
   0
 
@@ -416,15 +519,26 @@ function Show-DcaImportPlan {
     $index++
   ) {
 
+    # ==========================================================
+    # A. PREPARAR A LINHA DO DOCUMENTO
+    # ==========================================================
     $planItem =
     $planItems[$index]
 
+    # A linha utiliza inicialmente o estado sem workflow e a cor
+    # neutra. Esses valores sao alterados conforme a configuracao.
     $workflowText =
     "sem workflow"
 
     $lineColor =
     [System.ConsoleColor]::Gray
 
+    # ==========================================================
+    # B. DEFINIR O TEXTO E A COR DO WORKFLOW
+    # ==========================================================
+    #
+    # Workflows configurados recebem a cor correspondente. Quando
+    # o template estiver ausente, a linha recebe um aviso amarelo.
     if ($null -ne $planItem.WorkflowLabel) {
 
       if (
@@ -459,6 +573,8 @@ function Show-DcaImportPlan {
       }
     }
 
+    # Um erro de configuracao possui prioridade visual sobre o
+    # estado do workflow e deixa a linha em vermelho.
     if ($null -ne $planItem.ConfigurationError) {
 
       $lineColor =
@@ -467,6 +583,12 @@ function Show-DcaImportPlan {
       $errorCount++
     }
 
+    # ==========================================================
+    # C. NORMALIZAR O ESTADO DO PDM
+    # ==========================================================
+    #
+    # Quando o estado nao tiver sido identificado, utiliza um
+    # texto explicito em vez de apresentar uma coluna vazia.
     $stateText =
     $planItem.PdmState
 
@@ -479,6 +601,9 @@ function Show-DcaImportPlan {
       "sem estado"
     }
 
+    # ==========================================================
+    # D. EXIBIR O RESULTADO DO DOCUMENTO
+    # ==========================================================
     Write-Host (
       "  [{0}] {1} | rev {2} | {3} | {4}" -f
       ($index + 1),
@@ -488,6 +613,8 @@ function Show-DcaImportPlan {
       $workflowText
     ) -ForegroundColor $lineColor
 
+    # O motivo completo da configuracao invalida e apresentado
+    # imediatamente abaixo do documento correspondente.
     if ($null -ne $planItem.ConfigurationError) {
 
       Write-Host (
@@ -496,6 +623,8 @@ function Show-DcaImportPlan {
       ) -ForegroundColor Red
     }
 
+    # No modo Details, apresenta nome, propriedades da revisao,
+    # template do workflow e caminho completo do arquivo.
     if ($Details) {
 
       Write-Host (
@@ -535,9 +664,13 @@ function Show-DcaImportPlan {
   }
 
   # ============================================================
-  # AVISOS FINAIS
+  # 9. APRESENTAR OS AVISOS FINAIS
   # ============================================================
-
+  #
+  # Consolida os erros de configuracao e os workflows ausentes
+  # encontrados durante a montagem do plano.
+  # Erros de configuracao impedem a criacao dos documentos
+  # correspondentes no Teamcenter.
   if ($errorCount -gt 0) {
 
     Write-Host ""
@@ -548,6 +681,8 @@ function Show-DcaImportPlan {
     )
   }
 
+  # A ausencia do template nao impede a criacao do Item e a
+  # importacao do PDF, mas deixa o documento sem workflow.
   if ($missingWorkflowCount -gt 0) {
 
     Write-Host ""

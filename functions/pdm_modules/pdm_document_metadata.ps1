@@ -22,6 +22,12 @@ function Get-DcaCardRevisionVariableNames {
     [string]$DocumentType
   )
 
+  # ============================================================
+  # 1. SELECIONAR A CONFIGURACAO DE REVISAO
+  # ============================================================
+  #
+  # Cada tipo de documento utiliza uma variavel diferente do
+  # arquivo .env para informar os campos de revisao do cartao.
   $configuredValue =
   ""
 
@@ -46,6 +52,12 @@ function Get-DcaCardRevisionVariableNames {
     [string]$env:DCA_PDM_VAR_DATASET_REVISION
   }
 
+  # ============================================================
+  # 2. PREPARAR OS NOMES DAS VARIAVEIS
+  # ============================================================
+  #
+  # A configuracao pode possuir mais de uma variavel separada por
+  # barra vertical ou ponto e virgula. Nomes vazios sao ignorados.
   $variableNames =
   [System.Collections.Generic.List[string]]::new()
 
@@ -59,14 +71,23 @@ function Get-DcaCardRevisionVariableNames {
     }
   }
 
+  # Retorna um array vazio quando nenhuma variavel estiver
+  # configurada para o tipo de documento recebido.
   return $variableNames.ToArray()
 }
+
 function Convert-DcaOriginalDescription {
 
   param(
     [string]$Description
   )
 
+  # ============================================================
+  # 1. PREPARAR A DESCRICAO
+  # ============================================================
+  #
+  # Remove os espacos das extremidades antes de normalizar o
+  # texto que sera utilizado como nome no Teamcenter.
   $descriptionClean =
   ([string]$Description).Trim()
 
@@ -79,7 +100,12 @@ function Convert-DcaOriginalDescription {
     return $null
   }
 
-  # Remove virgulas usadas como separador no cartao.
+  # ============================================================
+  # 2. NORMALIZAR O CONTEUDO DA DESCRICAO
+  # ============================================================
+  #
+  # As virgulas utilizadas como separadores no cartao sao
+  # convertidas em espacos antes da remocao dos espacos duplicados.
   $descriptionClean =
   $descriptionClean.Replace(
     ",",
@@ -103,8 +129,12 @@ function Convert-DcaOriginalDescription {
     return $null
   }
 
-  # Padrao do nome no Teamcenter:
-  # primeira letra maiuscula e restante minusculo.
+  # ============================================================
+  # 3. APLICAR O PADRAO DE NOME DO TEAMCENTER
+  # ============================================================
+  #
+  # A primeira letra permanece maiuscula e os demais caracteres
+  # sao convertidos para minusculo.
   if ($descriptionClean.Length -eq 1) {
 
     return $descriptionClean.ToUpperInvariant()
@@ -120,12 +150,20 @@ function Convert-DcaOriginalDescription {
     ).ToLowerInvariant()
   )
 }
+
 function Update-DcaMatchDescriptionFromCard {
   param(
     [Parameter(Mandatory = $true)]
     $Match
   )
 
+  # ============================================================
+  # 1. TRATAR DOCUMENTOS SOMENTE DATASET
+  # ============================================================
+  #
+  # DatasetOnly nao depende de uma descricao do cartao. Quando
+  # nenhum titulo estiver disponivel, o codigo sera utilizado
+  # como nome do documento.
   if ($Match.DocumentType -eq "DatasetOnly") {
 
     if (
@@ -141,6 +179,12 @@ function Update-DcaMatchDescriptionFromCard {
     return
   }
 
+  # ============================================================
+  # 2. SELECIONAR A VARIAVEL DE DESCRICAO
+  # ============================================================
+  #
+  # Cada tipo de documento consulta uma variavel especifica do
+  # arquivo .env para identificar o campo de descricao do cartao.
   $descriptionVariableName =
   $null
 
@@ -169,6 +213,8 @@ function Update-DcaMatchDescriptionFromCard {
     )
   ) {
 
+    # Registra que a descricao nao foi consultada porque nenhuma
+    # variavel foi configurada para o tipo atual.
     Add-Member `
       -InputObject $Match `
       -NotePropertyName "DescriptionSource" `
@@ -178,6 +224,12 @@ function Update-DcaMatchDescriptionFromCard {
     return
   }
 
+  # ============================================================
+  # 3. CONSULTAR A DESCRICAO NO CARTAO
+  # ============================================================
+  #
+  # Le o valor da variavel configurada diretamente no cartao de
+  # dados associado ao PDF.
   $cardDescription =
   Get-DcaPdmVariableValue `
     -Entry $Match.File `
@@ -187,6 +239,9 @@ function Update-DcaMatchDescriptionFromCard {
 
   $cardDescription =
   ([string]$cardDescription).Trim()
+
+  # Desenhos Originais utilizam uma normalizacao adicional para
+  # adequar a descricao ao padrao de nome do Teamcenter.
   if ($Match.DocumentType -eq "Original") {
 
     $cardDescription =
@@ -199,6 +254,8 @@ function Update-DcaMatchDescriptionFromCard {
     )
   ) {
 
+    # Mantem o titulo obtido anteriormente e registra que a
+    # variavel do cartao foi encontrada sem um valor utilizavel.
     Add-Member `
       -InputObject $Match `
       -NotePropertyName "DescriptionSource" `
@@ -217,9 +274,17 @@ function Update-DcaMatchDescriptionFromCard {
     return
   }
 
+  # ============================================================
+  # 4. APLICAR A DESCRICAO DO CARTAO
+  # ============================================================
+  #
+  # Uma descricao valida encontrada no cartao substitui o titulo
+  # interpretado anteriormente pelo nome fisico do PDF.
   $Match.DocumentTitle =
   $cardDescription
 
+  # Preserva o valor original do cartao e registra sua origem para
+  # permitir diagnosticos nas etapas seguintes.
   Add-Member `
     -InputObject $Match `
     -NotePropertyName "CardDescription" `
@@ -232,6 +297,8 @@ function Update-DcaMatchDescriptionFromCard {
     -NotePropertyValue "cartao de dados" `
     -Force
 
+  # O valor encontrado e apresentado somente quando o modo de
+  # diagnostico estiver ativo.
   if ($Details) {
 
     Write-Host (
@@ -240,12 +307,20 @@ function Update-DcaMatchDescriptionFromCard {
     ) -ForegroundColor Cyan
   }
 }
+
 function Update-DcaMatchRevisionFromCard {
   param(
     [Parameter(Mandatory = $true)]
     $Match
   )
 
+  # ============================================================
+  # 1. VERIFICAR O MODO DE DESCOBERTA DO CARTAO
+  # ============================================================
+  #
+  # Quando habilitada no arquivo .env, esta opcao apresenta todas
+  # as variaveis encontradas no cartao para auxiliar diagnosticos
+  # e ajustes de configuracao.
   $discoverCardVariables =
   ([string]$env:DCA_PDM_DISCOVER_CARD_VARIABLES).Trim()
 
@@ -257,17 +332,35 @@ function Update-DcaMatchRevisionFromCard {
     Show-DcaPdmCardVariables `
       -Entry $Match.File
   }
+
+  # ============================================================
+  # 2. PRESERVAR A REVISAO DO NOME DO ARQUIVO
+  # ============================================================
+  #
+  # A revisao interpretada pelo nome e preservada separadamente
+  # para permitir identificar posteriormente sua origem.
   $fileRevision =
   ([string]$Match.ClientRevision).Trim().ToUpper()
 
+  # A origem inicial permanece como nome do arquivo. Esse valor
+  # sera alterado somente quando o cartao fornecer uma revisao.
   $revisionSource =
   "nome do arquivo"
 
+  # ============================================================
+  # 3. OBTER AS VARIAVEIS DE REVISAO CONFIGURADAS
+  # ============================================================
+  #
+  # Seleciona os campos do cartao associados ao tipo atual do
+  # documento.
   $variableNames =
   @(
     Get-DcaCardRevisionVariableNames `
       -DocumentType ([string]$Match.DocumentType)
   )
+
+  # No modo Details, apresenta os nomes dos campos que serao
+  # consultados no cartao do documento atual.
   if ($Details) {
 
     $configuredVariablesDisplay =
@@ -283,6 +376,13 @@ function Update-DcaMatchRevisionFromCard {
       $configuredVariablesDisplay
     ) -ForegroundColor DarkGray
   }
+
+  # ============================================================
+  # 4. CONSULTAR A REVISAO NO CARTAO
+  # ============================================================
+  #
+  # Testa as variaveis configuradas e utiliza o primeiro valor
+  # valido encontrado no cartao de dados.
   if ($variableNames.Count -gt 0) {
 
     $cardRevision =
@@ -290,6 +390,8 @@ function Update-DcaMatchRevisionFromCard {
       -Entry $Match.File `
       -VariableNames $variableNames
 
+    # Os diagnosticos mostram o arquivo consultado, as variaveis
+    # testadas e o valor retornado pelo cartao.
     if ($Details) {
 
       Write-Host (
@@ -329,6 +431,8 @@ function Update-DcaMatchRevisionFromCard {
       $cardRevision =
       ([string]$cardRevision).Trim().ToUpperInvariant()
 
+      # Uma revisao valida do cartao substitui a revisao extraida
+      # anteriormente do nome fisico do PDF.
       $Match.ClientRevision =
       $cardRevision
 
@@ -337,11 +441,19 @@ function Update-DcaMatchRevisionFromCard {
     }
   }
 
+  # ============================================================
+  # 5. INFORMAR UMA CONFIGURACAO AUSENTE
+  # ============================================================
+  #
+  # Quando nenhuma variavel estiver configurada, o modo Details
+  # informa qual propriedade deve ser adicionada ao arquivo .env.
   if (
     $variableNames.Count -eq 0 -and
     $Details
   ) {
 
+    # Identifica o nome da variavel de ambiente correspondente ao
+    # tipo do documento para facilitar a correcao da configuracao.
     $configurationName =
     switch ($Match.DocumentType) {
 
@@ -376,6 +488,13 @@ function Update-DcaMatchRevisionFromCard {
     ) -ForegroundColor DarkGray
   }
 
+  # ============================================================
+  # 6. REGISTRAR A ORIGEM DA REVISAO
+  # ============================================================
+  #
+  # FileRevision preserva a revisao extraida do nome do arquivo.
+  # RevisionSource informa se a revisao final veio do nome ou do
+  # cartao de dados.
   Add-Member `
     -InputObject $Match `
     -NotePropertyName "FileRevision" `

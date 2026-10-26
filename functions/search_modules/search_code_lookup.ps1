@@ -30,6 +30,12 @@ function Select-DcaPdfByCode {
     [string]$Code
   )
 
+  # ============================================================
+  # 1. VALIDAR A RAIZ E O CODIGO DE PESQUISA
+  # ============================================================
+  #
+  # Confirma se a raiz informada existe e prepara o padrao usado
+  # para localizar correspondencias parciais do codigo.
   if (-not (Test-Path -LiteralPath $FolderPath -PathType Container)) {
     throw "Vault DCA nao encontrado em '$FolderPath'."
   }
@@ -66,6 +72,13 @@ function Select-DcaPdfByCode {
     "[$searchText]"
   )
 
+  # ============================================================
+  # 2. LOCALIZAR A PASTA DE DOCUMENTACAO
+  # ============================================================
+  #
+  # Localiza a pasta principal de documentacao antes de pesquisar
+  # as categorias de documentos permitidas pelo fluxo.
+
   $rootFolders =
   @(
     Get-ChildItem `
@@ -91,6 +104,15 @@ function Select-DcaPdfByCode {
 
   Write-Info "Pasta de documentacao localizada."
 
+  # ============================================================
+  # 3. LOCALIZAR AS CATEGORIAS PERMITIDAS
+  # ============================================================
+  #
+  # Cada configuracao relaciona o nome da pasta no Vault com o
+  # tipo interno do documento e o nome apresentado ao usuario.
+  #
+  # Somente as categorias definidas abaixo participam da pesquisa
+  # por codigo.
   $categoryDefinitions = @(
     [PSCustomObject]@{
       FolderName = "Desenhos Originais"
@@ -156,6 +178,13 @@ function Select-DcaPdfByCode {
     )
   }
 
+  # ============================================================
+  # 4. PREPARAR A PESQUISA DOS ARQUIVOS
+  # ============================================================
+  #
+  # Prepara a lista de resultados e o controle utilizado para
+  # impedir que o mesmo caminho seja adicionado mais de uma vez.
+
   $matchingFiles = [System.Collections.Generic.List[object]]::new()
 
   # A mesma busca pode localizar o arquivo em diferentes etapas.
@@ -165,9 +194,12 @@ function Select-DcaPdfByCode {
     [System.StringComparer]::OrdinalIgnoreCase
   )
 
-  # A API do PDM e priorizada porque encontra arquivos que ainda
-  # nao estao no cache local. Em caso de falha, a pesquisa utiliza
-  # os PDFs disponiveis no sistema de arquivos.
+  # A API do PDM e priorizada porque pode localizar arquivos que
+  # ainda nao estao presentes no cache local.
+  #
+  # Quando a conexao com o Vault nao estiver disponivel ou a
+  # pesquisa pela API falhar, o fluxo utiliza os arquivos
+  # encontrados no sistema de arquivos.
   $apiEntries = $null
   $vault = Get-DcaVault
 
@@ -201,6 +233,13 @@ function Select-DcaPdfByCode {
 
   $separator = [string][System.IO.Path]::DirectorySeparatorChar
 
+  # ============================================================
+  # 5. PESQUISAR OS PDFs EM CADA CATEGORIA
+  # ============================================================
+  #
+  # Utiliza os resultados retornados pela API do PDM quando ela
+  # estiver disponivel. Caso contrario, pesquisa diretamente os
+  # arquivos locais de cada categoria.
   foreach ($searchFolder in $searchFolders) {
 
     if ($null -ne $apiEntries) {

@@ -26,8 +26,18 @@ function Get-NormaCodeFromText {
     [string]$Text
   )
 
+  # ============================================================
+  # 1. NORMALIZAR O TEXTO RECEBIDO
+  # ============================================================
+  #
+  # Remove espacos das extremidades e substitui sequencias de
+  # espacos por um unico espaco antes de aplicar as regras de
+  # reconhecimento do codigo.
   $normalizedText = $Text.Trim() -replace '\s+', ' '
 
+  # Um texto vazio nao possui codigo ou titulo identificavel.
+  # O retorno mantem a mesma estrutura utilizada pelos demais
+  # resultados, mas indica que a interpretacao nao foi concluida.
   if (
     [string]::IsNullOrWhiteSpace(
       $normalizedText
@@ -43,8 +53,13 @@ function Get-NormaCodeFromText {
     }
   }
 
+  # ============================================================
+  # 2. PREPARAR OS PREFIXOS TECNICOS CONHECIDOS
+  # ============================================================
+  #
+  # A lista contem os prefixos reconhecidos para Normas Externas.
   # Prefixos maiores sao avaliados primeiro para impedir que uma
-  # regra generica capture apenas parte de um codigo especifico.
+  # regra generica capture somente parte de um codigo composto.
   $knownPrefixes = @(
     "COL-ASQR-PRO",
     "AMS-QQ-C",
@@ -131,6 +146,8 @@ function Get-NormaCodeFromText {
     "F"
   )
 
+  # Ordena os prefixos pelo tamanho em ordem decrescente. Assim,
+  # por exemplo, MIL-STD e avaliado antes do prefixo MIL.
   $knownPrefixes = @(
     $knownPrefixes |
       Sort-Object {
@@ -138,8 +155,15 @@ function Get-NormaCodeFromText {
     } -Descending
   )
 
-  # Formatos especiais utilizados pelas normas AMS.
-
+  # ============================================================
+  # 3. AVALIAR OS FORMATOS ESPECIAIS AMS
+  # ============================================================
+  #
+  # Algumas normas AMS utilizam estruturas que nao podem ser
+  # interpretadas corretamente apenas pela lista de prefixos.
+  #
+  # Cada regra informa um nome para diagnostico, o prefixo
+  # correspondente e a expressao regular utilizada na leitura.
   $specialPatterns = @(
     [PSCustomObject]@{
       Name = "AMS A numero sufixo"
@@ -198,6 +222,8 @@ function Get-NormaCodeFromText {
     }
   )
 
+  # As regras sao verificadas na ordem em que foram declaradas.
+  # A primeira correspondencia valida encerra a interpretacao.
   foreach ($specialPattern in $specialPatterns) {
 
     if (
@@ -207,6 +233,8 @@ function Get-NormaCodeFromText {
       continue
     }
 
+    # Os grupos nomeados Code e Title foram preenchidos pela
+    # expressao regular correspondente ao formato reconhecido.
     $code = [string]$Matches["Code"]
 
     $title = $null
@@ -222,6 +250,8 @@ function Get-NormaCodeFromText {
       )
     ) {
 
+      # Remove separadores residuais entre o codigo e o titulo,
+      # alem do ponto final que pode existir no nome do arquivo.
       $title = $title.Trim().TrimStart("-", " ").TrimEnd(".", " ")
     }
     else {
@@ -229,6 +259,8 @@ function Get-NormaCodeFromText {
       $title = $null
     }
 
+    # Retorna imediatamente porque um formato especial conhecido
+    # foi reconhecido com sucesso.
     return [PSCustomObject]@{
       Code = $code.Trim()
 
@@ -242,11 +274,16 @@ function Get-NormaCodeFromText {
     }
   }
 
-  # Regras baseadas nos prefixos tecnicos conhecidos.
-
+  # ============================================================
+  # 4. AVALIAR OS PREFIXOS TECNICOS CONHECIDOS
+  # ============================================================
+  #
+  # Quando nenhum formato especial for reconhecido, o texto sera
+  # comparado com os prefixos tecnicos cadastrados anteriormente.
   foreach ($prefix in $knownPrefixes) {
 
-    # Prefixos compostos aceitam variacao na quantidade de espacos.
+    # Escapa os caracteres especiais do prefixo e permite variacao
+    # na quantidade de espacos dos prefixos compostos.
     $prefixRegex = [regex]::Escape($prefix)
 
     $prefixRegex = $prefixRegex.Replace(
@@ -254,8 +291,9 @@ function Get-NormaCodeFromText {
       "\s+"
     )
 
-    # O identificador deve conter pelo menos um numero para nao
-    # confundir uma descricao comum com um codigo tecnico.
+    # A expressao combina o prefixo atual com o restante do codigo.
+    # O identificador deve conter pelo menos um numero para evitar
+    # que uma descricao comum seja aceita como codigo tecnico.
     $pattern = (
       "^(?<Code>" +
       $prefixRegex +
@@ -290,6 +328,8 @@ function Get-NormaCodeFromText {
       )
     ) {
 
+      # Remove os separadores que podem permanecer entre o codigo
+      # tecnico e a descricao encontrada no nome do arquivo.
       $title = $title.Trim()
 
       $title = $title.TrimStart(
@@ -308,6 +348,8 @@ function Get-NormaCodeFromText {
       $title = $null
     }
 
+    # Retorna o codigo e o titulo obtidos pela regra associada ao
+    # prefixo conhecido atual.
     return [PSCustomObject]@{
       Code = $code
 
@@ -321,8 +363,13 @@ function Get-NormaCodeFromText {
     }
   }
 
-  # Aceita diretamente codigos sem espacos que contenham pelo
-  # menos um numero.
+  # ============================================================
+  # 5. ACEITAR UM CODIGO TECNICO COMPLETO
+  # ============================================================
+  #
+  # Quando o texto nao possuir espacos, mas contiver pelo menos
+  # um numero e somente caracteres tecnicos permitidos, todo o
+  # valor sera utilizado como codigo.
   if (
     $normalizedText -notmatch '\s' -and
     $normalizedText -match '\d' -and
@@ -343,8 +390,13 @@ function Get-NormaCodeFromText {
     }
   }
 
-  # Ultima tentativa para separar um codigo tecnico de sua
-  # descricao quando nenhum prefixo conhecido foi identificado.
+  # ============================================================
+  # 6. APLICAR A REGRA TECNICA GENERICA
+  # ============================================================
+  #
+  # Esta e a ultima tentativa de separar um codigo tecnico de sua
+  # descricao quando nenhum formato especial ou prefixo conhecido
+  # tiver sido identificado.
   $genericPattern = (
     "^(?<Code>" +
     "[A-Z][A-Z0-9-]*" +
@@ -372,6 +424,8 @@ function Get-NormaCodeFromText {
       )
     ) {
 
+      # Remove separadores residuais entre o codigo generico e
+      # sua descricao.
       $genericTitle = $genericTitle.Trim().TrimStart("-", " ").TrimEnd(".", " ")
     }
     else {
@@ -392,6 +446,13 @@ function Get-NormaCodeFromText {
     }
   }
 
+  # ============================================================
+  # 7. RETORNAR UM CODIGO NAO IDENTIFICADO
+  # ============================================================
+  #
+  # Quando nenhuma regra reconhecer o formato, preserva o texto
+  # normalizado como codigo provisório. Parsed igual a false
+  # permite que o fluxo solicite ou trate o codigo posteriormente.
   return [PSCustomObject]@{
     Code = $normalizedText
 
@@ -424,10 +485,23 @@ function ConvertFrom-PdfFileName {
     [string]$DocumentType
   )
 
+  # ============================================================
+  # 1. PREPARAR O NOME DO ARQUIVO
+  # ============================================================
+  #
+  # Remove espacos das extremidades e utiliza inicialmente todo
+  # o nome base como codigo de origem.
   $name = $BaseName.Trim()
   $sourceCodeText = $name
   $clientRevision = $null
 
+  # ============================================================
+  # 2. EXTRAIR O VALOR ENTRE COLCHETES
+  # ============================================================
+  #
+  # Quando o nome terminar com um valor entre colchetes, separa
+  # o codigo anterior aos colchetes e verifica se o valor possui
+  # um formato de revisao valido para o tipo de documento.
   if (
     $name -match
     '^(?<Code>[^\[\]]+?)\s*\[(?<BracketValue>[^\]]+)\]\s*$'
@@ -439,6 +513,8 @@ function ConvertFrom-PdfFileName {
     $possibleRevision =
     $Matches["BracketValue"].Trim().ToUpper()
 
+    # Cada tipo de documento possui uma regra propria para validar
+    # o formato da revisao encontrada entre colchetes.
     $validRevision =
     $false
 
@@ -447,14 +523,15 @@ function ConvertFrom-PdfFileName {
       $DocumentType -eq "DatasetOnly"
     ) {
 
-      # Processo: A1, BA4, AA4 ou --4.
+      # Processo e DatasetOnly aceitam formatos como A1, BA4,
+      # AA4 ou --4.
       $validRevision =
       $possibleRevision -match
       '^[A-Z0-9-]{1,2}\d$'
     }
     elseif ($DocumentType -eq "Original") {
 
-      # Original: uma ou duas letras/numeros.
+      # Desenho Original aceita uma ou duas letras ou numeros.
       $validRevision =
       $possibleRevision -match
       '^[A-Z0-9]{1,2}$'
@@ -469,6 +546,8 @@ function ConvertFrom-PdfFileName {
       '^[A-Z0-9.-]{1,10}$'
     }
 
+    # Somente um valor reconhecido pela regra do tipo atual sera
+    # armazenado como revisao do cliente.
     if ($validRevision) {
 
       $sourceCodeText =
@@ -490,10 +569,20 @@ function ConvertFrom-PdfFileName {
     }
   }
 
+  # ============================================================
+  # 3. INTERPRETAR O CODIGO E O TITULO
+  # ============================================================
+  #
+  # Os tipos comuns utilizam diretamente o codigo separado do
+  # nome. Normas Externas passam por regras adicionais para
+  # separar o codigo tecnico de sua descricao.
   $codeParsed = $true
 
   $documentTitle = $null
 
+  # Norma Externa pode possuir codigo e descricao no mesmo nome.
+  # Get-NormaCodeFromText realiza essa separacao e informa se o
+  # formato do codigo foi reconhecido.
   if ($DocumentType -eq "NormaExterna") {
 
     $normaInfo = Get-NormaCodeFromText `
@@ -506,6 +595,13 @@ function ConvertFrom-PdfFileName {
     $codeParsed = $normaInfo.Parsed
   }
 
+  # ============================================================
+  # 4. RETORNAR OS DADOS INTERPRETADOS
+  # ============================================================
+  #
+  # Retorna uma estrutura unica para todos os tipos de documento.
+  # Esses valores ainda podem ser substituidos posteriormente
+  # pelos dados obtidos no cartao do PDM.
   return [PSCustomObject]@{
     SourceCode = $sourceCodeText
     ClientRevision = $clientRevision
@@ -513,6 +609,7 @@ function ConvertFrom-PdfFileName {
     CodeParsed = $codeParsed
   }
 }
+
 function Test-DcaCodeMatch {
 
   # Compara o termo pesquisado com o nome original do PDF e com
@@ -524,6 +621,16 @@ function Test-DcaCodeMatch {
     [bool]$UsesWildcard
   )
 
+  # ============================================================
+  # 1. COMPARAR O CODIGO PESQUISADO
+  # ============================================================
+  #
+  # A comparacao considera tanto o nome original do PDF quanto o
+  # codigo tecnico obtido pela interpretacao do nome.
+  #
+  # Quando a pesquisa utilizar curingas, aplica -like. Nos demais
+  # casos, exige correspondencia completa sem diferenciar letras
+  # maiusculas e minusculas.
   if ($UsesWildcard) {
     return (($BaseName -like $Pattern) -or ($ParsedCode -like $Pattern))
   }

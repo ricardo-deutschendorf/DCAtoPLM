@@ -17,6 +17,12 @@
 # ============================================================
 function Search-DcaVaultPdfEntries {
 
+  # ============================================================
+  # 1. PREPARAR A PESQUISA NO INDICE DO VAULT
+  # ============================================================
+  #
+  # Converte os curingas utilizados pelo script para o formato
+  # aceito pela API do PDM e cria o objeto responsavel pela busca.
   # Pesquisa PDFs no indice do Vault. Quando uma pasta inicial
   # for informada, limita a consulta a essa parte do Vault.
   param(
@@ -32,7 +38,10 @@ function Search-DcaVaultPdfEntries {
   )
 
   # A API do PDM utiliza os curingas SQL "%" e "_", enquanto a
-  # interface do script aceita os curingas "*" e "?".
+  # entrada do script aceita os curingas "*" e "?".
+  #
+  # Quando nenhum curinga estiver presente, o termo sera tratado
+  # como uma pesquisa parcial.
   $likePattern =
   $SearchText.Replace(
     "*",
@@ -48,6 +57,8 @@ if ($likePattern -notmatch "[%_]") {
   "%$likePattern%"
 }
 
+# Cria o objeto de pesquisa utilizado para consultar o indice
+# mantido pelo Vault.
 $search =
 $Vault.CreateSearch()
 
@@ -58,14 +69,22 @@ if ($null -eq $search) {
   )
 }
 
+# Define o nome pesquisado e desabilita a inclusao de versoes
+# historicas nos resultados.
 $search.FileName =
 $likePattern
 
 $search.FindHistoricStates =
 $false
 
-# Limita a consulta a pasta informada. Sem esse filtro, a API
-# pesquisa os arquivos a partir da raiz do Vault.
+# ============================================================
+# 2. LIMITAR A PESQUISA A UMA PASTA
+# ============================================================
+#
+# Quando uma pasta inicial for informada, a consulta sera
+# limitada a essa parte do Vault.
+#
+# Sem esse filtro, a API pesquisa a partir da raiz do Vault.
 if (
   -not [string]::IsNullOrWhiteSpace(
     $StartFolderPath
@@ -89,9 +108,17 @@ if (
   [int]$startFolder.ID
 }
 
+# ============================================================
+# 3. COLETAR OS RESULTADOS DA PESQUISA
+# ============================================================
+#
+# Percorre os resultados retornados pela API e mantem somente
+# arquivos com extensao PDF.
 $entries =
 [System.Collections.Generic.List[object]]::new()
 
+# A API retorna o primeiro resultado separadamente. Os demais
+# resultados sao obtidos durante a repeticao abaixo.
 $currentResult =
 $search.GetFirstResult()
 
@@ -115,6 +142,8 @@ while ($null -ne $currentResult) {
       $resultName
     )
 
+    # Padroniza o resultado da API no mesmo formato utilizado
+    # pelos arquivos encontrados diretamente no disco.
     $entries.Add(
       [PSCustomObject]@{
         Name = $resultName
@@ -129,10 +158,20 @@ while ($null -ne $currentResult) {
   $search.GetNextResult()
 }
 
+# Retorna um array vazio quando nenhum PDF for encontrado.
+# Isso permite que o chamador diferencie uma pesquisa sem
+# resultados de uma falha na API.
 return $entries.ToArray()
 }
+
 function Get-DcaDiskPdfEntries {
 
+  # ============================================================
+  # 1. VALIDAR A PASTA DE PESQUISA LOCAL
+  # ============================================================
+  #
+  # Confirma se a pasta existe antes de percorrer os arquivos
+  # presentes no cache ou no sistema de arquivos.
   # Alternativa utilizada quando a API do PDM esta indisponivel.
   # Retorna somente os PDFs existentes no cache ou no disco local.
   param(
@@ -153,9 +192,17 @@ function Get-DcaDiskPdfEntries {
     )
   }
 
+  # ============================================================
+  # 2. COLETAR OS PDFs DISPONIVEIS NO DISCO
+  # ============================================================
+  #
+  # Pesquisa recursivamente os arquivos PDF existentes na pasta
+  # atual e em todas as suas subpastas.
   $entries =
   [System.Collections.Generic.List[object]]::new()
 
+  # Erros de acesso individuais sao ignorados para permitir que
+  # a pesquisa continue nas demais pastas disponiveis.
   $pdfFiles =
   @(
     Get-ChildItem `
@@ -174,6 +221,8 @@ function Get-DcaDiskPdfEntries {
       $pdfFile.Name
     )
 
+    # Mantem a mesma estrutura utilizada pelos resultados da API.
+    # FromVault indica que o arquivo ja foi localizado no disco.
     $entries.Add(
       [PSCustomObject]@{
         Name = $pdfFile.Name
@@ -188,6 +237,12 @@ function Get-DcaDiskPdfEntries {
 }
 function Confirm-DcaLocalPdf {
 
+  # ============================================================
+  # 1. VERIFICAR SE O PDF JA ESTA DISPONIVEL
+  # ============================================================
+  #
+  # Retorna imediatamente o caminho recebido quando o arquivo
+  # ja estiver presente no cache ou no sistema de arquivos.
   # Garante que o PDF esteja disponivel localmente. Quando o
   # resultado veio do Vault e ainda nao esta no cache, solicita
   # uma copia local antes da importacao no Teamcenter.
@@ -201,16 +256,26 @@ function Confirm-DcaLocalPdf {
     return $Entry.FullName
   }
 
+  # O download somente pode ser solicitado quando a entrada veio
+  # do Vault e existe uma conexao ativa com o PDM.
   $vault = $script:DcaVault
 
   if (-not $Entry.FromVault -or $null -eq $vault) {
     throw "PDF nao encontrado no disco: '$($Entry.FullName)'."
   }
 
+  # ============================================================
+  # 2. SOLICITAR UMA COPIA LOCAL AO VAULT
+  # ============================================================
+  #
+  # Localiza o objeto do arquivo e sua pasta no Vault antes de
+  # solicitar que a versao correspondente seja copiada ao cache.
   Write-Info "Baixando o PDF do vault..."
 
   $parentFolder = $null
 
+  # A API preenche parentFolder por referencia ao localizar o
+  # arquivo correspondente ao caminho completo.
   $pdmFile = $vault.GetFileFromPath($Entry.FullName, [ref]$parentFolder)
 
   if ($null -eq $pdmFile) {
@@ -221,11 +286,20 @@ function Confirm-DcaLocalPdf {
     throw "Nao foi possivel obter a pasta do arquivo no vault."
   }
 
+  # A versao zero permite que a API determine a versao adequada.
+  # O identificador da pasta informa em qual cache local a copia
+  # deve ser disponibilizada.
   $fileVersion = 0
   $folderId = $parentFolder.ID
 
   $pdmFile.GetFileCopy(0, [ref]$fileVersion, [ref]$folderId, 0, "")
 
+  # ============================================================
+  # 3. VALIDAR O ARQUIVO DISPONIBILIZADO
+  # ============================================================
+  #
+  # Depois da solicitacao da copia, consulta o caminho do cache
+  # e confirma que o PDF realmente foi criado no disco.
   $localCachePath = $pdmFile.GetLocalPath($parentFolder.ID)
 
   if (-not (Test-Path -LiteralPath $localCachePath -PathType Leaf)) {
