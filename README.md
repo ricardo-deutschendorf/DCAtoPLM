@@ -1,1306 +1,1136 @@
-DCAtoPLM
+# DCAtoPLM
 
-[!WARNING]
+> [!WARNING]
+> Criação de Items e revisões, processamento em lote, pesquisa no PDM, pesquisa
+> por pasta, importação de Dataset em revisão existente, preparação do PDF e
+> solicitação de workflow já foram implementados. O comportamento da importação
+> do PDF ainda depende do assembly de integração do Teamcenter instalado e deve
+> ser validado em cada ambiente de destino antes do uso em produção.
 
-A criação de Items e revisões, o processamento em lote, a pesquisa no PDM, a pesquisa por pastas, a preparação dos PDFs e a solicitação de workflows estão implementados.
+Importa documentos PDF de um vault DCA local do SolidWorks PDM para o Siemens
+Teamcenter.
 
-O comportamento final da importação depende do assembly de integração do Teamcenter instalado e das configurações de cada ambiente.
+O DCAtoPLM pesquisa o vault de documentação configurado, interpreta os metadados
+do documento a partir do cartão de dados do PDM e do nome do PDF, cria o Item e a
+revisão correspondentes (ou localiza uma revisão existente, no caso de
+`DatasetOnly`), importa o PDF como Dataset e, quando aplicável, inicia um workflow
+do Teamcenter conforme o estado atual no PDM.
 
-Valide todo o processo em um ambiente controlado antes de utilizar a aplicação em produção.
+A aplicação permite pesquisas individuais por código, várias pesquisas em uma
+mesma execução, seleção múltipla de resultados e importação completa de pastas.
 
-O DCAtoPLM importa documentos PDF de um Vault DCA do SOLIDWORKS PDM para o Siemens Teamcenter.
+> [!IMPORTANT]
+> A integração foi desenvolvida para o **Siemens Teamcenter 2312**.
+>
+> Outras versões do Teamcenter podem funcionar, mas a compatibilidade não foi
+> confirmada. Objetos de negócio, propriedades, workflows e assemblies de
+> integração do Teamcenter são específicos de cada ambiente e precisam ser
+> revisados antes do uso.
 
-A aplicação pesquisa a estrutura de documentação configurada, interpreta os dados dos documentos pelo nome dos arquivos e pelos cartões do PDM, prepara um plano de importação, cria os objetos necessários no Teamcenter, importa o PDF como Dataset e, quando aplicável, solicita um workflow de acordo com o estado atual do documento no PDM.
+---
 
-A aplicação suporta:
+## Principais funcionalidades
 
-pesquisas individuais;
-várias pesquisas na mesma execução;
-seleção de vários documentos;
-pesquisa por nome completo de pasta;
-importação completa de pastas;
-seleção individual dos documentos de uma pasta;
-criação de novos Items e revisões no Teamcenter;
-importação de Dataset em revisões existentes;
-execução em modo Preview;
-continuação do lote após falhas individuais.
+- Pesquisa de PDFs pela API do SolidWorks PDM.
+- Pesquisa local alternativa quando a API do PDM não está disponível.
+- Pesquisa parcial por código, sem necessidade de `*`.
+- Curingas `*` e `?` nas pesquisas por código.
+- Várias pesquisas separadas por vírgula, com remoção de termos repetidos.
+- Seleção múltipla de resultados (número, lista, intervalo, `T` ou `TODOS`).
+- Pesquisa de pasta por nome completo, com importação direta ou seleção dos
+  documentos da pasta.
+- Prevenção de arquivos duplicados no mesmo lote.
+- Detecção da categoria do documento a partir do caminho de origem.
+- Leitura dos cartões de dados do PDM (revisão e descrição).
+- Extração de código, título e revisão a partir do nome do PDF.
+- Criação de Items e revisões no Teamcenter.
+- Importação de PDF como Dataset em revisão existente (`DatasetOnly`).
+- Leitura do estado atual do workflow no PDM.
+- Solicitação de workflows para documentos aprovados ou obsoletos.
+- Plano de importação apresentado antes de qualquer alteração no Teamcenter.
+- Continuação do lote quando um documento individual falha.
+- Resumo final com os resultados do lote.
+- Modo Preview, que não altera o Teamcenter.
+- Modo Details, para diagnóstico.
+- Carregamento modular com validação antecipada de arquivos e funções.
 
-[!IMPORTANT]
+---
 
-A integração foi desenvolvida para o Siemens Teamcenter 2312.
+## Categorias de documentos suportadas
 
-Outras versões podem funcionar, mas a compatibilidade ainda não foi confirmada.
+| Categoria de origem | Tipo interno | Finalidade |
+| --- | --- | --- |
+| `Desenhos Originais` | `Original` | Desenhos originais DCA |
+| `FP - Ficha de Processo (PDF)` | `Processo` | Documentos de processo DCA |
+| `Normas Externas` | `NormaExterna` | Normas externas DCA |
+| `FP - XXRE Dimensional` | `DatasetOnly` | PDFs dimensionais importados em Items já existentes |
 
-Os objetos de negócio, propriedades, serviços, workflows e assemblies de integração do Teamcenter variam entre ambientes e devem ser revisados antes do uso.
+Cada categoria que cria Item é associada a um tipo de Item e a um tipo de
+revisão do Teamcenter por variáveis de ambiente. Os mapeamentos podem ser
+diferentes nos ambientes de teste e de processo.
 
-Funcionalidades principais
-SOLIDWORKS PDM
-Pesquisa PDFs através da API do SOLIDWORKS PDM.
-Utiliza o sistema de arquivos como alternativa quando a API não está disponível.
-Reutiliza a conexão com o Vault durante a mesma execução.
-Permite autenticação por arquivo protegido de credenciais.
-Utiliza LoginAuto quando não existe um arquivo de credenciais válido.
-Solicita uma cópia local quando o arquivo ainda não está disponível no cache.
-Consulta o estado atual do documento no workflow do PDM.
-Lê revisão e descrição diretamente do cartão de dados.
-Prioriza os dados do cartão sobre os valores extraídos do nome do arquivo.
-Permite descobrir e exibir todas as variáveis disponíveis no cartão.
-Pesquisa e seleção
-Realiza pesquisas parciais sem exigir *.
-Aceita curingas * e ? nas pesquisas por código.
-Aceita várias pesquisas separadas por vírgulas.
-Remove termos repetidos antes da execução.
-Permite selecionar um resultado, vários resultados, um intervalo ou todos.
-Pesquisa pastas pelo nome completo.
-Importa todos os PDFs válidos de uma pasta.
-Permite abrir uma pasta e selecionar documentos individualmente.
-Impede que o mesmo caminho seja adicionado mais de uma vez ao lote.
-Teamcenter
-Conecta ao ambiente de Teste ou Processo configurado.
-Cria Items e primeiras revisões.
-Mapeia cada tipo de documento para os objetos de negócio correspondentes.
-Importa PDFs como Datasets nas revisões criadas.
-Importa PDFs como Datasets em revisões existentes.
-Valida antecipadamente os destinos de documentos DatasetOnly.
-Solicita workflows de aprovação ou obsolescência.
-Continua processando o lote após falhas individuais.
-Apresenta um plano antes de alterar o Teamcenter.
-Apresenta um resumo final do lote.
-Retorna um código de saída indicando sucesso ou falha.
-Diagnóstico e validação
-Valida os arquivos de funções antes da pesquisa.
-Confirma que todas as funções obrigatórias foram carregadas.
-Possui modo Preview sem alterações no Teamcenter.
-Possui modo detalhado para diagnóstico.
-Exibe caminhos, variáveis do cartão, resultados de consultas e stacks de erro.
-Valida o PDF temporário por caminho, extensão, tamanho e acesso de leitura.
-Categorias de documentos suportadas
-Desenho Original DCA
+### Categoria `FP - XXRE Dimensional` (`DatasetOnly`)
 
-Pasta de origem:
+Esta categoria usa um fluxo diferente das demais. O fluxo `DatasetOnly`:
 
-Plain Text
-Desenhos Originais
+- **não** cria um novo Item;
+- **não** cria uma nova revisão;
+- procura um Item e uma revisão existentes;
+- importa somente o PDF como Dataset;
+- **não** solicita workflow.
 
-Tipo interno:
+O destino (Item e revisão) é validado antes da confirmação do lote. Veja a seção
+[Fluxos do Teamcenter](#fluxos-do-teamcenter).
 
-Plain Text
-Original
+---
 
-Comportamento:
+## Estados de workflow suportados
 
-cria um novo Item no Teamcenter;
-cria a primeira revisão;
-importa o PDF como Dataset;
-pode solicitar workflow conforme o estado do PDM.
-Processo DCA
+O DCAtoPLM lê o estado atual de cada arquivo no SolidWorks PDM. Os estados abaixo
+podem disparar workflows do Teamcenter:
 
-Pasta de origem:
+| Estado no PDM | Ação no Teamcenter |
+| --- | --- |
+| `Aprovado` | Inicia o workflow configurado em `DCA_TC_APPROVED_WORKFLOW` |
+| `Obsoleto` | Inicia o workflow configurado em `DCA_TC_OBSOLETE_WORKFLOW` |
+| Qualquer outro estado | Importa o Item e o PDF sem iniciar workflow |
 
-Plain Text
-FP - Ficha de Processo (PDF)
+O workflow só é solicitado depois que as etapas de criação do Item e importação do
+PDF terminam sem exceção. Documentos `DatasetOnly` nunca solicitam workflow.
 
-Tipo interno:
+> [!NOTE]
+> Chamar o assembly de integração sem exceção confirma apenas que o método de
+> workflow foi solicitado. O comportamento final depende do template e dos
+> handlers configurados no Teamcenter.
 
-Plain Text
-Processo
+---
 
-Comportamento:
+## Estrutura do repositório
 
-cria um novo Item no Teamcenter;
-cria a primeira revisão;
-importa o PDF como Dataset;
-pode solicitar workflow conforme o estado do PDM.
-Norma Externa DCA
-
-Pasta de origem:
-
-Plain Text
-Normas Externas
-
-Tipo interno:
-
-Plain Text
-NormaExterna
-
-Comportamento:
-
-interpreta o código técnico da norma;
-separa o código da descrição quando possível;
-cria um novo Item no Teamcenter;
-cria a primeira revisão;
-importa o PDF como Dataset;
-pode solicitar workflow conforme o estado do PDM.
-XXRE Dimensional
-
-Pasta de origem:
-
-Plain Text
-FP - XXRE Dimensional
-
-Tipo interno:
-
-Plain Text
-DatasetOnly
-
-Comportamento:
-
-não cria um novo Item;
-não cria uma nova revisão;
-procura um Item e uma revisão existentes;
-valida o destino antes da confirmação final;
-importa somente o PDF como Dataset;
-não solicita workflow.
-
-Cada categoria utiliza uma configuração específica do Teamcenter.
-
-Os mapeamentos podem ser diferentes entre os ambientes de Teste e Processo.
-
-Estados de workflow suportados
-
-O DCAtoPLM consulta o estado atual de cada arquivo no SOLIDWORKS PDM.
-
-Os seguintes estados podem solicitar workflows no Teamcenter:
-
-Aprovado
-
-Solicita o workflow configurado em:
-
-Plain Text
-DCA_TC_APPROVED_WORKFLOW
-Obsoleto
-
-Solicita o workflow configurado em:
-
-Plain Text
-DCA_TC_OBSOLETE_WORKFLOW
-Outros estados
-
-O Item e o PDF são processados sem solicitação automática de workflow.
-
-Documentos do tipo DatasetOnly nunca solicitam workflow.
-
-A solicitação ocorre somente depois que o método de importação do PDF termina sem exceção.
-
-[!NOTE]
-
-Uma chamada sem exceção confirma que a solicitação foi enviada ao assembly de integração.
-
-A execução final do workflow, seus handlers, status de liberação e conclusão dependem da configuração do ambiente Teamcenter.
-
-Estrutura do repositório
-Plain Text
+```text
 DCAtoPLM/
 ├── import_dcaPdfToTeamcenter.ps1
+├── functions/
+│   ├── output_functions.ps1
+│   ├── pdm_modules/
+│   ├── import_plan_modules/
+│   ├── search_modules/
+│   └── teamcenter_modules/
 ├── start_DCAtoPLM.bat
 ├── .env.example
 ├── .env
-├── README.md
-└── functions/
-├── output_functions.ps1
-├── pdm_modules/
-│ ├── pdm_connection.ps1
-│ ├── pdm_files.ps1
-│ ├── pdm_filename_parser.ps1
-│ ├── pdm_card_reader.ps1
-│ └── pdm_document_metadata.ps1
-├── import_plan_modules/
-│ ├── import_pdf_preparation.ps1
-│ ├── import_search_input.ps1
-│ └── import_plan_display.ps1
-├── search_modules/
-│ ├── search_folder_documents.ps1
-│ ├── search_folder_navigation.ps1
-│ ├── search_folder_selection.ps1
-│ ├── search_folder_lookup.ps1
-│ └── search_code_lookup.ps1
-└── teamcenter_modules/
-├── teamcenter_state.ps1
-├── teamcenter_connections.ps1
-├── teamcenter_query_diagnostics.ps1
-├── teamcenter_query_properties.ps1
-├── teamcenter_item_lookup.ps1
-├── teamcenter_dataset.ps1
-├── teamcenter_creation_helpers.ps1
-├── teamcenter_creation.ps1
-└── teamcenter_workflow.ps1
-import_dcaPdfToTeamcenter.ps1
+└── README.md
+```
 
-Ponto de entrada principal da aplicação.
+| Arquivo ou pasta | Responsabilidade |
+| --- | --- |
+| `import_dcaPdfToTeamcenter.ps1` | Script principal: carregamento e validação dos módulos, parâmetros, prompts, orquestração do lote e códigos de saída |
+| `functions/output_functions.ps1` | Funções de saída no console, incluindo mensagens, destaques e atraso entre linhas |
+| `functions/pdm_modules` | Acesso ao SolidWorks PDM: autenticação, download de arquivos, estado do workflow e leitura dos cartões de dados |
+| `functions/import_plan_modules` | Interpretação dos documentos, preparação do lote e montagem do plano de importação |
+| `functions/search_modules` | Pesquisa por código e por pasta, seleção de resultados e remoção de duplicidades |
+| `functions/teamcenter_modules` | Conexão com o Teamcenter, criação de Items, localização de revisões, importação de Datasets e solicitação de workflows |
+| `start_DCAtoPLM.bat` | Inicializador recomendado para Windows |
+| `.env.example` | Modelo seguro de configuração |
+| `.env` | Configuração local do ambiente, nunca enviada ao repositório |
 
-Responsabilidades:
+> [!NOTE]
+> O arquivo antigo `functions/teamcenter_functions.ps1` não existe mais. Suas
+> responsabilidades foram distribuídas entre os módulos acima.
 
-carregar o arquivo .env;
-carregar os arquivos de funções;
-validar as funções obrigatórias;
-receber a entrada da pesquisa;
-coordenar a pesquisa e a seleção;
-normalizar os documentos;
-apresentar o resumo do lote;
-conectar ao Teamcenter;
-validar destinos existentes;
-solicitar a confirmação final;
-processar cada documento;
-apresentar o resumo final;
-retornar o código de saída.
-functions/output_functions.ps1
+---
 
-Funções de saída e apresentação no console.
+## Requisitos
 
-functions/pdm_modules
+O ambiente de execução precisa ter:
 
-Conexão com o PDM, disponibilidade dos arquivos, interpretação dos nomes, leitura de cartões, consulta de estado e normalização dos metadados.
+- Windows PowerShell compatível com os scripts.
+- Acesso ao Siemens Teamcenter 2312.
+- Conta do Teamcenter com permissão para criar Items e revisões.
+- Permissão para importar Datasets PDF.
+- Permissão para iniciar os workflows configurados.
+- Acesso ao cliente SolidWorks PDM.
+- `Interop.EdmLib.dll`.
+- Acesso ao vault SolidWorks PDM configurado.
+- Assembly de integração do Teamcenter compatível, como `Importar GD.exe`.
+- Acesso ao cache local do PDM ou permissão para baixar arquivos para ele.
 
-functions/import_plan_modules
+Normalmente não são necessários privilégios de administrador.
 
-Interpretação da entrada, montagem do plano e preparação do PDF temporário.
+---
 
-functions/search_modules
+## Estrutura esperada do vault
 
-Pesquisa por código, pesquisa por pasta, navegação e seleção de documentos.
-
-functions/teamcenter_modules
-
-Conexão, consultas, localização de Items, criação, importação de Dataset e execução de workflows.
-
-start_DCAtoPLM.bat
-
-Inicializador recomendado para Windows.
-
-.env.example
-
-Modelo seguro de configuração, sem valores internos.
-
-.env
-
-Configuração local da aplicação. Esse arquivo não deve ser enviado ao repositório.
-
-Requisitos
-
-O ambiente de execução deve possuir:
-
-Windows PowerShell compatível com os scripts;
-acesso ao Siemens Teamcenter 2312;
-conta do Teamcenter com as permissões necessárias;
-permissão para criar os tipos de Item configurados;
-permissão para criar revisões;
-permissão para importar Datasets PDF;
-permissão para iniciar os workflows configurados;
-cliente do SOLIDWORKS PDM instalado;
-acesso ao Vault configurado;
-arquivo Interop.EdmLib.dll;
-acesso ao cache local do PDM;
-permissão para baixar arquivos do Vault;
-assembly compatível de integração com o Teamcenter;
-acesso à pasta temporária de PDFs.
-
-Normalmente não é necessário executar como administrador.
-
-Estrutura esperada do Vault
-
-A raiz é definida por DCA_ROOT ou pelo parâmetro -SearchRoot.
+A raiz configurada é informada por `DCA_ROOT` ou `-SearchRoot`.
 
 Exemplo:
 
-Plain Text
+```text
 C:\VAULT_ROOT
+```
 
-Estrutura esperada:
+O script localiza o diretório de documentação abaixo dessa raiz:
 
-Plain Text
+```text
 C:\VAULT_ROOT\
 └── Documentação\
-├── Desenhos Originais\
-│ ├── CUSTOMER_A\
-│ └── CUSTOMER_B\
-│
-├── FP - Ficha de Processo (PDF)\
-│ ├── CUSTOMER_A\
-│ ├── CUSTOMER_B\
-│ └── instructions\
-│
-├── Normas Externas\
-│ ├── AMS\
-│ ├── ASTM\
-│ ├── MIL\
-│ └── outras normas\
-│
-└── FP - XXRE Dimensional\
-├── CUSTOMER_A\
-└── CUSTOMER_B\
+    ├── Desenhos Originais\
+    │   ├── CLIENTE_A\
+    │   └── CLIENTE_B\
+    │
+    ├── FP - Ficha de Processo (PDF)\
+    │   ├── CLIENTE_A\
+    │   ├── CLIENTE_B\
+    │   └── instruções\
+    │
+    ├── FP - XXRE Dimensional\
+    │
+    └── Normas Externas\
+        ├── AMS\
+        ├── ASTM\
+        ├── MIL\
+        └── outras normas\
+```
 
-Somente arquivos localizados dentro de uma categoria reconhecida podem ser preparados para o Teamcenter.
+As pesquisas de pasta percorrem toda a árvore de documentação, mas somente
+arquivos dentro de uma categoria reconhecida podem ser convertidos em objetos do
+Teamcenter.
 
-Mapeamento:
+A categoria determina o tipo de documento:
 
-Plain Text
-Desenhos Originais
--> Original
- 
-FP - Ficha de Processo (PDF)
--> Processo
- 
-Normas Externas
--> NormaExterna
- 
-FP - XXRE Dimensional
--> DatasetOnly
-Configuração
+```text
+Desenhos Originais            -> Original
+FP - Ficha de Processo (PDF)  -> Processo
+Normas Externas               -> NormaExterna
+FP - XXRE Dimensional         -> DatasetOnly
+```
 
-O método recomendado de configuração utiliza um arquivo .env local.
+---
+
+## Configuração do ambiente
+
+O método recomendado é um arquivo `.env` local.
 
 Copie:
 
-Plain Text
+```text
 .env.example
+```
 
-Para:
+para:
 
-Plain Text
+```text
 .env
+```
 
-Depois substitua os valores de exemplo pelos valores corretos da estação e do ambiente.
+Em seguida, substitua todos os valores de exemplo pelos valores adequados à
+estação de trabalho e ao ambiente de destino.
 
-O arquivo .env não deve ser enviado ao repositório porque pode conter:
+> [!CAUTION]
+> O arquivo `.env` **não deve ser enviado ao repositório**. Ele pode conter
+> credenciais, caminhos internos e endereços de servidores.
 
-caminhos internos;
-nomes de usuários;
-senhas;
-endereços de servidores;
-nomes de workflows;
-nomes de objetos internos;
-caminhos de arquivos de credenciais.
-Exemplo de configuração do ambiente
-Plain Text
-dotenv não tem suporte total. O realce de sintaxe é baseado em Plain Text.
+URLs, usuários, senhas, caminhos e nomes de objetos de negócio são específicos de
+cada ambiente. Os valores abaixo são apenas ilustrativos.
+
+### Exemplo de configuração
+
+```ini
 # ============================================================
-# DCA Vault
+# Vault DCA e PDM
 # ============================================================
- 
+
 DCA_ROOT=C:\VAULT_ROOT
-DCA_VAULT_NAME=VAULT_NAME
-DCA_PDM_LIB=C:\Path\To\Interop.EdmLib.dll
+DCA_VAULT_NAME=NOME_DO_VAULT
+DCA_PDM_LIB=C:\Caminho\Para\Interop.EdmLib.dll
 DCA_VAULT_CREDENTIAL=C:\Secure\vault-credential.xml
 DCA_TEMP_FOLDER=C:\Temp\DCAtoPLM
- 
+
 # ============================================================
-# Variaveis dos cartoes do PDM
+# Cartões de dados do PDM
+# Nomes das variáveis do cartão que contêm revisão e descrição.
+# Várias variáveis de revisão podem ser separadas por | ou ;
 # ============================================================
- 
-DCA_PDM_VAR_ORIGINAL_REVISION=<ORIGINAL_REVISION_VARIABLE>
-DCA_PDM_VAR_PROCESS_REVISION=<PROCESS_REVISION_VARIABLE>
-DCA_PDM_VAR_STANDARD_REVISION=<STANDARD_REVISION_VARIABLE>
-DCA_PDM_VAR_DATASET_REVISION=<DATASET_REVISION_VARIABLE>
- 
-DCA_PDM_VAR_ORIGINAL_DESCRIPTION=<ORIGINAL_DESCRIPTION_VARIABLE>
-DCA_PDM_VAR_PROCESS_DESCRIPTION=<PROCESS_DESCRIPTION_VARIABLE>
-DCA_PDM_VAR_STANDARD_DESCRIPTION=<STANDARD_DESCRIPTION_VARIABLE>
- 
-DCA_PDM_DISCOVER_CARD_VARIABLES=false
- 
+
+DCA_PDM_VAR_ORIGINAL_REVISION=<VARIAVEL_REVISAO_ORIGINAL>
+DCA_PDM_VAR_PROCESS_REVISION=<VARIAVEL_REVISAO_PROCESSO>
+DCA_PDM_VAR_STANDARD_REVISION=<VARIAVEL_REVISAO_NORMA>
+DCA_PDM_VAR_DATASET_REVISION=<VARIAVEL_REVISAO_DATASET>
+
+DCA_PDM_VAR_ORIGINAL_DESCRIPTION=<VARIAVEL_DESCRICAO_ORIGINAL>
+DCA_PDM_VAR_PROCESS_DESCRIPTION=<VARIAVEL_DESCRICAO_PROCESSO>
+DCA_PDM_VAR_STANDARD_DESCRIPTION=<VARIAVEL_DESCRICAO_NORMA>
+
+DCA_PDM_DISCOVER_CARD_VARIABLES=<VALOR>
+
 # ============================================================
-# Assembly de integracao com o Teamcenter
+# Assembly de integração do Teamcenter
 # ============================================================
- 
-DCA_IMPORTER_PATH=C:\Path\To\Importar GD.exe
- 
+
+DCA_IMPORTER_PATH=C:\Caminho\Para\Importar GD.exe
+
 # ============================================================
-# Ambiente selecionado
-# Valores permitidos: Teste ou Processo
+# Ambiente do Teamcenter selecionado
+# Valores válidos: Teste ou Processo
 # ============================================================
- 
+
 DCA_TC_ENV=Teste
- 
-# ============================================================
-# Ambiente de Teste
-# ============================================================
- 
-DCA_TC_TEST_URL=<TEAMCENTER_TEST_URL>
-DCA_TC_TEST_USER=<TEAMCENTER_TEST_USER>
-DCA_TC_TEST_PASSWORD=<TEAMCENTER_TEST_PASSWORD>
- 
-# ============================================================
-# Ambiente de Processo
-# ============================================================
- 
-DCA_TC_PROCESS_URL=<TEAMCENTER_PROCESS_URL>
-DCA_TC_PROCESS_USER=<TEAMCENTER_PROCESS_USER>
-DCA_TC_PROCESS_PASSWORD=<TEAMCENTER_PROCESS_PASSWORD>
- 
-# ============================================================
-# Templates de workflow
-# ============================================================
- 
-DCA_TC_APPROVED_WORKFLOW=<APPROVED_WORKFLOW_TEMPLATE>
-DCA_TC_OBSOLETE_WORKFLOW=<OBSOLETE_WORKFLOW_TEMPLATE>
- 
-# ============================================================
-# Objetos do ambiente de Teste
-# ============================================================
- 
-DCA_TC_TEST_ORIGINAL_ITEM_TYPE=<ORIGINAL_ITEM_TYPE>
-DCA_TC_TEST_ORIGINAL_REVISION_TYPE=<ORIGINAL_REVISION_TYPE>
-DCA_TC_TEST_ORIGINAL_CLIENT_PROPERTY=<CLIENT_PROPERTY>
-DCA_TC_TEST_ORIGINAL_CLIENT_VALUE=<CLIENT_VALUE>
- 
-DCA_TC_TEST_PROCESS_ITEM_TYPE=<PROCESS_ITEM_TYPE>
-DCA_TC_TEST_PROCESS_REVISION_TYPE=<PROCESS_REVISION_TYPE>
-DCA_TC_TEST_PROCESS_CLIENT_PROPERTY=<CLIENT_PROPERTY>
-DCA_TC_TEST_PROCESS_CLIENT_VALUE=<CLIENT_VALUE>
- 
-DCA_TC_TEST_STANDARD_ITEM_TYPE=<STANDARD_ITEM_TYPE>
-DCA_TC_TEST_STANDARD_REVISION_TYPE=<STANDARD_REVISION_TYPE>
-DCA_TC_TEST_STANDARD_CLIENT_PROPERTY=<CLIENT_PROPERTY>
-DCA_TC_TEST_STANDARD_CLIENT_VALUE=<CLIENT_VALUE>
- 
-# ============================================================
-# Objetos do ambiente de Processo
-# ============================================================
- 
-DCA_TC_PROCESS_ORIGINAL_ITEM_TYPE=<ORIGINAL_ITEM_TYPE>
-DCA_TC_PROCESS_ORIGINAL_REVISION_TYPE=<ORIGINAL_REVISION_TYPE>
-DCA_TC_PROCESS_ORIGINAL_CLIENT_PROPERTY=<CLIENT_PROPERTY>
-DCA_TC_PROCESS_ORIGINAL_CLIENT_VALUE=<CLIENT_VALUE>
- 
-DCA_TC_PROCESS_PROCESS_ITEM_TYPE=<PROCESS_ITEM_TYPE>
-DCA_TC_PROCESS_PROCESS_REVISION_TYPE=<PROCESS_REVISION_TYPE>
-DCA_TC_PROCESS_PROCESS_CLIENT_PROPERTY=<CLIENT_PROPERTY>
-DCA_TC_PROCESS_PROCESS_CLIENT_VALUE=<CLIENT_VALUE>
- 
-DCA_TC_PROCESS_STANDARD_ITEM_TYPE=<STANDARD_ITEM_TYPE>
-DCA_TC_PROCESS_STANDARD_REVISION_TYPE=<STANDARD_REVISION_TYPE>
-DCA_TC_PROCESS_STANDARD_CLIENT_PROPERTY=<CLIENT_PROPERTY>
-DCA_TC_PROCESS_STANDARD_CLIENT_VALUE=<CLIENT_VALUE>
 
-Mais de uma variável de revisão pode ser configurada utilizando | ou ;.
+# ============================================================
+# Teamcenter - ambiente de teste
+# ============================================================
 
-Exemplo:
+DCA_TC_TEST_URL=<URL_TEAMCENTER_TESTE>
+DCA_TC_TEST_USER=<USUARIO_TEAMCENTER_TESTE>
+DCA_TC_TEST_PASSWORD=<SENHA_TEAMCENTER_TESTE>
 
-Plain Text
-dotenv não tem suporte total. O realce de sintaxe é baseado em Plain Text.
-DCA_PDM_VAR_PROCESS_REVISION=Revisao|Revision|REV
+# ============================================================
+# Teamcenter - ambiente de processo (produção)
+# ============================================================
 
-As variáveis são testadas na ordem configurada.
+DCA_TC_PROCESS_URL=<URL_TEAMCENTER_PROCESSO>
+DCA_TC_PROCESS_USER=<USUARIO_TEAMCENTER_PROCESSO>
+DCA_TC_PROCESS_PASSWORD=<SENHA_TEAMCENTER_PROCESSO>
 
-Executando a aplicação
-Inicializador recomendado
+# ============================================================
+# Templates de workflow do Teamcenter
+# ============================================================
 
-Execute:
+DCA_TC_APPROVED_WORKFLOW=<TEMPLATE_WORKFLOW_APROVADO>
+DCA_TC_OBSOLETE_WORKFLOW=<TEMPLATE_WORKFLOW_OBSOLETO>
 
-BAT
+# ============================================================
+# Objetos de negócio - ambiente de teste
+# ============================================================
+
+DCA_TC_TEST_ORIGINAL_ITEM_TYPE=<TIPO_ITEM_ORIGINAL>
+DCA_TC_TEST_ORIGINAL_REVISION_TYPE=<TIPO_REVISAO_ORIGINAL>
+DCA_TC_TEST_ORIGINAL_CLIENT_PROPERTY=<PROPRIEDADE_CLIENTE>
+DCA_TC_TEST_ORIGINAL_CLIENT_VALUE=<VALOR_CLIENTE>
+
+DCA_TC_TEST_PROCESS_ITEM_TYPE=<TIPO_ITEM_PROCESSO>
+DCA_TC_TEST_PROCESS_REVISION_TYPE=<TIPO_REVISAO_PROCESSO>
+DCA_TC_TEST_PROCESS_CLIENT_PROPERTY=<PROPRIEDADE_CLIENTE>
+DCA_TC_TEST_PROCESS_CLIENT_VALUE=<VALOR_CLIENTE>
+
+DCA_TC_TEST_STANDARD_ITEM_TYPE=<TIPO_ITEM_NORMA>
+DCA_TC_TEST_STANDARD_REVISION_TYPE=<TIPO_REVISAO_NORMA>
+DCA_TC_TEST_STANDARD_CLIENT_PROPERTY=<PROPRIEDADE_CLIENTE>
+DCA_TC_TEST_STANDARD_CLIENT_VALUE=<VALOR_CLIENTE>
+
+# ============================================================
+# Objetos de negócio - ambiente de processo (produção)
+# ============================================================
+
+DCA_TC_PROCESS_ORIGINAL_ITEM_TYPE=<TIPO_ITEM_ORIGINAL>
+DCA_TC_PROCESS_ORIGINAL_REVISION_TYPE=<TIPO_REVISAO_ORIGINAL>
+DCA_TC_PROCESS_ORIGINAL_CLIENT_PROPERTY=<PROPRIEDADE_CLIENTE>
+DCA_TC_PROCESS_ORIGINAL_CLIENT_VALUE=<VALOR_CLIENTE>
+
+DCA_TC_PROCESS_PROCESS_ITEM_TYPE=<TIPO_ITEM_PROCESSO>
+DCA_TC_PROCESS_PROCESS_REVISION_TYPE=<TIPO_REVISAO_PROCESSO>
+DCA_TC_PROCESS_PROCESS_CLIENT_PROPERTY=<PROPRIEDADE_CLIENTE>
+DCA_TC_PROCESS_PROCESS_CLIENT_VALUE=<VALOR_CLIENTE>
+
+DCA_TC_PROCESS_STANDARD_ITEM_TYPE=<TIPO_ITEM_NORMA>
+DCA_TC_PROCESS_STANDARD_REVISION_TYPE=<TIPO_REVISAO_NORMA>
+DCA_TC_PROCESS_STANDARD_CLIENT_PROPERTY=<PROPRIEDADE_CLIENTE>
+DCA_TC_PROCESS_STANDARD_CLIENT_VALUE=<VALOR_CLIENTE>
+```
+
+### Alterações necessárias antes do uso
+
+Antes de usar o projeto em outra empresa, vault, estação ou ambiente Teamcenter,
+revise:
+
+| Configuração | Onde configurar |
+| --- | --- |
+| Raiz local do vault | `DCA_ROOT` ou `-SearchRoot` |
+| Nome do vault SolidWorks PDM | `DCA_VAULT_NAME` ou `-VaultName` |
+| Biblioteca de interoperabilidade do PDM | `DCA_PDM_LIB` ou `-PdmLibraryPath` |
+| Arquivo de credencial protegido do PDM | `DCA_VAULT_CREDENTIAL` ou `-VaultCredentialPath` |
+| Diretório temporário dos PDFs | `DCA_TEMP_FOLDER` |
+| Variáveis dos cartões de dados do PDM | `DCA_PDM_VAR_*` e `DCA_PDM_DISCOVER_CARD_VARIABLES` |
+| Assembly de integração do Teamcenter | `DCA_IMPORTER_PATH` |
+| Ambiente do Teamcenter | `DCA_TC_ENV` |
+| Conexão do Teamcenter de teste | Variáveis `DCA_TC_TEST_*` |
+| Conexão do Teamcenter de processo | Variáveis `DCA_TC_PROCESS_*` |
+| Objetos de negócio | Variáveis de Item e revisão de cada ambiente |
+| Workflow de aprovação | `DCA_TC_APPROVED_WORKFLOW` |
+| Workflow de obsolescência | `DCA_TC_OBSOLETE_WORKFLOW` |
+
+O código-fonte evita armazenar credenciais de produção ou configurações internas
+da empresa.
+
+---
+
+## Executando a aplicação
+
+### Inicializador recomendado
+
+```text
 start_DCAtoPLM.bat
-Execução direta pelo PowerShell
-PowerShell
+```
+
+O inicializador executa o fluxo PowerShell usando a configuração local.
+
+### Execução direta pelo PowerShell
+
+```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
--File .\import_dcaPdfToTeamcenter.ps1
-Pesquisa por parâmetro
-PowerShell
+  -File .\import_dcaPdfToTeamcenter.ps1
+```
+
+### Modo Preview
+
+```powershell
 .\import_dcaPdfToTeamcenter.ps1 `
--SourceCode "AMS 22"
-Várias pesquisas
-PowerShell
+  -SourceCode "AMS 22" `
+  -Preview
+```
+
+O modo Preview realiza pesquisa, seleção, extração de metadados e apresentação do
+plano e do resumo do lote, mas **não**:
+
+- conecta ao Teamcenter;
+- cria Items;
+- cria revisões;
+- copia arquivos para o diretório de importação;
+- importa PDFs;
+- inicia workflows.
+
+### Modo Details
+
+```powershell
 .\import_dcaPdfToTeamcenter.ps1 `
--SourceCode "1000359,1000359-2,AMS 2248"
-Modo Preview
-PowerShell
-.\import_dcaPdfToTeamcenter.ps1 `
--SourceCode "AMS 22" `
--Preview
+  -SourceCode "AMS 22" `
+  -Preview `
+  -Details `
+  -OutputDelayMilliseconds 0
+```
 
-O modo Preview executa:
+`-Details` exibe informações adicionais de caminhos, de cada documento e de
+diagnóstico. No plano de importação, também apresenta servidor, caminhos,
+propriedades e templates.
 
-pesquisa;
-seleção;
-interpretação do nome;
-leitura dos cartões;
-normalização dos metadados;
-preparação do lote;
-apresentação do plano.
+---
 
-O modo Preview não executa:
+## Parâmetros
 
-conexão com o Teamcenter;
-criação de Items;
-criação de revisões;
-importação de PDFs;
-solicitação de workflows.
-Saída detalhada
-PowerShell
-.\import_dcaPdfToTeamcenter.ps1 `
--SourceCode "AMS 22" `
--Preview `
--Details `
--OutputDelayMilliseconds 0
+| Parâmetro | Tipo | Padrão | Descrição |
+| --- | --- | --- | --- |
+| `-SearchRoot` | string | `DCA_ROOT` | Raiz do vault DCA configurado |
+| `-SourceCode` | string | Vazio | Códigos, padrões ou pesquisas de pasta separados por vírgula |
+| `-ItemName` | string | Vazio | Nome inicial opcional do Item no Teamcenter |
+| `-VaultName` | string | `DCA_VAULT_NAME` | Nome do vault SolidWorks PDM |
+| `-PdmLibraryPath` | string | `DCA_PDM_LIB` | Caminho do `Interop.EdmLib.dll` |
+| `-VaultCredentialPath` | string | `DCA_VAULT_CREDENTIAL` | Arquivo de credencial protegido |
+| `-OutputDelayMilliseconds` | int | `10` | Atraso entre linhas de saída |
+| `-NoVaultApi` | switch | Desativado | Pesquisa somente arquivos disponíveis localmente |
+| `-Details` | switch | Desativado | Exibe informações detalhadas de pesquisa e diagnóstico |
+| `-Preview` | switch | Desativado | Prepara o lote sem alterar o Teamcenter |
 
-O parâmetro -Details exibe:
+---
 
-caminhos completos;
-variáveis do cartão;
-campos configurados;
-resultados das consultas;
-propriedades da revisão;
-templates de workflow;
-detalhes dos arquivos temporários;
-arquivos e linhas de erros;
-stack de chamadas.
-Pesquisa somente no sistema de arquivos
-PowerShell
-.\import_dcaPdfToTeamcenter.ps1 `
--SourceCode "1000359" `
--NoVaultApi
+## Comportamento da pesquisa
 
-Nesse modo, a API do PDM não é utilizada.
+### Pesquisa por código
 
-Somente arquivos disponíveis localmente serão pesquisados.
+A pesquisa por código é **parcial por padrão**. Ao digitar:
 
-Parâmetros
--SearchRoot
-
-Tipo:
-
-Plain Text
-string
-
-Padrão:
-
-Plain Text
-DCA_ROOT
-
-Define a raiz da estrutura do Vault DCA.
-
--SourceCode
-
-Tipo:
-
-Plain Text
-string
-
-Aceita códigos, padrões com curingas e pesquisas por pasta.
-
-Vários termos podem ser separados por vírgulas.
-
--ItemName
-
-Tipo:
-
-Plain Text
-string
-
-Define um nome inicial opcional para o Item.
-
-A descrição do cartão possui prioridade sobre esse valor.
-
--VaultName
-
-Tipo:
-
-Plain Text
-string
-
-Padrão:
-
-Plain Text
-DCA_VAULT_NAME
-
-Define o nome do Vault do SOLIDWORKS PDM.
-
--PdmLibraryPath
-
-Tipo:
-
-Plain Text
-string
-
-Padrão:
-
-Plain Text
-DCA_PDM_LIB
-
-Define o caminho de Interop.EdmLib.dll.
-
--VaultCredentialPath
-
-Tipo:
-
-Plain Text
-string
-
-Padrão:
-
-Plain Text
-DCA_VAULT_CREDENTIAL
-
-Define o caminho do arquivo protegido de credenciais.
-
--OutputDelayMilliseconds
-
-Tipo:
-
-Plain Text
-integer
-
-Padrão:
-
-Plain Text
-10
-
-Intervalo permitido:
-
-Plain Text
-0 a 2000
--NoVaultApi
-
-Pesquisa somente arquivos disponíveis localmente.
-
--Details
-
-Exibe caminhos e informações técnicas adicionais.
-
--Preview
-
-Prepara e apresenta o lote sem modificar o Teamcenter.
-
-Pesquisa por código
-Pesquisa parcial automática
-
-As pesquisas por código são parciais por padrão.
-
-Ao informar:
-
-Plain Text
+```text
 AMS 22
+```
 
-Podem ser encontrados valores como:
+podem ser retornados:
 
-Plain Text
+```text
 AMS 2241
 AMS 2242
 AMS 2248
 AMS 2261
 AMS 2262
+```
 
-Não é necessário incluir * em pesquisas parciais comuns.
+Não é necessário incluir `*` em pesquisas parciais comuns.
 
-Curingas explícitos
+Os curingas continuam suportados, **somente em pesquisas por código**:
 
-Exemplos:
-
-Plain Text
+```text
 AMS 22*
 *2248*
 BR50??A-00
+```
 
-Curingas suportados:
+| Curinga | Significado |
+| --- | --- |
+| `*` | Zero ou mais caracteres |
+| `?` | Exatamente um caractere |
 
-Plain Text
-* corresponde a zero ou mais caracteres
-? corresponde a um caractere
+#### Várias pesquisas
 
-Os curingas são permitidos nas pesquisas por código, mas não nas pesquisas por pasta.
+Separe as pesquisas por vírgula:
 
-Várias pesquisas
-
-Separe os termos por vírgulas:
-
-Plain Text
+```text
 1000359,1000359-2,AMS 2248
+```
 
-Cada termo será pesquisado independentemente.
+Cada valor é pesquisado de forma independente. Termos repetidos são removidos
+antes da pesquisa.
 
-Termos repetidos são removidos antes da execução.
+#### Seleção de resultados
 
-Seleção de vários resultados
+Quando a pesquisa retorna mais de um PDF, a seleção aceita:
 
-Quando mais de um PDF for encontrado, são aceitas as seguintes entradas:
+| Entrada | Efeito |
+| --- | --- |
+| `2` | Seleciona um resultado individual |
+| `1,2,4` | Seleciona vários números separados por vírgula |
+| `1-3` | Seleciona um intervalo |
+| `T` | Seleciona todos os resultados exibidos |
+| `TODOS` | Seleciona todos os resultados exibidos |
 
-Plain Text
-1
-1,2,4
-1-5
-T
-TODOS
+Quando a pesquisa retorna um único resultado, ele é selecionado
+automaticamente. Cada PDF selecionado vira uma entrada independente do lote.
 
-Significado:
+### Pesquisa por pasta
 
-1 seleciona um resultado;
-1,2,4 seleciona vários resultados;
-1-5 seleciona um intervalo;
-T seleciona todos;
-TODOS seleciona todos.
+A pesquisa por pasta exige o **nome completo** da pasta. Ela é feita em toda a
+árvore de documentação e possui dois modos:
 
-Quando apenas um resultado é encontrado, ele é selecionado automaticamente.
+| Entrada | Modo | Comportamento |
+| --- | --- | --- |
+| `\NomeCompleto` | Importação direta | Importa os documentos válidos da pasta |
+| `\\NomeCompleto` | Seleção | Abre a seleção dos documentos da pasta |
 
-Pesquisa por pasta
+As barras normais também são aceitas: `/NomeCompleto` equivale a
+`\NomeCompleto`, e `//NomeCompleto` equivale a `\\NomeCompleto`.
 
-A pesquisa por pasta exige o nome completo da pasta.
+Exemplos:
 
-Não são aceitos curingas ou nomes parciais.
+```text
+\MIL
+\\MIL
+/MIL
+//MIL
+```
 
-Importar todos os documentos da pasta
+> [!IMPORTANT]
+> Pesquisas por pasta **não** aceitam curingas nem pesquisas parciais. Os
+> caracteres `*`, `?`, a sequência `..` e caracteres inválidos em nomes de pasta
+> são bloqueados.
 
-Utilize uma barra inicial:
+Somente os PDFs diretamente contidos na pasta são considerados. Arquivos duplicados
+no mesmo lote são evitados.
 
-Plain Text
-\NomeCompleto
+---
 
-Exemplo:
+## Cartões de dados do PDM
 
-Plain Text
-\HSRE DIMENSIONAL
+O DCAtoPLM lê variáveis dos cartões de dados do SolidWorks PDM para obter revisão
+e descrição. Os nomes das variáveis são configurados no `.env`.
 
-Esse modo localiza a pasta exata e retorna seus PDFs válidos sem seleção individual.
+### Variáveis de revisão
 
-Selecionar documentos da pasta
+| Variável | Uso |
+| --- | --- |
+| `DCA_PDM_VAR_ORIGINAL_REVISION` | Revisão de Desenhos Originais |
+| `DCA_PDM_VAR_PROCESS_REVISION` | Revisão de documentos de Processo |
+| `DCA_PDM_VAR_STANDARD_REVISION` | Revisão de Normas Externas |
+| `DCA_PDM_VAR_DATASET_REVISION` | Revisão de destino para `DatasetOnly` |
 
-Utilize duas barras iniciais:
+### Variáveis de descrição
 
-Plain Text
-\\NomeCompleto
+| Variável | Uso |
+| --- | --- |
+| `DCA_PDM_VAR_ORIGINAL_DESCRIPTION` | Descrição de Desenhos Originais |
+| `DCA_PDM_VAR_PROCESS_DESCRIPTION` | Descrição de documentos de Processo |
+| `DCA_PDM_VAR_STANDARD_DESCRIPTION` | Descrição de Normas Externas |
 
-Exemplo:
+### Descoberta de variáveis
 
-Plain Text
-\\HSRE DIMENSIONAL
+`DCA_PDM_DISCOVER_CARD_VARIABLES` controla a descoberta das variáveis disponíveis
+no cartão, útil para identificar os nomes corretos ao configurar um novo vault.
 
-Esse modo localiza a pasta exata e abre a seleção individual dos documentos.
+### Regras de leitura
 
-Também são aceitas barras comuns:
+- Várias variáveis de revisão podem ser informadas em uma mesma configuração,
+  separadas por `|` ou `;`.
+- Os valores encontrados no cartão têm **prioridade** sobre os valores extraídos
+  do nome do PDF.
+- A descrição de **Desenhos Originais** passa por uma normalização antes de ser
+  usada.
 
-Plain Text
-/NomeCompleto
-//NomeCompleto
+---
 
-A entrada é normalizada internamente.
+## Plano de importação
 
-Restrições
+Antes de qualquer alteração no Teamcenter, o plano de importação é apresentado
+para conferência. Ele informa:
 
-Pesquisas por pasta não aceitam:
+- ambiente;
+- quantidade de documentos;
+- tipos do Item e da revisão;
+- propriedades adicionais;
+- revisão prevista;
+- estado do PDM;
+- workflow previsto;
+- erros de configuração.
 
-Plain Text
-*
-?
-..
- 
+No modo `-Details`, o plano também apresenta servidor, caminhos, propriedades e
+templates.
 
-Caracteres inválidos para caminhos também são bloqueados.
+---
 
-Cartões de dados do PDM
+## Processamento do lote
 
-A aplicação pode ler revisão e descrição no cartão do PDM.
+Cada documento preparado é processado de forma independente. O fluxo depende do
+tipo do documento.
 
-Prioridade da revisão
+### Resultados individuais
 
-A revisão pode ser extraída inicialmente do nome do arquivo.
+| Resultado | Significado |
+| --- | --- |
+| Item e PDF importados | Item criado e PDF importado como Dataset; workflow solicitado quando aplicável |
+| Item criado, mas PDF não importado | O Item existe no Teamcenter sem o PDF e exige revisão manual |
+| Item não criado | O Item não foi criado e o PDF não foi processado |
+| Dataset importado em revisão existente | Fluxo `DatasetOnly` concluído |
+| Dataset não importado em revisão existente | Fluxo `DatasetOnly` falhou |
 
-Quando o cartão possui uma revisão configurada e preenchida, ela substitui o valor extraído do nome.
+Uma falha individual **não interrompe** os próximos documentos do lote.
 
-A aplicação preserva:
+Falhas anteriores ao processamento do lote (por exemplo, arquivo ou função
+ausente, ou falha na conexão) podem interromper toda a execução.
 
-revisão encontrada no nome;
-revisão final;
-origem da revisão final.
+O resumo final apresenta o total de entradas concluídas e com falha.
 
-A origem pode ser:
+---
 
-Plain Text
-nome do arquivo
-cartao de dados
-Prioridade da descrição
+## Fluxos do Teamcenter
 
-A descrição inicial pode vir:
+### Criação de Item
 
-do nome do PDF;
-do parâmetro -ItemName;
-do código, em importações por pasta sem descrição.
+Aplicável a:
 
-Quando uma descrição válida é encontrada no cartão, ela substitui o valor anterior.
+- `Original`
+- `Processo`
+- `NormaExterna`
 
-Normalização da descrição de Desenho Original
+Etapas principais:
 
-A descrição de um Desenho Original passa pelas seguintes normalizações:
+1. Criar o Item.
+2. Obter ou localizar a revisão.
+3. Preparar o PDF.
+4. Importar o Dataset.
+5. Solicitar workflow, quando aplicável.
+6. Registrar o resultado.
 
-remoção de vírgulas usadas como separadores;
-remoção de espaços duplicados;
-primeira letra em maiúsculo;
-demais caracteres em minúsculo.
-Descoberta das variáveis do cartão
+### Dataset em revisão existente
 
-Para exibir todas as variáveis disponíveis, configure temporariamente:
+Aplicável a:
 
-Plain Text
-dotenv não tem suporte total. O realce de sintaxe é baseado em Plain Text.
-DCA_PDM_DISCOVER_CARD_VARIABLES=true
+- `DatasetOnly`
 
-Execute com:
+Etapas principais:
 
-PowerShell
--Details
-
-A saída apresentará:
-
-nome da variável;
-ID, quando disponível;
-valor;
-método de leitura utilizado.
-
-Depois de identificar os campos corretos, desative:
+1. Procurar o Item existente.
+2. Procurar a revisão esperada.
+3. Validar o destino antes da confirmação.
+4. Preparar o PDF.
+5. Importar somente o Dataset.
 
-PowerShell
-dotenv não tem suporte total. O realce de sintaxe é baseado em PowerShell.
-DCA_PDM_DISCOVER_CARD_VARIABLES=false
-Plano de importação
+Neste fluxo, o DCAtoPLM **não** cria Item, **não** cria revisão e **não**
+solicita workflow. Se o destino não for validado, o documento falha e o código de
+saída reflete essa falha.
 
-Antes de alterar o Teamcenter, a aplicação apresenta um plano.
+---
 
-O plano contém:
+## Ambiente de Processo
 
-ambiente selecionado;
-servidor, no modo Details;
-quantidade de documentos;
-tipo do Item;
-tipo da revisão;
-propriedade e valor do cliente;
-identificador da revisão;
-estado do PDM;
-workflow previsto;
-template do workflow, no modo Details;
-erros de configuração;
-caminho do arquivo, no modo Details.
+Quando o ambiente selecionado é `Processo`, a aplicação apresenta um aviso
+destacado.
 
-A aplicação avisa quando:
+Existe uma **confirmação geral** do lote, feita digitando `SIM`. Não existe uma
+segunda confirmação exclusiva para o ambiente de Processo.
 
-a configuração do tipo é inválida;
-um workflow não está configurado;
-algum documento não poderá ser criado;
-o Item e o PDF serão mantidos sem workflow.
-Fluxos de processamento no Teamcenter
-Criação de Item
+---
 
-Os seguintes tipos utilizam esse fluxo:
+## Preparação do PDF
 
-Plain Text
-Original
-Processo
-NormaExterna
+O PDF original **nunca é alterado**. A importação usa uma cópia temporária criada
+em `DCA_TEMP_FOLDER`.
 
-Para cada documento, a aplicação:
+Antes de chamar o método de importação do Teamcenter, o script:
 
-cria o Item;
-obtém o objeto criado;
-obtém ou localiza a revisão;
-valida o tipo técnico da revisão;
-garante que o PDF esteja disponível localmente;
-cria uma cópia temporária validada;
-importa o PDF como Dataset;
-determina o workflow pelo estado do PDM;
-solicita o workflow quando aplicável;
-registra o resultado individual.
-Dataset em revisão existente
+1. Confirma que o PDF está disponível no cache local do PDM, baixando-o quando
+   necessário.
+2. Substitui caracteres inválidos do código antes de criar o nome temporário.
+3. Copia o PDF para `DCA_TEMP_FOLDER`.
+4. Valida a cópia temporária quanto a:
+   - existência;
+   - extensão;
+   - tamanho;
+   - comparação com o arquivo original;
+   - acesso de leitura.
+5. Passa o caminho do PDF e a revisão do Teamcenter ao assembly de integração.
 
-O tipo abaixo utiliza esse fluxo:
+A integração espera atualmente um método compatível com:
 
-Plain Text
-DatasetOnly
-
-Antes da confirmação final, a aplicação:
-
-conecta ao Teamcenter;
-procura o Item existente;
-procura a revisão esperada;
-armazena os objetos encontrados;
-valida todos os destinos do lote.
-
-Se um destino DatasetOnly não for encontrado, a execução é interrompida antes da confirmação final.
-
-Durante o processamento:
-
-reutiliza o Item e a revisão existentes;
-garante que o PDF esteja disponível;
-cria uma cópia temporária validada;
-importa o PDF como Dataset;
-não cria Item;
-não cria revisão;
-não solicita workflow;
-registra o resultado individual.
-Preparação do PDF
-
-Antes de chamar o importador, a aplicação:
-
-confirma que o caminho de origem existe;
-confirma que a extensão é .pdf;
-rejeita arquivos vazios;
-valida DCA_TEMP_FOLDER;
-cria a pasta temporária quando necessário;
-normaliza o código do Item para uso no nome do arquivo;
-remove uma cópia temporária anterior;
-copia o PDF;
-confirma que a cópia existe;
-compara o tamanho da origem e da cópia;
-abre a cópia para leitura;
-retorna o caminho validado.
-
-O PDF original não é modificado.
-
-Caracteres inválidos para nomes de arquivos no Windows são substituídos por _.
-
-Exemplo:
-
-Plain Text
-C:\Temp\DCAtoPLM\1000359-2.pdf
-Importação do PDF
-
-O assembly de integração deve possuir um método compatível com:
-
-Plain Text
+```text
 ImportarPDF(
-DatasetId,
-DatasetRev,
-pathArquivo,
-ItemRevision,
-Sobrepor
+    DatasetId,
+    DatasetRev,
+    pathArquivo,
+    ItemRevision,
+    Sobrepor
 )
+```
 
-Os parâmetros e o comportamento exato dependem do assembly instalado.
+O comportamento exato depende do assembly `Importar GD.exe` instalado.
 
-[!CAUTION]
+> [!CAUTION]
+> Os requisitos de `DatasetId` e `DatasetRev` devem ser confirmados no assembly de
+> integração usado pelo ambiente Teamcenter de destino. Um valor incompatível
+> pode fazer o Item ser criado sem que o PDF seja anexado.
 
-Os requisitos do nome e da revisão do Dataset devem ser confirmados no assembly utilizado pelo ambiente Teamcenter.
+---
 
-Valores incompatíveis podem permitir a criação do Item sem que o PDF seja anexado corretamente.
+## Workflows do Teamcenter
 
-A aplicação considera a chamada concluída quando o método retorna sem exceção.
+Após a importação bem-sucedida do PDF, o DCAtoPLM pode chamar:
 
-Sem uma consulta posterior da relação no Teamcenter, isso não confirma de forma independente que o Dataset foi relacionado corretamente.
-
-Workflows do Teamcenter
-
-Após a importação do PDF, a aplicação pode chamar um método compatível com:
-
-Plain Text
+```text
 Start_Workflow(
-Workflow_Template,
-Revisions
+    Workflow_Template,
+    Revisions
 )
+```
 
-Mapeamento:
+O workflow escolhido depende do estado no PDM:
 
-Plain Text
-Aprovado
--> DCA_TC_APPROVED_WORKFLOW
- 
-Obsoleto
--> DCA_TC_OBSOLETE_WORKFLOW
+```text
+Aprovado -> DCA_TC_APPROVED_WORKFLOW
+Obsoleto -> DCA_TC_OBSOLETE_WORKFLOW
+```
 
-Outros estados, como:
+Documentos em estados como:
 
-Plain Text
+```text
 Verificado
-Em elaboracao
-Em verificacao
+Em verificação
+```
 
-não solicitam workflow automaticamente.
+são importados sem workflow automático, a menos que uma regra adicional seja
+implementada.
 
-O template precisa:
+O template precisa existir no Teamcenter e suportar o tipo de revisão submetida.
 
-existir no Teamcenter;
-estar acessível para o usuário conectado;
-aceitar o tipo de revisão enviado;
-possuir handlers válidos no ambiente.
-Resultados individuais
-Item e PDF importados
+---
 
-O Item foi criado e o método de importação do PDF foi concluído.
+## Regras específicas por tipo de documento
 
-Quando aplicável, o resultado também informa que o workflow foi solicitado.
+### Desenho Original DCA
 
-Item criado, mas PDF não importado
+Categoria de origem:
 
-O Item foi criado, mas uma etapa posterior de preparação ou importação falhou.
+```text
+Desenhos Originais
+```
 
-Essa condição pode deixar um Item sem Dataset e precisa ser revisada manualmente.
+Exemplos de revisão:
 
-Item não criado
+```text
+B
+BA
+```
 
-A criação do Item ou a validação da revisão falhou antes da importação do PDF.
+A configuração atual valida o tamanho da revisão do Teamcenter. Se o modelo do
+Teamcenter de destino aceitar revisões maiores, ajuste a validação em
+`Get-DcaTypeConfiguration`.
 
-Dataset importado em revisão existente
+### Processo DCA
 
-O Item e a revisão foram encontrados e o método de importação foi concluído.
+Categoria de origem:
 
-Dataset não importado em revisão existente
+```text
+FP - Ficha de Processo (PDF)
+```
 
-O destino não foi encontrado ou alguma etapa de preparação ou importação falhou.
+Formato esperado da revisão:
 
-Códigos de saída
-Código 0
+```text
+A4
+BA4
+AA4
+--4
+```
 
-Retornado quando:
+O último caractere representa a revisão interna. Por exemplo, `BA4` é interpretado
+como:
 
-todos os documentos foram processados com sucesso;
-o modo Preview foi concluído;
-o usuário cancelou antes das alterações no Teamcenter.
-Código 1
+```text
+Revisão completa: BA4
+Revisão cliente:  BA
+Revisão interna:  4
+```
 
-Retornado quando:
+Texto entre colchetes só é aceito como revisão quando corresponde ao formato
+válido. Por exemplo, `1000359-2[BA4].pdf` é válido, enquanto
+`1000359-2[TESTE].pdf` não é aceito automaticamente como revisão.
 
-o fluxo principal falhou;
-nenhum documento válido permaneceu;
-uma função obrigatória não foi carregada;
-um destino DatasetOnly não foi validado;
-pelo menos um documento do lote falhou.
-Autenticação no PDM
+### Norma Externa DCA
 
-Quando um arquivo de credenciais é configurado, ele é lido com Import-Clixml.
+Categoria de origem:
 
-Crie o arquivo com:
+```text
+Normas Externas
+```
 
-PowerShell
-Get-Credential |
-Export-Clixml -Path "C:\Secure\vault-credential.xml"
+Normas externas usam a revisão:
 
-A credencial normalmente fica vinculada ao usuário e ao computador onde foi criada.
+```text
+000
+```
 
-A aplicação aceita:
+O analisador reconhece vários formatos de código técnico, incluindo:
 
-um objeto PSCredential;
-um objeto com Usuario e SenhaCriptografada.
+```text
+AMS 2248
+AMS 2759-3
+AMS 2440C
+AMS-STD-2175
+MIL-PRF-85582
+ASTM-A123
+```
 
-Quando nenhuma credencial válida estiver disponível, a aplicação tenta utilizar LoginAuto.
+Quando possível, o texto após o código é interpretado como título. Por exemplo,
+`AMS 2248 CHEMICAL CHECK ANALYSIS LIMITS.pdf` resulta em:
 
-Se a autenticação falhar, a pesquisa pode continuar utilizando somente o sistema de arquivos.
+```text
+Código: AMS 2248
+Nome:   CHEMICAL CHECK ANALYSIS LIMITS
+```
 
-Validação de sintaxe do PowerShell
+### Dimensional (`DatasetOnly`)
 
-O projeto possui vários módulos PowerShell.
+Categoria de origem:
 
-Use o script abaixo para validar o arquivo principal e todos os arquivos .ps1 da pasta functions sem executar a aplicação:
+```text
+FP - XXRE Dimensional
+```
 
-PowerShell
-$files =
-@(
-Get-Item `
--LiteralPath ".\import_dcaPdfToTeamcenter.ps1" `
--ErrorAction Stop
- 
-Get-ChildItem `
--LiteralPath ".\functions" `
--Filter "*.ps1" `
--File `
--Recurse `
--ErrorAction Stop
-)
- 
-foreach ($file in $files) {
- 
-$tokens =
-$null
- 
-$errors =
-$null
- 
-[System.Management.Automation.Language.Parser]::ParseFile(
-$file.FullName,
-[ref]$tokens,
-[ref]$errors
-) | Out-Null
- 
-if ($errors.Count -gt 0) {
- 
-Write-Host (
-"Erros de sintaxe em: $($file.FullName)"
-) -ForegroundColor Red
- 
-foreach ($syntaxError in $errors) {
- 
-Write-Host (
-"Linha $($syntaxError.Extent.StartLineNumber): " +
-$syntaxError.Message
-) -ForegroundColor Red
-}
- 
-exit 1
-}
-}
- 
-Write-Host (
-"Sintaxe PowerShell valida. Arquivos verificados: $($files.Count)"
-) -ForegroundColor Green
+Importa somente o PDF como Dataset em um Item e uma revisão **já existentes**. A
+revisão esperada pode ser obtida da variável `DCA_PDM_VAR_DATASET_REVISION`.
 
-A validação de sintaxe não detecta problemas de execução, como:
+---
 
-nomes inválidos de objetos do Teamcenter;
-variáveis de ambiente ausentes;
-API do PDM indisponível;
-caminhos inacessíveis;
-métodos incompatíveis no assembly;
-workflows inválidos;
-falhas de consulta;
-revisões existentes não encontradas;
-permissões insuficientes;
-falhas na criação da relação do Dataset.
-Erros comuns
-Função obrigatória não carregada
+## Itens duplicados
 
+Nos fluxos de criação de Item, se o Item já existir no Teamcenter, o script
+informa a duplicidade. A aplicação **não** gera um código alternativo
+automaticamente.
+
+```text
+O item 'AMS 2248' já existe no Teamcenter.
+```
+
+No processamento em lote, a duplicidade é registrada como falha individual e a
+aplicação continua com o próximo documento.
+
+---
+
+## Arquivos temporários
+
+Os arquivos temporários de importação são armazenados em `DCA_TEMP_FOLDER`.
 Exemplo:
 
-Plain Text
-A funcao obrigatoria 'Get-DcaTypeConfiguration' nao foi carregada.
+```text
+C:\Temp\DCAtoPLM
+```
+
+O nome do PDF temporário é baseado no código do Item do Teamcenter. Caracteres
+inválidos em nomes de arquivo do Windows são substituídos antes da criação do
+caminho temporário.
+
+Os arquivos temporários ainda **não** são removidos automaticamente.
+
+---
+
+## Autenticação no PDM
+
+Quando um arquivo de credencial é configurado, o script o lê com
+`Import-Clixml`. Para criar um arquivo de credencial protegido:
+
+```powershell
+Get-Credential |
+  Export-Clixml -Path "C:\Secure\vault-credential.xml"
+```
+
+A credencial criptografada normalmente fica vinculada ao usuário e ao computador
+Windows que a criou.
+
+Sem arquivo de credencial, a aplicação tenta `LoginAuto`, que exige uma sessão
+ativa do SolidWorks PDM para o usuário atual do Windows.
+
+---
+
+## Ambientes do Teamcenter
+
+Dois ambientes são suportados:
+
+```text
+Teste
+Processo
+```
+
+Selecione o ambiente em:
+
+```ini
+DCA_TC_ENV=Teste
+```
+
+ou:
+
+```ini
+DCA_TC_ENV=Processo
+```
+
+Veja [Ambiente de Processo](#ambiente-de-processo) para o comportamento de
+confirmação.
+
+---
+
+## Procedimento recomendado para produção
+
+Antes de executar uma importação em produção:
+
+1. Atualize o `.env` com a configuração aprovada.
+2. Confirme o ambiente Teamcenter selecionado.
+3. Confirme que a conta do PDM consegue ler e baixar os PDFs selecionados.
+4. Confirme que a conta do Teamcenter consegue criar os tipos de Item necessários.
+5. Confirme que a conta do Teamcenter consegue criar relações de Dataset.
+6. Confirme que os templates de workflow existem.
+7. Execute a mesma pesquisa com `-Preview`.
+8. Revise tipos de documento, revisões, estados e códigos extraídos no plano.
+9. Comece com um único documento de teste controlado.
+10. Inspecione o Item, a revisão, o Dataset do PDF e o workflow criados.
+11. Execute lotes maiores somente depois que o teste controlado for bem-sucedido.
+
+---
+
+## Segurança
+
+- Nunca envie o `.env` ao repositório.
+- Nunca envie senhas ou tokens de acesso.
+- Nunca envie arquivos de credencial protegidos.
+- Nunca publique URLs internas do Teamcenter.
+- Nunca publique nomes internos de objetos de negócio sem autorização.
+- Mantenha os assemblies de integração do Teamcenter fora do repositório.
+- Use contas com o mínimo de permissões necessárias.
+- Revise logs antes de compartilhá-los, pois podem conter caminhos internos,
+  códigos de Items, nomes de servidores e usuários.
+
+---
+
+## Carregamento e validação de módulos
+
+Os módulos em `functions` são carregados por *dot source*. Antes da execução:
+
+1. Cada arquivo é validado antes de ser carregado.
+2. As funções obrigatórias são verificadas **antes da pesquisa**.
+3. Um arquivo ou função ausente interrompe a execução antes de qualquer alteração
+   externa.
+
+---
+
+## Códigos de saída
+
+| Código | Situação |
+| --- | --- |
+| `0` | Lote concluído com sucesso |
+| `0` | Preview concluído |
+| `0` | Operação cancelada antes das alterações |
+| `1` | Falha no fluxo principal |
+| `1` | Função obrigatória ausente |
+| `1` | Documento com falha |
+| `1` | Destino `DatasetOnly` não validado |
+
+---
+
+## Validação de sintaxe do PowerShell
+
+Valide o script principal e todos os arquivos `.ps1` de `functions`,
+recursivamente, sem executar a aplicação:
+
+```powershell
+$files = @(
+  Get-Item ".\import_dcaPdfToTeamcenter.ps1"
+  Get-ChildItem ".\functions" -Recurse -Filter "*.ps1"
+)
+
+foreach ($file in $files) {
+
+  $tokens = $null
+  $errors = $null
+
+  [System.Management.Automation.Language.Parser]::ParseFile(
+    $file.FullName,
+    [ref]$tokens,
+    [ref]$errors
+  ) | Out-Null
+
+  if ($errors.Count -gt 0) {
+
+    Write-Host "Erros de sintaxe em: $($file.FullName)" -ForegroundColor Red
+
+    $errors | ForEach-Object {
+      Write-Host (
+        "Linha $($_.Extent.StartLineNumber): " + $_.Message
+      ) -ForegroundColor Red
+    }
+
+    exit 1
+  }
+}
+
+Write-Host "Sintaxe do PowerShell OK" -ForegroundColor Green
+```
+
+A validação de sintaxe **não** detecta problemas de execução, como:
+
+- nomes inválidos de objetos de negócio do Teamcenter;
+- variáveis de ambiente ausentes;
+- APIs do PDM indisponíveis;
+- métodos incompatíveis no assembly de integração;
+- templates de workflow inválidos;
+- convenções inválidas de nome de PDF;
+- erros de reflexão dentro do executável de integração do Teamcenter.
+
+---
+
+## Erros comuns
+
+### Item já existe
+
+```text
+O item já existe no Teamcenter.
+```
+
+O código já está registrado. A aplicação não cria outro código automaticamente.
+
+### Formato de revisão inválido
+
+```text
+A revisão não segue o padrão do Processo DCA.
+```
+
+Verifique o texto entre colchetes no nome do PDF e o valor do cartão de dados do
+PDM.
+
+### PDF não disponível localmente
+
+```text
+PDF não encontrado no disco.
+```
+
+Confirme a autenticação no PDM e o acesso ao cache local.
+
+### Item criado, mas PDF não importado
+
+```text
+Item criado, mas PDF não importado.
+```
+
+Revise:
+
+- a assinatura do método `ImportarPDF`;
+- `DatasetId`;
+- `DatasetRev`;
+- o caminho do PDF temporário;
+- a revisão retornada pelo Teamcenter;
+- a compatibilidade do assembly de integração;
+- as permissões de criação de Dataset.
+
+### Destino `DatasetOnly` não encontrado
+
+O Item ou a revisão esperada não existe no Teamcenter. Confirme o código do Item,
+a revisão informada no cartão (`DCA_PDM_VAR_DATASET_REVISION`) e o ambiente
+selecionado.
+
+### Workflow não iniciado
 
 Verifique:
 
-o arquivo correspondente em $functionFiles;
-o nome da função dentro do módulo;
-possíveis erros de sintaxe;
-arquivos ausentes;
-caminhos incorretos;
-commits incompletos.
-Item já existe
+- o estado no PDM;
+- `DCA_TC_APPROVED_WORKFLOW`;
+- `DCA_TC_OBSOLETE_WORKFLOW`;
+- o nome do template de workflow;
+- a compatibilidade com o tipo de revisão submetida;
+- as permissões de workflow no Teamcenter.
 
-O código já está registrado no Teamcenter.
+---
 
-Para os tipos normais, a aplicação não cria um código alternativo automaticamente.
+## Status atual
 
-Se a intenção é adicionar somente um PDF a uma revisão existente, o documento precisa utilizar o fluxo DatasetOnly.
+### Implementado
 
-Destino de Dataset não encontrado
+- [x] Pesquisa pela API do PDM.
+- [x] Pesquisa local alternativa.
+- [x] Pesquisa parcial por código.
+- [x] Seleção múltipla.
+- [x] Pesquisa exata por pasta.
+- [x] Importação completa de pasta.
+- [x] Leitura dos cartões do PDM.
+- [x] Criação de Items.
+- [x] Importação `DatasetOnly`.
+- [x] Workflows.
+- [x] Preview.
+- [x] Modo Details.
+- [x] Preparação do PDF.
+- [x] Plano de importação.
+- [x] Tratamento individual de erros.
+- [x] Resumo final.
+- [x] Carregamento modular.
+- [x] Validação das funções.
 
-Verifique:
+### Pendente de validação ou melhoria
 
-código do Item;
-revisão esperada;
-ambiente conectado;
-Saved Query;
-propriedades da consulta;
-permissões do usuário;
-categoria do documento.
-Revisão inválida
+- [ ] Confirmar a criação da relação do Dataset em todos os tipos.
+- [ ] Confirmar a conclusão dos workflows no ambiente de Processo.
+- [ ] Adicionar recuperação de Items criados sem PDF.
+- [ ] Adicionar verificação posterior da relação do Dataset.
+- [ ] Adicionar limpeza automática dos arquivos temporários.
+- [ ] Ampliar os testes de interpretação dos nomes e revisões.
+- [ ] Adicionar geração opcional de logs.
 
-Verifique:
+---
 
-valor entre colchetes no nome;
-variável de revisão configurada;
-valor do cartão;
-tipo do documento;
-regras da configuração do Teamcenter.
-PDF não disponível localmente
+## Limitações
 
-Verifique:
+- O projeto é específico do modelo de documentos DCA atual.
+- Nomes de objetos e propriedades do Teamcenter são específicos de cada ambiente.
+- A integração depende de um `Importar GD.exe` compatível.
+- A integração com o PDM depende do cliente SolidWorks PDM instalado.
+- Importações de pasta exigem categorias de documento reconhecíveis.
+- Documentos Original e Processo exigem revisões válidas.
+- Arquivos com convenções de nome não suportadas podem exigir correção manual ou
+  ser ignorados em importações de pasta.
+- Uma chamada de reflexão bem-sucedida não prova, por si só, que o Dataset ou o
+  workflow foram concluídos, a menos que haja verificação explícita.
+- A recuperação de Items criados sem PDF ainda não é automatizada.
 
-autenticação no PDM;
-conexão com o Vault;
-permissões do cache;
-caminho do arquivo;
-permissão de download;
-utilização de -NoVaultApi.
-Item criado, mas PDF não importado
+---
 
-Verifique:
+## Aviso
 
-caminho temporário;
-tamanho do arquivo;
-objeto de revisão;
-nome do Dataset;
-revisão do Dataset;
-assinatura de ImportarPDF;
-compatibilidade do assembly;
-permissões de Dataset;
-regras de relação no Teamcenter.
-Workflow não solicitado
+Este repositório contém um exemplo de integração específico de ambiente. Antes de
+usar o projeto em outra organização:
 
-Verifique:
+- substitua todos os valores de exemplo;
+- revise os requisitos de segurança;
+- valide o mapeamento dos objetos de negócio;
+- valide os templates de workflow;
+- valide o assembly de integração;
+- execute testes controlados em um ambiente que não seja de produção.
 
-estado do PDM;
-DCA_TC_APPROVED_WORKFLOW;
-DCA_TC_OBSOLETE_WORKFLOW;
-nome do template;
-tipo da revisão;
-permissões de workflow;
-se o documento é DatasetOnly.
-Status atual
-Implementado
- Pesquisa pela API do SOLIDWORKS PDM.
- Pesquisa alternativa no sistema de arquivos.
- Pesquisa parcial automática.
- Curingas em pesquisas por código.
- Várias pesquisas separadas por vírgulas.
- Remoção de pesquisas repetidas.
- Seleção de vários PDFs.
- Pesquisa exata por pasta.
- Importação completa de pasta.
- Seleção individual dentro da pasta.
- Prevenção de documentos duplicados.
- Identificação da categoria.
- Interpretação do nome do PDF.
- Leitura da revisão no cartão.
- Leitura da descrição no cartão.
- Descoberta de variáveis do cartão.
- Criação de Desenho Original.
- Criação de Processo.
- Criação de Norma Externa.
- Localização de revisão existente.
- Fluxo DatasetOnly.
- Configuração dos tipos do Teamcenter.
- Mapeamento de propriedades da revisão.
- Consulta do estado do PDM.
- Solicitação de workflow de aprovação.
- Solicitação de workflow de obsolescência.
- Modo Preview.
- Modo detalhado.
- Apresentação do plano.
- Validação do PDF temporário.
- Tratamento individual de erros.
- Resumo final.
- Códigos de saída.
- Carregamento modular das funções.
- Validação das funções obrigatórias.
-Pendente de validação ou melhoria
- Confirmar a importação do Dataset para todos os tipos de revisão.
- Confirmar a conclusão dos workflows no ambiente de Processo.
- Adicionar recuperação automática para Items criados sem PDF.
- Adicionar verificação posterior da relação do Dataset.
- Adicionar limpeza automática de PDFs temporários antigos.
- Ampliar os testes de interpretação de nomes e revisões.
- Adicionar geração opcional de arquivo de log.
-Limitações
-O projeto é específico para o modelo documental atual do DCA.
-Os objetos e propriedades do Teamcenter variam entre ambientes.
-A integração depende de um assembly compatível.
-A integração com o PDM depende do cliente instalado.
-As importações por pasta exigem categorias reconhecidas.
-As pesquisas por pasta exigem o nome completo.
-As pesquisas por pasta não aceitam curingas.
-Processos e Desenhos Originais exigem revisões válidas.
-Documentos DatasetOnly exigem Item e revisão existentes.
-Arquivos com nomes não reconhecidos podem exigir correção manual.
-Documentos inválidos podem ser ignorados durante importações por pasta.
-Uma chamada sem exceção não confirma sozinha que a relação do Dataset foi criada.
-A recuperação de Items criados sem PDF ainda não é automática.
-Segurança
-Nunca envie o arquivo .env ao repositório.
-Nunca envie senhas ou tokens.
-Nunca envie arquivos protegidos de credenciais.
-Nunca publique URLs internas do Teamcenter.
-Nunca publique nomes internos de objetos sem autorização.
-Utilize contas com as permissões mínimas necessárias.
-Revise os logs antes de compartilhá-los.
-Armazene arquivos de credenciais em diretórios protegidos.
-Mantenha assemblies internos fora do repositório quando necessário.
-Aviso
-
-Este repositório contém uma integração específica de ambiente.
-
-Antes de utilizar o projeto em outra organização ou instalação:
-
-substitua todos os valores de exemplo;
-revise os requisitos de segurança;
-valide os caminhos do PDM;
-valide os campos dos cartões;
-valide as configurações de conexão;
-valide os objetos de negócio;
-valide as regras de revisão;
-valide os requisitos dos Datasets;
-valide os templates de workflow;
-valide o assembly de integração;
-execute testes controlados fora do ambiente de produção.
-
-Utilize o projeto somente em ambientes autorizados e com credenciais aprovadas.
+Use o projeto somente em ambientes autorizados e com credenciais aprovadas.
