@@ -163,7 +163,13 @@ function Get-TeamcenterSettings {
       "o ambiente '$teamcenterEnvironment'."
     )
   }
+  # Remove espacos acidentais da URL e do usuario. A senha nao
+  # deve ser normalizada porque espacos podem fazer parte dela.
+  $teamcenterServerUrl =
+  $teamcenterServerUrl.Trim()
 
+  $teamcenterUser =
+  $teamcenterUser.Trim()
   # ============================================================
   # 4. OBTER A SENHA DO USUARIO
   # ============================================================
@@ -191,6 +197,18 @@ function Get-TeamcenterSettings {
 
     $teamcenterPassword =
     $credential.Password
+
+    if (
+      [string]::IsNullOrWhiteSpace(
+        [string]$teamcenterPassword
+      )
+    ) {
+
+      throw (
+        "Nenhuma senha foi informada para o usuario " +
+        "'$teamcenterUser'."
+      )
+    }
   }
 
   # ============================================================
@@ -329,37 +347,114 @@ function Connect-Teamcenter {
   # ============================================================
   # 4. CRIAR A SESSAO DO TEAMCENTER
   # ============================================================
+  #
+  # Localiza no assembly do Importar GD o tipo responsavel pela
+  # sessao utilizada para autenticar e acessar os servicos SOA.
+  $sessionType =
+  $script:ImporterAssembly.GetType(
+    "Teamcenter.ClientX.Session"
+  )
+
+  # O tipo precisa ser localizado antes da chamada ao Activator.
+  # Uma falha nesta etapa normalmente indica incompatibilidade
+  # com o assembly configurado em DCA_IMPORTER_PATH.
+  if ($null -eq $sessionType) {
+
+    throw (
+      "O tipo Teamcenter.ClientX.Session nao foi encontrado " +
+      "no assembly do Importar GD."
+    )
+  }
+
   $script:TeamcenterSession =
   [System.Activator]::CreateInstance(
     $sessionType,
     @($settings.Url)
   )
 
-  if ($null -eq $sessionType) {
-    throw "Tipo Teamcenter.ClientX.Session nao encontrado."
-  }
-
-  $script:TeamcenterSession = [System.Activator]::CreateInstance($sessionType, @($settings.Url))
-
   if ($null -eq $script:TeamcenterSession) {
-    throw "A sessao do Teamcenter retornou NULL."
-  }
 
+    throw (
+      "A sessao do Teamcenter retornou NULL."
+    )
+  }
   # ============================================================
   # 5. AUTENTICAR O USUARIO
   # ============================================================
-  $authenticatedUser = $script:TeamcenterSession.login(
-    $settings.User,
-    $settings.Password,
-    "",
-    "",
-    "SoaAppX"
-  )
+  #
+  # A senha e mantida somente durante a execucao atual. O
+  # conteudo nao deve ser apresentado em mensagens ou diagnosticos.
+  if (
+    [string]::IsNullOrWhiteSpace(
+      [string]$settings.Password
+    )
+  ) {
 
-  if ($null -eq $authenticatedUser) {
-    throw "O login do Teamcenter retornou NULL."
+    throw (
+      "A senha do Teamcenter ficou vazia antes da autenticacao."
+    )
   }
 
+  if ($Details) {
+
+    Write-Host (
+      "  Credenciais preparadas para autenticacao."
+    ) -ForegroundColor DarkGray
+
+    Write-Host (
+      "  Tamanho da senha recebida: " +
+      "$(([string]$settings.Password).Length) caractere(s)"
+    ) -ForegroundColor DarkGray
+  }
+
+  try {
+
+    $authenticatedUser =
+    $script:TeamcenterSession.login(
+      $settings.User,
+      $settings.Password,
+      "",
+      "",
+      "SoaAppX"
+    )
+  }
+  catch {
+
+    # As chamadas realizadas pelo assembly podem encapsular a
+    # mensagem real em uma ou mais excecoes internas.
+    $realException =
+    $_.Exception
+
+    while (
+      $null -ne $realException.InnerException
+    ) {
+
+      $realException =
+      $realException.InnerException
+    }
+
+    throw (
+      "Falha ao autenticar o usuario '$($settings.User)' no " +
+      "Teamcenter de $($settings.Environment). " +
+      "Servidor: '$($settings.Host)'. " +
+      "Detalhe retornado pelo Teamcenter: " +
+      $realException.Message
+    )
+  }
+
+  if ($null -eq $authenticatedUser) {
+
+    throw (
+      "O login do Teamcenter foi executado, mas retornou NULL."
+    )
+  }
+
+  if ($Details) {
+
+    Write-Host (
+      "  Usuario autenticado no Teamcenter."
+    ) -ForegroundColor Green
+  }
   # ============================================================
   # 6. CARREGAR AS FUNCOES AUXILIARES DO IMPORTADOR
   # ============================================================
