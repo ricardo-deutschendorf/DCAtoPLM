@@ -199,6 +199,9 @@ $functionFiles =
   # Saida e interface.
   "functions\output_functions.ps1",
 
+  # Logs da execucao e relatorio CSV do lote.
+  "functions\reporting_functions.ps1",
+
   # PDM: conexao, arquivos, nomes e cartoes de dados.
   "functions\pdm_modules\pdm_connection.ps1",
   "functions\pdm_modules\pdm_files.ps1",
@@ -276,6 +279,11 @@ $requiredFunctions =
   "Write-Failure",
   "Write-Warn",
   "Write-Info",
+
+  # Logs e relatorios.
+  "Initialize-DcaExecutionArtifacts",
+  "Stop-DcaExecutionLog",
+  "Export-DcaBatchReport",
 
   # PDM e cartao de dados.
   "Get-DcaVault",
@@ -1098,6 +1106,11 @@ function Invoke-DcaMain {
     $document =
     $preparedDocuments[$index]
 
+    # Registra o inicio do processamento individual para calcular
+    # a duracao apresentada no relatorio CSV.
+    $documentStartedAt =
+    Get-Date
+
     # Estado individual do documento atual.
     #
     # Os indicadores abaixo permitem diferenciar:
@@ -1596,11 +1609,21 @@ function Invoke-DcaMain {
       # ==================================================
       # G. Registrar o resultado para o resumo final
       # ==================================================
+      $documentFinishedAt =
+      Get-Date
+
+      $documentDuration =
+      $documentFinishedAt -
+      $documentStartedAt
+
       $batchResults.Add(
         [PSCustomObject]@{
           ItemCode = $document.ItemCode
           ItemName = $document.ItemName
           TeamcenterCode = $createdCode
+          ClientRevision = $document.ClientRevision
+          DocumentType = $document.DocumentType
+          PdmState = $document.PdmState
           Operation = if (
             $document.DocumentType -eq "DatasetOnly"
           ) {
@@ -1613,6 +1636,17 @@ function Invoke-DcaMain {
           PdfImported = $pdfImported
           WorkflowStarted = $workflowStarted
           Succeeded = $true
+          DocumentStartedAt = $documentStartedAt.ToString(
+            "yyyy-MM-dd HH:mm:ss"
+          )
+          DocumentFinishedAt = $documentFinishedAt.ToString(
+            "yyyy-MM-dd HH:mm:ss"
+          )
+          DurationSeconds = [Math]::Round(
+            $documentDuration.TotalSeconds,
+            2
+          )
+          SourceFile = [string]$document.SelectedPdf.File.FullName
           ErrorMessage = $null
         }
       )
@@ -1676,11 +1710,21 @@ function Invoke-DcaMain {
 
         Write-Host ""
       }
+      $documentFinishedAt =
+      Get-Date
+
+      $documentDuration =
+      $documentFinishedAt -
+      $documentStartedAt
+
       $batchResults.Add(
         [PSCustomObject]@{
           ItemCode = $document.ItemCode
           ItemName = $document.ItemName
           TeamcenterCode = $createdCode
+          ClientRevision = $document.ClientRevision
+          DocumentType = $document.DocumentType
+          PdmState = $document.PdmState
           Operation = if (
             $document.DocumentType -eq "DatasetOnly"
           ) {
@@ -1693,6 +1737,17 @@ function Invoke-DcaMain {
           PdfImported = $pdfImported
           WorkflowStarted = $workflowStarted
           Succeeded = $false
+          DocumentStartedAt = $documentStartedAt.ToString(
+            "yyyy-MM-dd HH:mm:ss"
+          )
+          DocumentFinishedAt = $documentFinishedAt.ToString(
+            "yyyy-MM-dd HH:mm:ss"
+          )
+          DurationSeconds = [Math]::Round(
+            $documentDuration.TotalSeconds,
+            2
+          )
+          SourceFile = [string]$document.SelectedPdf.File.FullName
           ErrorMessage = $_.Exception.Message
         }
       )
@@ -1708,7 +1763,7 @@ function Invoke-DcaMain {
   }
 
   # ============================================================
-  # 8. RESUMO FINAL E CODIGO DE SAIDA
+  # 8. RESUMO FINAL
   # ============================================================
 
   Write-Section `
@@ -1811,7 +1866,28 @@ function Invoke-DcaMain {
 
   Write-Host (
     "  Total:      $($batchResults.Count)"
+
   ) -ForegroundColor Gray
+
+  # ============================================================
+  # 9. EXPORTAR O RELATORIO CSV
+  # ============================================================
+
+  try {
+
+    $null =
+    Export-DcaBatchReport `
+      -Results $batchResults.ToArray() `
+      -Environment ([string]$script:TeamcenterEnvironment) `
+      -ExecutionStartedAt $script:DcaExecutionStartedAt
+  }
+  catch {
+
+    Write-Warn (
+      "Nao foi possivel criar o relatorio CSV: " +
+      $_.Exception.Message
+    )
+  }
 
   if ($failureCount -gt 0) {
     return 1
@@ -1832,18 +1908,44 @@ function Invoke-DcaMain {
 #   O fluxo principal falhou ou pelo menos um documento do
 #   lote nao foi processado com sucesso.
 
+# Prepara o log e o caminho do relatorio antes de iniciar o fluxo
+# principal. Uma falha ao criar o log nao impede a importacao.
+
+try {
+
+  Initialize-DcaExecutionArtifacts `
+    -ProjectRoot $PSScriptRoot
+}
+catch {
+
+  Write-Warn (
+    "Nao foi possivel preparar os arquivos da execucao: " +
+    $_.Exception.Message
+  )
+}
+
 # O valor inicial indica falha por seguranca. O retorno de
 # Invoke-DcaMain substitui esse valor quando o fluxo termina.
 $exitCode = 1
 
 try {
-  $exitCode = @(Invoke-DcaMain) | Select-Object -Last 1
+
+  $exitCode =
+  @(
+    Invoke-DcaMain
+  ) |
+    Select-Object -Last 1
 }
 catch {
 
   Write-Failure $_.Exception.Message
 
-  $exitCode = 1
+  $exitCode =
+  1
+}
+finally {
+
+  Stop-DcaExecutionLog
 }
 
 exit ([int]$exitCode)
