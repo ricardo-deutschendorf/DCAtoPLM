@@ -485,8 +485,8 @@ function Select-DcaPdfByCode {
 
     $selectionText =
     Read-Host (
-      "Digite numeros separados por virgula, " +
-      "um intervalo ou T para todos"
+      "Digite numeros, intervalos, T para todos ou " +
+      "T-2,5 para excluir resultados"
     )
 
     if (
@@ -514,7 +514,65 @@ function Select-DcaPdfByCode {
     $selectionIsValid =
     $true
 
+    # ==========================================================
+    # INTERPRETAR O MODO DA SELECAO
+    # ==========================================================
+    #
+    # Modos aceitos:
+    #   T ou TODOS:
+    #     seleciona todos os resultados;
+    #
+    #   T-2,5 ou TODOS-2,5:
+    #     seleciona todos, exceto os numeros informados;
+    #
+    #   1,3,5 ou 1-3:
+    #     seleciona somente os numeros informados.
+    $excludeMode =
+    $false
+
+    $selectionValuesText =
+    $selectionText
+
     if (
+      $selectionText -match
+      '(?i)^(T|TODOS)\s*-\s*(.+)$'
+    ) {
+
+      $excludeMode =
+      $true
+
+      $selectionValuesText =
+      ([string]$Matches[2]).Trim()
+
+      if (
+        [string]::IsNullOrWhiteSpace(
+          $selectionValuesText
+        )
+      ) {
+
+        Write-Warn (
+          "Informe pelo menos um numero depois de T-."
+        )
+
+        continue
+      }
+
+      # O modo de exclusao comeca com todos os resultados
+      # selecionados. Os numeros informados serao removidos
+      # depois da validacao.
+      for (
+        $number = 1
+        $number -le $matchCount
+        $number++
+      ) {
+
+        if ($knownNumbers.Add($number)) {
+
+          $selectedNumbers.Add($number)
+        }
+      }
+    }
+    elseif (
       $selectionText -ieq "T" -or
       $selectionText -ieq "TODOS"
     ) {
@@ -531,11 +589,27 @@ function Select-DcaPdfByCode {
         }
       }
     }
-    else {
+
+    # ==========================================================
+    # INTERPRETAR NUMEROS E INTERVALOS
+    # ==========================================================
+    #
+    # A interpretacao abaixo e utilizada tanto para inclusao
+    # normal quanto para os numeros excluidos pelo modo T-.
+    if (
+      $selectionText -ine "T" -and
+      $selectionText -ine "TODOS"
+    ) {
+
+      $parsedNumbers =
+      [System.Collections.Generic.List[int]]::new()
+
+      $knownParsedNumbers =
+      [System.Collections.Generic.HashSet[int]]::new()
 
       foreach (
         $selectionPart in (
-          $selectionText -split ","
+          $selectionValuesText -split ","
         )
       ) {
 
@@ -547,10 +621,12 @@ function Select-DcaPdfByCode {
             $currentPart
           )
         ) {
+
           continue
         }
 
-        # Permite intervalo, por exemplo: 1-5.
+        # Permite intervalos como 1-5. No modo de exclusao,
+        # T-2-4 significa selecionar todos, exceto 2, 3 e 4.
         if (
           $currentPart -match
           '^(?<Start>\d+)\s*-\s*(?<End>\d+)$'
@@ -585,9 +661,15 @@ function Select-DcaPdfByCode {
             $rangeNumber++
           ) {
 
-            if ($knownNumbers.Add($rangeNumber)) {
+            if (
+              $knownParsedNumbers.Add(
+                $rangeNumber
+              )
+            ) {
 
-              $selectedNumbers.Add($rangeNumber)
+              $parsedNumbers.Add(
+                $rangeNumber
+              )
             }
           }
 
@@ -620,9 +702,58 @@ function Select-DcaPdfByCode {
           break
         }
 
-        if ($knownNumbers.Add($selectedNumber)) {
+        if (
+          $knownParsedNumbers.Add(
+            $selectedNumber
+          )
+        ) {
 
-          $selectedNumbers.Add($selectedNumber)
+          $parsedNumbers.Add(
+            $selectedNumber
+          )
+        }
+      }
+
+      # ========================================================
+      # APLICAR A INCLUSAO OU EXCLUSAO
+      # ========================================================
+
+      if ($selectionIsValid) {
+
+        if ($excludeMode) {
+
+          foreach (
+            $excludedNumber in $parsedNumbers
+          ) {
+
+            $null =
+            $selectedNumbers.Remove(
+              $excludedNumber
+            )
+
+            $null =
+            $knownNumbers.Remove(
+              $excludedNumber
+            )
+          }
+        }
+        else {
+
+          foreach (
+            $parsedNumber in $parsedNumbers
+          ) {
+
+            if (
+              $knownNumbers.Add(
+                $parsedNumber
+              )
+            ) {
+
+              $selectedNumbers.Add(
+                $parsedNumber
+              )
+            }
+          }
         }
       }
     }

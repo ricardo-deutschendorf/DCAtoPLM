@@ -243,11 +243,19 @@ function Export-DcaBatchReport {
     }
 
     $operationText =
-    if ($result.Operation -eq "DatasetOnly") {
-      "Importar Dataset em revisao existente"
-    }
-    else {
-      "Criar Item e importar Dataset"
+    switch ([string]$result.Operation) {
+
+      "DatasetOnly" {
+        "Importar Dataset em revisao existente"
+      }
+
+      "RecoverExisting" {
+        "Recuperar Item existente e importar Dataset"
+      }
+
+      default {
+        "Criar Item e importar Dataset"
+      }
     }
 
     [PSCustomObject][ordered]@{
@@ -268,6 +276,8 @@ function Export-DcaBatchReport {
       Operation = $operationText
       ItemCreated = [bool]$result.ItemCreated
       PdfImported = [bool]$result.PdfImported
+      PdfImportedThisRun = [bool]$result.PdfImportedThisRun
+      DatasetAlreadyExists = [bool]$result.DatasetAlreadyExists
       WorkflowStarted = [bool]$result.WorkflowStarted
       Succeeded = [bool]$result.Succeeded
       Status = $resultStatus
@@ -320,4 +330,219 @@ function Export-DcaBatchReport {
   )
 
   return $script:DcaReportFilePath
+}
+function Import-DcaRetryReport {
+
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$FilePath
+  )
+
+  # ============================================================
+  # 1. VALIDAR O ARQUIVO DO RELATORIO
+  # ============================================================
+
+  if (-not (
+      Test-Path `
+        -LiteralPath $FilePath `
+        -PathType Leaf
+    )) {
+
+    throw (
+      "O relatorio informado para nova tentativa nao foi " +
+      "encontrado: '$FilePath'."
+    )
+  }
+
+  if (
+    [System.IO.Path]::GetExtension(
+      $FilePath
+    ) -ine ".csv"
+  ) {
+
+    throw (
+      "O arquivo informado em -RetryReport deve possuir " +
+      "extensao CSV."
+    )
+  }
+
+  # ============================================================
+  # 2. CARREGAR AS LINHAS DO RELATORIO
+  # ============================================================
+
+  $reportRows =
+  @(
+    Import-Csv `
+      -LiteralPath $FilePath `
+      -Delimiter ";" `
+      -Encoding UTF8 `
+      -ErrorAction Stop
+  )
+
+  if ($reportRows.Count -eq 0) {
+
+    throw (
+      "O relatorio informado nao possui resultados."
+    )
+  }
+
+  # ============================================================
+  # 3. VALIDAR AS COLUNAS OBRIGATORIAS
+  # ============================================================
+
+  $requiredColumns =
+  @(
+    "ItemCode",
+    "ItemName",
+    "ClientRevision",
+    "DocumentType",
+    "PdmState",
+    "Operation",
+    "ItemCreated",
+    "PdfImported",
+    "WorkflowStarted",
+    "Succeeded",
+    "SourceFile",
+    "ErrorMessage"
+  )
+
+  $availableColumns =
+  @(
+    $reportRows[0].PSObject.Properties.Name
+  )
+
+  $missingColumns =
+  @(
+    $requiredColumns |
+      Where-Object {
+      $_ -notin $availableColumns
+    }
+  )
+
+  if ($missingColumns.Count -gt 0) {
+
+    throw (
+      "O relatorio nao possui todas as colunas obrigatorias: " +
+      ($missingColumns -join ", ")
+    )
+  }
+
+  # ============================================================
+  # 4. SELECIONAR SOMENTE FALHAS REPROCESSAVEIS
+  # ============================================================
+  #
+  # Documentos cujo PDF ja foi importado nao sao reprocessados.
+  # Isso evita criar um Dataset duplicado apenas para repetir um
+  # workflow que falhou.
+  $retryRows =
+  [System.Collections.Generic.List[object]]::new()
+
+  foreach ($reportRow in $reportRows) {
+
+    $succeeded =
+    ([string]$reportRow.Succeeded).Trim() -match
+    '^(?i:true|1|sim|yes)$'
+
+    $pdfImported =
+    ([string]$reportRow.PdfImported).Trim() -match
+    '^(?i:true|1|sim|yes)$'
+
+    $itemCreated =
+    ([string]$reportRow.ItemCreated).Trim() -match
+    '^(?i:true|1|sim|yes)$'
+
+    if ($succeeded) {
+      continue
+    }
+
+    if ($pdfImported) {
+
+      Write-Warn (
+        "O documento '$($reportRow.ItemCode)' nao sera " +
+        "reprocessado porque o relatorio informa que o PDF " +
+        "ja foi importado."
+      )
+
+      continue
+    }
+
+    $itemCode =
+    ([string]$reportRow.ItemCode).Trim()
+
+    $clientRevision =
+    ([string]$reportRow.ClientRevision).Trim()
+
+    $documentType =
+    ([string]$reportRow.DocumentType).Trim()
+
+    $sourceFile =
+    ([string]$reportRow.SourceFile).Trim()
+
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $itemCode
+      ) -or
+      [string]::IsNullOrWhiteSpace(
+        $clientRevision
+      ) -or
+      [string]::IsNullOrWhiteSpace(
+        $documentType
+      ) -or
+      [string]::IsNullOrWhiteSpace(
+        $sourceFile
+      )
+    ) {
+
+      Write-Warn (
+        "Uma linha do relatorio foi ignorada porque nao possui " +
+        "codigo, revisao, tipo ou caminho do arquivo."
+      )
+
+      continue
+    }
+
+    $retryMode =
+    if ($documentType -eq "DatasetOnly") {
+      "DatasetOnly"
+    }
+    elseif ($itemCreated) {
+      "RecoverExisting"
+    }
+    else {
+      "CreateItem"
+    }
+
+    $retryRows.Add(
+      [PSCustomObject]@{
+        ItemCode = $itemCode
+        ItemName = ([string]$reportRow.ItemName).Trim()
+        ClientRevision = $clientRevision.ToUpperInvariant()
+        DocumentType = $documentType
+        PdmState = ([string]$reportRow.PdmState).Trim()
+        SourceFile = $sourceFile
+        RetryMode = $retryMode
+        PreviousError = [string]$reportRow.ErrorMessage
+      }
+    )
+  }
+
+  if ($retryRows.Count -eq 0) {
+
+    throw (
+      "O relatorio nao possui falhas que possam ser " +
+      "reprocessadas com seguranca."
+    )
+  }
+
+  # ============================================================
+  # 5. RETORNAR AS FALHAS SELECIONADAS
+  # ============================================================
+
+  Write-Info (
+    "Falhas carregadas para nova tentativa: " +
+    $retryRows.Count
+  )
+
+  return $retryRows.ToArray()
 }

@@ -521,7 +521,7 @@ function New-DcaTeamcenterItem {
   # ============================================================
   #
   # A chamada abaixo pode efetivamente criar objetos no Teamcenter.
-  # Todas as validacoes locais devem estar concluidas neste ponto.f
+  # Todas as validacoes locais devem estar concluidas neste ponto.
   $createResponse = $null
 
   try {

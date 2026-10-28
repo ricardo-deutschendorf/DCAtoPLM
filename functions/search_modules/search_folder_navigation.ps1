@@ -421,6 +421,10 @@ function Select-DcaDocumentsWithFolderNavigation {
       Write-Host (
         "    T               selecionar todos os documentos"
       ) -ForegroundColor DarkGray
+
+      Write-Host (
+        "    T-D2,D5         selecionar todos, exceto D2 e D5"
+      ) -ForegroundColor DarkGray
     }
 
     if ($navigationStack.Count -gt 0) {
@@ -586,22 +590,94 @@ function Select-DcaDocumentsWithFolderNavigation {
     # 12. INTERPRETAR A SELECAO DOS DOCUMENTOS
     # ============================================================
     #
-    # Depois que as opcoes de navegacao forem descartadas, a
-    # entrada restante e interpretada como selecao de documentos.
-    $documentSelection =
-    $selection -replace '(?i)(^|,)\s*D', '$1'
+    # Formas aceitas:
+    #   D1
+    #   D1,D3,D5
+    #   D1-D5
+    #   T
+    #   T-D2,D5
+    #   T-D2-D5
+    #
+    # No modo T-, todos os documentos sao selecionados primeiro.
+    # Os numeros informados depois do hifen sao removidos.
+    $excludeMode =
+    $false
 
-    # Armazena os numeros validos na ordem em que forem encontrados.
+    $documentSelection =
+    $selection
+
+    if (
+      $selection -match
+      '^(?i:T|TODOS)\s*-\s*(.+)$'
+    ) {
+
+      $excludeMode =
+      $true
+
+      $documentSelection =
+      ([string]$Matches[1]).Trim()
+
+      if (
+        [string]::IsNullOrWhiteSpace(
+          $documentSelection
+        )
+      ) {
+
+        Write-Warn (
+          "Informe pelo menos um documento depois de T-."
+        )
+
+        continue
+      }
+    }
+
+    # Remove o prefixo D dos documentos individuais e dos limites
+    # dos intervalos. Exemplos:
+    #
+    #   D1,D3    -> 1,3
+    #   D1-D5    -> 1-5
+    #   T-D2,D5  -> 2,5
+    #   T-D2-D5  -> 2-5
+    $documentSelection =
+    $documentSelection -replace '(?i)D(?=\d)', ''
+
+    # Armazena os numeros finais na ordem em que forem encontrados.
     $selectedNumbers =
     [System.Collections.Generic.List[int]]::new()
 
-    # Impede que o mesmo documento seja adicionado mais de uma vez
-    # quando numeros e intervalos estiverem sobrepostos.
+    # Impede que o mesmo documento seja adicionado mais de uma vez.
     $knownNumbers =
     [System.Collections.Generic.HashSet[int]]::new()
 
     $selectionIsValid =
     $true
+
+    # No modo de exclusao, todos os documentos entram inicialmente
+    # na selecao. Depois, os numeros informados serao removidos.
+    if ($excludeMode) {
+
+      for (
+        $documentNumber = 1
+        $documentNumber -le $documents.Count
+        $documentNumber++
+      ) {
+
+        if ($knownNumbers.Add($documentNumber)) {
+
+          $selectedNumbers.Add(
+            $documentNumber
+          )
+        }
+      }
+    }
+
+    # Os numeros interpretados sao mantidos separadamente porque,
+    # conforme o modo, eles serao incluidos ou excluidos.
+    $parsedNumbers =
+    [System.Collections.Generic.List[int]]::new()
+
+    $knownParsedNumbers =
+    [System.Collections.Generic.HashSet[int]]::new()
 
     foreach (
       $selectionPart in (
@@ -617,11 +693,16 @@ function Select-DcaDocumentsWithFolderNavigation {
           $currentPart
         )
       ) {
+
         continue
       }
 
-      # Verifica primeiro se a parte atual representa um intervalo,
-      # por exemplo D1-D5 ou 1-5.
+      # Verifica primeiro se a parte atual representa um intervalo.
+      #
+      # Exemplos:
+      #   D1-D5
+      #   1-5
+      #   T-D2-D5
       if (
         $currentPart -match
         '^(?<Start>\d+)\s*-\s*(?<End>\d+)$'
@@ -640,7 +721,8 @@ function Select-DcaDocumentsWithFolderNavigation {
         ) {
 
           Write-Warn (
-            "Intervalo de documentos invalido: '$currentPart'."
+            "Intervalo de documentos invalido: '$currentPart'. " +
+            "Use valores entre D1 e D$($documents.Count)."
           )
 
           $selectionIsValid =
@@ -655,8 +737,15 @@ function Select-DcaDocumentsWithFolderNavigation {
           $rangeNumber++
         ) {
 
-          if ($knownNumbers.Add($rangeNumber)) {
-            $selectedNumbers.Add($rangeNumber)
+          if (
+            $knownParsedNumbers.Add(
+              $rangeNumber
+            )
+          ) {
+
+            $parsedNumbers.Add(
+              $rangeNumber
+            )
           }
         }
 
@@ -664,7 +753,7 @@ function Select-DcaDocumentsWithFolderNavigation {
       }
 
       # Quando a parte atual nao e um intervalo, tenta interpretar
-      # o valor como um numero individual.
+      # o valor como o numero de um documento individual.
       $selectedNumber =
       0
 
@@ -681,7 +770,8 @@ function Select-DcaDocumentsWithFolderNavigation {
       ) {
 
         Write-Warn (
-          "Documento invalido: '$currentPart'."
+          "Documento invalido: '$currentPart'. " +
+          "Use valores entre D1 e D$($documents.Count)."
         )
 
         $selectionIsValid =
@@ -690,56 +780,127 @@ function Select-DcaDocumentsWithFolderNavigation {
         break
       }
 
-      if ($knownNumbers.Add($selectedNumber)) {
-        $selectedNumbers.Add($selectedNumber)
+      if (
+        $knownParsedNumbers.Add(
+          $selectedNumber
+        )
+      ) {
+
+        $parsedNumbers.Add(
+          $selectedNumber
+        )
       }
     }
 
-    if (-not $selectionIsValid) {
-      continue
+    # ==========================================================
+    # APLICAR A INCLUSAO OU A EXCLUSAO
+    # ==========================================================
+
+    if ($selectionIsValid) {
+
+      if ($excludeMode) {
+
+        foreach (
+          $excludedNumber in $parsedNumbers
+        ) {
+
+          $null =
+          $selectedNumbers.Remove(
+            $excludedNumber
+          )
+
+          $null =
+          $knownNumbers.Remove(
+            $excludedNumber
+          )
+        }
+      }
+      else {
+
+        foreach (
+          $parsedNumber in $parsedNumbers
+        ) {
+
+          if (
+            $knownNumbers.Add(
+              $parsedNumber
+            )
+          ) {
+
+            $selectedNumbers.Add(
+              $parsedNumber
+            )
+          }
+        }
+      }
     }
 
-    if ($selectedNumbers.Count -eq 0) {
-
-      Write-Warn (
-        "Use Pnumero para abrir uma pasta ou Dnumero para " +
-        "selecionar documentos."
-      )
-
-      continue
-    }
-
-    # ============================================================
-    # 13. MONTAR O RETORNO DA SELECAO
-    # ============================================================
-    $selectedDocuments =
-    [System.Collections.Generic.List[object]]::new()
-
-    # Ordena os numeros antes de montar o resultado para manter
-    # a mesma ordem visual apresentada ao usuario.
-    foreach (
-      $selectedNumber in (
-        $selectedNumbers |
-          Sort-Object
-      )
+    if (
+      -not $validNumber -or
+      $selectedNumber -lt 1 -or
+      $selectedNumber -gt $documents.Count
     ) {
 
-      $selectedDocument =
-      $documents[$selectedNumber - 1]
-
-      $selectedDocuments.Add(
-        $selectedDocument
+      Write-Warn (
+        "Documento invalido: '$currentPart'."
       )
 
-      Write-Success (
-        "PDF selecionado [D$selectedNumber]: " +
-        $selectedDocument.File.Name
-      )
+      $selectionIsValid =
+      $false
+
+      break
     }
 
-    # ============================================================
-    # 14. RETORNAR OS DOCUMENTOS SELECIONADOS
-    # ============================================================
-    return $selectedDocuments.ToArray()
+    if ($knownNumbers.Add($selectedNumber)) {
+      $selectedNumbers.Add($selectedNumber)
+    }
   }
+
+  if (-not $selectionIsValid) {
+    continue
+  }
+
+  if ($selectedNumbers.Count -eq 0) {
+
+    Write-Warn (
+      "Use Pnumero para abrir uma pasta ou Dnumero para " +
+      "selecionar documentos."
+    )
+
+    continue
+  }
+
+  # ============================================================
+  # 13. MONTAR O RETORNO DA SELECAO
+  # ============================================================
+  $selectedDocuments =
+  [System.Collections.Generic.List[object]]::new()
+
+  # Ordena os numeros antes de montar o resultado para manter
+  # a mesma ordem visual apresentada ao usuario.
+  foreach (
+    $selectedNumber in (
+      $selectedNumbers |
+        Sort-Object
+    )
+  ) {
+
+    $selectedDocument =
+    $documents[$selectedNumber - 1]
+
+    $selectedDocuments.Add(
+      $selectedDocument
+    )
+
+    Write-Success (
+      "PDF selecionado [D$selectedNumber]: " +
+      $selectedDocument.File.Name
+    )
+  }
+
+  # ============================================================
+  # 14. RETORNAR OS DOCUMENTOS SELECIONADOS
+  # ============================================================
+  return $selectedDocuments.ToArray()
 }
+

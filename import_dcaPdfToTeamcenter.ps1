@@ -43,7 +43,16 @@ param(
   [switch]$Details,
 
   # Valida o lote sem criar objetos no Teamcenter.
-  [switch]$Preview
+  [switch]$Preview,
+
+  # Quando o Item ja existir, tenta localizar a revisao esperada
+  # e importar o PDF sem criar novamente o Item.
+  [switch]$RecoverExisting,
+
+  # Reprocessa as falhas registradas em um relatorio CSV anterior.
+  # O arquivo original permanece inalterado e uma nova execucao
+  # gera um novo log e um novo relatorio.
+  [string]$RetryReport
 )
 
 # ============================================================
@@ -284,6 +293,7 @@ $requiredFunctions =
   "Initialize-DcaExecutionArtifacts",
   "Stop-DcaExecutionLog",
   "Export-DcaBatchReport",
+  "Import-DcaRetryReport",
 
   # PDM e cartao de dados.
   "Get-DcaVault",
@@ -332,6 +342,7 @@ $requiredFunctions =
   "Show-TeamcenterSavedQueryTypeDetails",
   "Get-TeamcenterRevision",
   "Get-TeamcenterModelPropertyText",
+  "Show-DcaTeamcenterRevisionProperties",
   "Test-DcaTeamcenterItemExists",
   "Find-DcaTeamcenterItemBySavedQuery",
   "Find-DcaTeamcenterItemRevision",
@@ -344,6 +355,8 @@ $requiredFunctions =
   "New-DcaCreateInputObject",
   "Get-DcaCreatedObjects",
   "Set-DcaObjectMemberValue",
+  "Show-DcaTeamcenterRevisionDatasets",
+  "Test-DcaTeamcenterDatasetExists",
   "Import-TeamcenterPdf",
   "New-DcaTeamcenterItem",
   "Start-TeamcenterWorkflow"
@@ -397,184 +410,364 @@ function Invoke-DcaMain {
   # pesquisa, preparacao, confirmacao, importacao e resumo.
 
   # ============================================================
-  # 1. RECEBER E VALIDAR A PESQUISA
+  # VALIDAR OS MODOS DE EXECUCAO
   # ============================================================
-  Write-Section -Title "Informe o que deseja pesquisar" -NoLeadingBlank
-
-  $rootPath =
-  [string]$SearchRoot
 
   if (
-    [string]::IsNullOrWhiteSpace(
-      $rootPath
+    -not [string]::IsNullOrWhiteSpace(
+      $RetryReport
+    ) -and
+    -not [string]::IsNullOrWhiteSpace(
+      $SourceCode
     )
   ) {
 
     throw (
-      "DCA_ROOT ou o parametro -SearchRoot deve ser configurado."
+      "Use -SourceCode ou -RetryReport. Os dois parametros nao " +
+      "podem ser utilizados na mesma execucao."
     )
   }
 
-  if (-not (
-      Test-Path `
-        -LiteralPath $rootPath `
-        -PathType Container
-    )) {
+  if (
+    $Preview -and
+    -not [string]::IsNullOrWhiteSpace(
+      $RetryReport
+    )
+  ) {
 
     throw (
-      "A raiz de pesquisa nao foi encontrada: " +
-      "'$rootPath'."
+      "-RetryReport nao pode ser utilizado com -Preview."
     )
   }
 
-  $searchInput =
-  [string]$SourceCode
-
-  if (
-    [string]::IsNullOrWhiteSpace(
-      $searchInput
-    )
-  ) {
-    $searchInput =
-    Read-Host (
-      "Digite codigos separados por virgula; " +
-      "use \NomeCompleto para importar uma pasta ou " +
-      "\\NomeCompleto para escolher os itens"
-    )
-  }
-
-  if (
-    [string]::IsNullOrWhiteSpace(
-      $searchInput
-    )
-  ) {
-
-    throw "Nenhum codigo de pesquisa foi informado."
-  }
-
-  $requestedCodes =
-  @(
-    Get-DcaSearchCodeList `
-      -InputText $searchInput
+  $retryMode =
+  -not [string]::IsNullOrWhiteSpace(
+    $RetryReport
   )
 
-  Write-Host ""
-
-  Write-Host (
-    "  Codigo(s) informado(s): " +
-    $requestedCodes.Count
-  ) -ForegroundColor Gray
-
   # ============================================================
-  # 2. PESQUISAR E SELECIONAR OS PDFs
+  # REPETIR A PESQUISA ATE ENCONTRAR DOCUMENTOS
   # ============================================================
-  $selectedDocuments =
-  [System.Collections.Generic.List[object]]::new()
+  #
+  # Quando uma pesquisa interativa nao retornar documentos, o
+  # usuario pode informar outro termo sem reiniciar a aplicacao.
+  $searchCompleted =
+  $false
 
-  # Impede que o mesmo PDF seja adicionado mais de uma vez quando
-  # diferentes pesquisas retornarem o mesmo caminho.
-  $selectedDocumentPaths =
-  [System.Collections.Generic.HashSet[string]]::new(
-    [System.StringComparer]::OrdinalIgnoreCase
-  )
-  for (
-    $searchIndex = 0
-    $searchIndex -lt $requestedCodes.Count
-    $searchIndex++
-  ) {
+  while (-not $searchCompleted) {
 
-    $currentSearchCode =
-    [string]$requestedCodes[$searchIndex]
+    # ============================================================
+    # 1. RECEBER E VALIDAR A PESQUISA
+    # ============================================================
+    if (-not $retryMode) {
 
-    Write-Host ""
+      Write-Section `
+        -Title "Informe o que deseja pesquisar" `
+        -NoLeadingBlank
+    }
+    else {
 
-    Write-Host (
-      "Preparando pesquisa " +
-      "[$($searchIndex + 1)/$($requestedCodes.Count)]: " +
-      "$currentSearchCode"
-    ) -ForegroundColor Cyan
+      Write-Section `
+        -Title "Reprocessar falhas do relatorio" `
+        -NoLeadingBlank
+    }
 
-    try {
-      $folderSearchMode =
-      Get-DcaFolderSearchMode `
-        -SearchText $currentSearchCode
+    if (-not $retryMode) {
+      $rootPath =
+      [string]$SearchRoot
 
-      if ($folderSearchMode.IsFolderSearch) {
-
-        $selectedPdfs =
-        @(
-          Select-DcaPdfsByFolder `
-            -FolderPath $rootPath `
-            -FolderSearch $currentSearchCode `
-            -ListFolderItems:$folderSearchMode.ListFolderItems
+      if (
+        [string]::IsNullOrWhiteSpace(
+          $rootPath
         )
-      }
-      else {
-
-        $selectedPdfs =
-        @(
-          Select-DcaPdfByCode `
-            -FolderPath $rootPath `
-            -Code $currentSearchCode
-        )
-      }
-      if ($selectedPdfs.Count -eq 0) {
+      ) {
 
         throw (
-          "Nenhum PDF foi selecionado para a pesquisa " +
-          "'$currentSearchCode'."
+          "DCA_ROOT ou o parametro -SearchRoot deve ser configurado."
         )
       }
 
-      foreach ($selectedPdf in $selectedPdfs) {
+      if (-not (
+          Test-Path `
+            -LiteralPath $rootPath `
+            -PathType Container
+        )) {
 
-        if ($null -eq $selectedPdf) {
-          continue
+        throw (
+          "A raiz de pesquisa nao foi encontrada: " +
+          "'$rootPath'."
+        )
+      }
+
+      $searchInput =
+      [string]$SourceCode
+
+      if (
+        [string]::IsNullOrWhiteSpace(
+          $searchInput
+        )
+      ) {
+        $searchInput =
+        Read-Host (
+          "Digite codigos separados por virgula; " +
+          "use \NomeCompleto para importar uma pasta ou " +
+          "\\NomeCompleto para escolher os itens"
+        )
+      }
+
+      if (
+        [string]::IsNullOrWhiteSpace(
+          $searchInput
+        )
+      ) {
+
+        throw "Nenhum codigo de pesquisa foi informado."
+      }
+
+      $requestedCodes =
+      @(
+        Get-DcaSearchCodeList `
+          -InputText $searchInput
+      )
+
+      Write-Host ""
+
+      Write-Host (
+        "  Codigo(s) informado(s): " +
+        $requestedCodes.Count
+      ) -ForegroundColor Gray
+    }
+    # ============================================================
+    # 2. PESQUISAR E SELECIONAR OS PDFs
+    # ============================================================
+    $selectedDocuments =
+    [System.Collections.Generic.List[object]]::new()
+
+    # Quando -RetryReport for utilizado, os documentos sao
+    # reconstruidos diretamente das falhas registradas no CSV.
+    if ($retryMode) {
+
+      $retryRows =
+      @(
+        Import-DcaRetryReport `
+          -FilePath $RetryReport
+      )
+
+      foreach ($retryRow in $retryRows) {
+
+        $sourceFilePath =
+        [string]$retryRow.SourceFile
+
+        $sourceFileName =
+        [System.IO.Path]::GetFileName(
+          $sourceFilePath
+        )
+
+        $sourceBaseName =
+        [System.IO.Path]::GetFileNameWithoutExtension(
+          $sourceFilePath
+        )
+
+        $retryFile =
+        [PSCustomObject]@{
+          Name = $sourceFileName
+          BaseName = $sourceBaseName
+          FullName = $sourceFilePath
+          FromVault = $true
         }
 
-        $selectedPath =
-        [string]$selectedPdf.File.FullName
-
-        if (
-          [string]::IsNullOrWhiteSpace(
-            $selectedPath
-          )
-        ) {
-
-          Write-Warn (
-            "O resultado selecionado nao possui caminho."
-          )
-
-          continue
-        }
-
-        if (-not $selectedDocumentPaths.Add($selectedPath)) {
-
-          Write-Warn (
-            "O PDF ja foi adicionado ao lote e sera ignorado: " +
-            $selectedPath
-          )
-
-          continue
+        $retrySelectedPdf =
+        [PSCustomObject]@{
+          File = $retryFile
+          SourceCode = [string]$retryRow.ItemCode
+          ClientRevision = [string]$retryRow.ClientRevision
+          DocumentTitle = [string]$retryRow.ItemName
+          DocumentType = [string]$retryRow.DocumentType
+          TypeDisplayName = [string]$retryRow.DocumentType
+          CodeParsed = $true
+          PdmState = [string]$retryRow.PdmState
+          FolderImport = $true
+          TeamcenterItem = $null
+          TeamcenterRevision = $null
+          RetryMode = [string]$retryRow.RetryMode
+          PreviousError = [string]$retryRow.PreviousError
         }
 
         $selectedDocuments.Add(
           [PSCustomObject]@{
-            SelectedPdf = $selectedPdf
+            SelectedPdf = $retrySelectedPdf
           }
         )
       }
     }
-    catch {
-      Write-Warn (
-        "Falha na pesquisa '$currentSearchCode': " +
-        $_.Exception.Message
+
+    if (-not $retryMode) {
+      # Impede que o mesmo PDF seja adicionado mais de uma vez quando
+      # diferentes pesquisas retornarem o mesmo caminho.
+      $selectedDocumentPaths =
+      [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+      )
+      for (
+        $searchIndex = 0
+        $searchIndex -lt $requestedCodes.Count
+        $searchIndex++
+      ) {
+
+        $currentSearchCode =
+        [string]$requestedCodes[$searchIndex]
+
+        Write-Host ""
+
+        Write-Host (
+          "Preparando pesquisa " +
+          "[$($searchIndex + 1)/$($requestedCodes.Count)]: " +
+          "$currentSearchCode"
+        ) -ForegroundColor Cyan
+
+        try {
+          $folderSearchMode =
+          Get-DcaFolderSearchMode `
+            -SearchText $currentSearchCode
+
+          if ($folderSearchMode.IsFolderSearch) {
+
+            $selectedPdfs =
+            @(
+              Select-DcaPdfsByFolder `
+                -FolderPath $rootPath `
+                -FolderSearch $currentSearchCode `
+                -ListFolderItems:$folderSearchMode.ListFolderItems
+            )
+          }
+          else {
+
+            $selectedPdfs =
+            @(
+              Select-DcaPdfByCode `
+                -FolderPath $rootPath `
+                -Code $currentSearchCode
+            )
+          }
+          if ($selectedPdfs.Count -eq 0) {
+
+            throw (
+              "Nenhum PDF foi selecionado para a pesquisa " +
+              "'$currentSearchCode'."
+            )
+          }
+
+          foreach ($selectedPdf in $selectedPdfs) {
+
+            if ($null -eq $selectedPdf) {
+              continue
+            }
+
+            $selectedPath =
+            [string]$selectedPdf.File.FullName
+
+            if (
+              [string]::IsNullOrWhiteSpace(
+                $selectedPath
+              )
+            ) {
+
+              Write-Warn (
+                "O resultado selecionado nao possui caminho."
+              )
+
+              continue
+            }
+
+            if (-not $selectedDocumentPaths.Add($selectedPath)) {
+
+              Write-Warn (
+                "O PDF ja foi adicionado ao lote e sera ignorado: " +
+                $selectedPath
+              )
+
+              continue
+            }
+
+            $selectedDocuments.Add(
+              [PSCustomObject]@{
+                SelectedPdf = $selectedPdf
+              }
+            )
+          }
+        }
+        catch {
+          Write-Warn (
+            "Falha na pesquisa '$currentSearchCode': " +
+            $_.Exception.Message
+          )
+        }
+      }
+    }
+    # ==========================================================
+    # VALIDAR O RESULTADO DA PESQUISA ATUAL
+    # ==========================================================
+
+    if ($selectedDocuments.Count -gt 0) {
+
+      # Pelo menos um documento foi encontrado e selecionado.
+      # Encerra o laco e continua a preparacao do lote.
+      $searchCompleted =
+      $true
+
+      break
+    }
+
+    # O modo de reprocessamento nao possui uma pesquisa
+    # interativa para repetir. Nesse caso, mantem a falha.
+    if ($retryMode) {
+
+      throw (
+        "Nenhum documento valido foi carregado do relatorio " +
+        "informado para nova tentativa."
       )
     }
-  }
 
-  if ($selectedDocuments.Count -eq 0) {
-    throw "Nenhum documento foi selecionado para importacao."
+    Write-AnimatedLine ""
+
+    Write-Warn (
+      "Nenhum documento foi encontrado ou selecionado para " +
+      "a pesquisa informada."
+    )
+
+    Write-Host ""
+
+    $newSearchInput =
+    Read-Host (
+      "Digite outra pesquisa ou pressione Enter para sair"
+    )
+
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $newSearchInput
+      )
+    ) {
+
+      Write-AnimatedLine ""
+
+      Write-Warn (
+        "Pesquisa encerrada pelo usuario. " +
+        "Nenhuma alteracao foi realizada."
+      )
+
+      return 0
+    }
+
+    # Atualiza SourceCode para que a proxima repeticao utilize
+    # diretamente o novo texto informado.
+    $SourceCode =
+    $newSearchInput.Trim()
+
+    Write-AnimatedLine ""
+
+    Write-Info (
+      "Reiniciando a pesquisa..."
+    )
   }
 
   # ============================================================
@@ -800,6 +993,28 @@ function Invoke-DcaMain {
         PdmState = [string]$selectedPdf.PdmState
         TeamcenterItem = $selectedPdf.TeamcenterItem
         TeamcenterRevision = $selectedPdf.TeamcenterRevision
+        RequestedMode =
+        if (
+          $selectedPdf.PSObject.Properties["RetryMode"]
+        ) {
+          [string]$selectedPdf.RetryMode
+        }
+        elseif ($documentType -eq "DatasetOnly") {
+          "DatasetOnly"
+        }
+        else {
+          "CreateItem"
+        }
+
+        PreviousError =
+        if (
+          $selectedPdf.PSObject.Properties["PreviousError"]
+        ) {
+          [string]$selectedPdf.PreviousError
+        }
+        else {
+          $null
+        }
       }
     )
   }
@@ -927,19 +1142,83 @@ function Invoke-DcaMain {
   # que o usuario selecione os documentos desejados.
   foreach ($document in $preparedDocuments) {
 
+    # ==========================================================
+    # A. DETERMINAR A REVISAO ESPERADA NO TEAMCENTER
+    # ==========================================================
+    #
+    # ClientRevision representa a revisao documental do PDF.
+    # Alguns tipos utilizam outro item_revision_id no Teamcenter.
+    #
+    # Para Norma Externa, por exemplo:
+    #   - revisao documental do Dataset: 07-1998;
+    #   - item_revision_id no Teamcenter: 001.
+    $expectedTeamcenterRevision =
+    [string]$document.ClientRevision
+
     if ($document.DocumentType -ne "DatasetOnly") {
-      continue
+
+      $lookupTypeConfiguration =
+      Get-DcaTypeConfiguration `
+        -DocumentType $document.DocumentType `
+        -ClientRevision $document.ClientRevision `
+        -TeamcenterEnvironment $script:TeamcenterEnvironment
+
+      if (
+        $null -ne $lookupTypeConfiguration -and
+        -not [string]::IsNullOrWhiteSpace(
+          [string]$lookupTypeConfiguration.TeamcenterRevisionId
+        )
+      ) {
+
+        $expectedTeamcenterRevision =
+        [string]$lookupTypeConfiguration.TeamcenterRevisionId
+      }
     }
+
+    $expectedTeamcenterRevision =
+    $expectedTeamcenterRevision.Trim().ToUpperInvariant()
+
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $expectedTeamcenterRevision
+      )
+    ) {
+
+      throw (
+        "A revisao esperada no Teamcenter ficou vazia para " +
+        "'$($document.ItemCode)'."
+      )
+    }
+
+    Add-Member `
+      -InputObject $document `
+      -NotePropertyName "ExpectedTeamcenterRevision" `
+      -NotePropertyValue $expectedTeamcenterRevision `
+      -Force
 
     Write-Info (
       "Consultando no Teamcenter: " +
-      "$($document.ItemCode), revisao $($document.ClientRevision)"
+      "$($document.ItemCode), revisao " +
+      "$expectedTeamcenterRevision"
     )
+
+    if ($Details) {
+
+      Write-Info (
+        "Revisao documental do PDF: " +
+        "'$($document.ClientRevision)'"
+      )
+
+      Write-Info (
+        "Revisao esperada no Teamcenter: " +
+        "'$expectedTeamcenterRevision'"
+      )
+    }
 
     $lookupResult =
     Find-DcaTeamcenterItemRevision `
       -ItemCode $document.ItemCode `
-      -ExpectedRevision $document.ClientRevision
+      -ExpectedRevision $expectedTeamcenterRevision
 
     Write-Info (
       "Resultado da consulta: " +
@@ -974,10 +1253,64 @@ function Invoke-DcaMain {
 
     if ($lookupResult.Status -eq "Sim") {
 
+      # Item e revisao existem. DatasetOnly mantem seu fluxo
+      # especifico; os demais tipos passam para recuperacao.
+      if ($document.DocumentType -eq "DatasetOnly") {
+
+        $document.RequestedMode =
+        "DatasetOnly"
+      }
+      else {
+
+        $document.RequestedMode =
+        "RecoverExisting"
+      }
+
       Write-Success (
-        "Item e revisao encontrados: " +
-        "$($document.ItemCode)/$($document.ClientRevision)"
+        "Item e revisao existentes encontrados: " +
+        "$($document.ItemCode)/" +
+        "$($document.ExpectedTeamcenterRevision)"
       )
+    }
+    elseif (
+      $document.DocumentType -ne "DatasetOnly" -and
+      -not $lookupResult.ItemExists
+    ) {
+
+      # Nenhum Item foi encontrado. O fluxo pode criar o Item e
+      # sua primeira revisao normalmente.
+      $document.RequestedMode =
+      "CreateItem"
+
+      Write-Info (
+        "Item existente nao localizado. O documento sera " +
+        "processado com criacao normal."
+      )
+    }
+    elseif ($lookupResult.ItemExists) {
+
+      # O Item existe, mas a revisao esperada nao foi validada.
+      # Mantem o modo de recuperacao para que a validacao anterior
+      # a confirmacao bloqueie a operacao.
+      $document.RequestedMode =
+      "RecoverExisting"
+
+      Write-Warn (
+        "O Item '$($document.ItemCode)' existe, mas a revisao " +
+        "'$($document.ExpectedTeamcenterRevision)' nao foi validada."
+      )
+
+      if (
+        -not [string]::IsNullOrWhiteSpace(
+          [string]$lookupResult.FoundRevision
+        )
+      ) {
+
+        Write-Warn (
+          "Revisao encontrada no Teamcenter: " +
+          "'$($lookupResult.FoundRevision)'."
+        )
+      }
     }
     else {
 
@@ -991,11 +1324,14 @@ function Invoke-DcaMain {
   # Impede que o lote avance para a confirmacao quando algum
   # documento DatasetOnly nao possui Item e revisao de destino
   # devidamente localizados no Teamcenter.
-  $unavailableDatasetDestinations =
+  $unavailableExistingDestinations =
   @(
     $preparedDocuments |
       Where-Object {
-      $_.DocumentType -eq "DatasetOnly" -and
+      $_.RequestedMode -in @(
+        "DatasetOnly",
+        "RecoverExisting"
+      ) -and
       (
         $_.TeamcenterStatus -ne "Sim" -or
         $null -eq $_.TeamcenterRevision
@@ -1003,26 +1339,26 @@ function Invoke-DcaMain {
     }
   )
 
-  if ($unavailableDatasetDestinations.Count -gt 0) {
+  if ($unavailableExistingDestinations.Count -gt 0) {
 
     Write-AnimatedLine ""
 
     foreach (
       $unavailableDocument in
-      $unavailableDatasetDestinations
+      $unavailableExistingDestinations
     ) {
 
       Write-Failure (
-        "Destino indisponivel: " +
+        "Destino existente indisponivel: " +
         "$($unavailableDocument.ItemCode)/" +
-        "$($unavailableDocument.ClientRevision)"
+        "$($unavailableDocument.ExpectedTeamcenterRevision)"
       )
     }
 
     throw (
       "A importacao foi interrompida antes da confirmacao porque " +
-      "$($unavailableDatasetDestinations.Count) destino(s) de " +
-      "Dataset nao foram validados no Teamcenter."
+      "$($unavailableExistingDestinations.Count) destino(s) " +
+      "existentes nao foram validados no Teamcenter."
     )
   }
 
@@ -1051,13 +1387,25 @@ function Invoke-DcaMain {
   @(
     $preparedDocuments |
       Where-Object {
-      $_.DocumentType -eq "DatasetOnly"
+      $_.RequestedMode -eq "DatasetOnly"
+    }
+  ).Count
+
+  $recoverExistingCount =
+  @(
+    $preparedDocuments |
+      Where-Object {
+      $_.RequestedMode -eq "RecoverExisting"
     }
   ).Count
 
   $createItemCount =
-  $preparedDocuments.Count -
-  $datasetOnlyCount
+  @(
+    $preparedDocuments |
+      Where-Object {
+      $_.RequestedMode -eq "CreateItem"
+    }
+  ).Count
 
   Write-Section `
     -Title "Processar documentos no Teamcenter"
@@ -1067,7 +1415,8 @@ function Invoke-DcaMain {
   Write-Warn (
     "Esta etapa vai processar $($preparedDocuments.Count) " +
     "documento(s) no Teamcenter: $createItemCount com criacao " +
-    "de Item e $datasetOnlyCount somente como Dataset."
+    "de Item, $recoverExistingCount com recuperacao e " +
+    "$datasetOnlyCount somente como Dataset."
   )
 
   $confirmation =
@@ -1130,6 +1479,16 @@ function Invoke-DcaMain {
     $pdfImported =
     $false
 
+    # Indica se o Dataset ja estava relacionado a revisao antes
+    # desta execucao.
+    $datasetAlreadyExists =
+    $false
+
+    # Indica se o PDF foi importado especificamente nesta
+    # execucao, diferenciando importacao de Dataset ja existente.
+    $pdfImportedThisRun =
+    $false
+
     $workflowStarted =
     $false
 
@@ -1154,7 +1513,10 @@ function Invoke-DcaMain {
       $teamcenterRevision =
       $null
 
-      if ($document.DocumentType -eq "DatasetOnly") {
+      if (
+        $document.RequestedMode -eq "DatasetOnly" -or
+        $document.RequestedMode -eq "RecoverExisting"
+      ) {
 
         # O Item e a revisao ja existem. O script utiliza os objetos
         # encontrados anteriormente e importa somente o Dataset.
@@ -1186,7 +1548,8 @@ function Invoke-DcaMain {
           }
 
           throw (
-            "O destino '$createdCode/$($document.ClientRevision)' " +
+            "O destino '$createdCode/" +
+            "$($document.ExpectedTeamcenterRevision)' " +
             "nao esta disponivel para receber o Dataset. " +
             "Status da consulta: '$statusText'."
           )
@@ -1223,9 +1586,19 @@ function Invoke-DcaMain {
         $itemCreated =
         $false
 
+        if ($document.RequestedMode -eq "RecoverExisting") {
+
+          Write-Warn (
+            "Recuperando o PDF no Item existente: " +
+            "$createdCode/" +
+            "$($document.ExpectedTeamcenterRevision)"
+          )
+        }
+
         Write-Success (
           "Destino existente localizado: " +
-          "$createdCode/$($document.ClientRevision)"
+          "$createdCode/" +
+          "$($document.ExpectedTeamcenterRevision)"
         )
       }
       else {
@@ -1344,6 +1717,10 @@ function Invoke-DcaMain {
 
       if ($Details) {
 
+        $null =
+        Show-DcaTeamcenterRevisionProperties `
+          -Revision $teamcenterRevision
+
         Write-Info (
           "Tipo tecnico: $revisionTypeName"
         )
@@ -1443,7 +1820,6 @@ function Invoke-DcaMain {
       # ==================================================
       # E. Importar o PDF na revisao
       # ==================================================
-
       # Define o identificador do Dataset enviado ao ImportarPDF.
       # DatasetOnly utiliza o codigo do Item existente. Os demais
       # documentos utilizam o codigo criado no Teamcenter.
@@ -1472,38 +1848,122 @@ function Invoke-DcaMain {
         )
       }
 
-      Write-Info (
-        "Importando o PDF no Teamcenter..."
+      # ==================================================
+      # E.1. Verificar se o Dataset ja existe
+      # ==================================================
+      #
+      # A verificacao e obrigatoria para destinos existentes.
+      # Em Items criados nesta execucao, a revisao acabou de ser
+      # criada e ainda nao deve possuir o Dataset.
+      $shouldCheckExistingDataset =
+      (
+        $document.RequestedMode -eq "DatasetOnly" -or
+        $document.RequestedMode -eq "RecoverExisting"
       )
 
-      Write-Info (
-        "Nome do Dataset: '$datasetName'"
-      )
+      $datasetLookup =
+      $null
 
-      Write-Info (
-        "Revisao do Dataset: '$($document.ClientRevision)'"
-      )
-
-      $pdfImportResult =
-      Import-TeamcenterPdf `
-        -Revision $teamcenterRevision `
-        -ItemCode $createdCode `
-        -DatasetName $datasetName `
-        -DatasetRevision $document.ClientRevision `
-        -FilePath $temporaryPdfPath
-
-      if ($Details) {
+      if ($shouldCheckExistingDataset) {
 
         Write-Info (
-          "Retorno do ImportarPDF: " +
-          "'$([string]$pdfImportResult)'"
+          "Verificando se o Dataset ja existe na revisao..."
         )
+
+        $datasetLookup =
+        Test-DcaTeamcenterDatasetExists `
+          -Revision $teamcenterRevision `
+          -DatasetName $datasetName `
+          -DatasetRevision $document.ClientRevision
+
+        if ($null -eq $datasetLookup) {
+
+          throw (
+            "A verificacao do Dataset retornou NULL para " +
+            "'$datasetName'."
+          )
+        }
       }
 
-      # ImportarPDF retorna uma mensagem textual. A ausencia de
-      # excecao indica que a chamada ao importador foi concluida.
-      $pdfImported =
-      $true
+      # ==================================================
+      # E.2. Importar somente quando o Dataset estiver ausente
+      # ==================================================
+
+      if (
+        $null -ne $datasetLookup -and
+        $datasetLookup.Exists
+      ) {
+
+        $datasetAlreadyExists =
+        $true
+
+        $pdfImported =
+        $true
+
+        $pdfImportedThisRun =
+        $false
+
+        Write-Warn (
+          "O Dataset '$datasetName' ja existe na revisao " +
+          "'$($document.ClientRevision)'. " +
+          "A importacao nao sera repetida."
+        )
+
+        if ($Details) {
+
+          Write-Info (
+            "Relacao do Dataset existente: " +
+            $datasetLookup.Relation
+          )
+
+          Write-Info (
+            "Tipo tecnico do Dataset existente: " +
+            $datasetLookup.TypeName
+          )
+        }
+      }
+      else {
+
+        Write-Info (
+          "Dataset nao encontrado. Importando o PDF no Teamcenter..."
+        )
+
+        Write-Info (
+          "Nome do Dataset: '$datasetName'"
+        )
+
+        Write-Info (
+          "Revisao do Dataset: '$($document.ClientRevision)'"
+        )
+
+        $pdfImportResult =
+        Import-TeamcenterPdf `
+          -Revision $teamcenterRevision `
+          -ItemCode $createdCode `
+          -DatasetName $datasetName `
+          -DatasetRevision $document.ClientRevision `
+          -FilePath $temporaryPdfPath
+
+        if ($Details) {
+
+          Write-Info (
+            "Retorno do ImportarPDF: " +
+            "'$([string]$pdfImportResult)'"
+          )
+        }
+
+        # A ausencia de excecao indica que a chamada ao importador
+        # foi concluida. A verificacao posterior do relacionamento
+        # ainda pode ser implementada em uma etapa futura.
+        $pdfImported =
+        $true
+
+        $pdfImportedThisRun =
+        $true
+
+        $datasetAlreadyExists =
+        $false
+      }
 
       # ==================================================
       # F. Iniciar o workflow quando aplicavel
@@ -1522,6 +1982,19 @@ function Invoke-DcaMain {
         $false
       }
 
+      # Quando o Dataset ja existia antes da execucao, o workflow
+      # nao e repetido automaticamente. Isso evita iniciar dois
+      # processos para o mesmo documento.
+      if (
+        $datasetAlreadyExists -and
+        $document.RequestedMode -eq "RecoverExisting"
+      ) {
+
+        Write-Info (
+          "O Dataset ja existia. Nenhum workflow sera repetido."
+        )
+      }
+
       $workflowTemplate =
       $null
 
@@ -1530,6 +2003,7 @@ function Invoke-DcaMain {
 
       if (
         $document.DocumentType -ne "DatasetOnly" -and
+        -not $datasetAlreadyExists -and
         $pdmState -ieq "Aprovado"
       ) {
 
@@ -1541,6 +2015,7 @@ function Invoke-DcaMain {
       }
       elseif (
         $document.DocumentType -ne "DatasetOnly" -and
+        -not $datasetAlreadyExists -and
         $pdmState -ieq "Obsoleto"
       ) {
 
@@ -1624,16 +2099,11 @@ function Invoke-DcaMain {
           ClientRevision = $document.ClientRevision
           DocumentType = $document.DocumentType
           PdmState = $document.PdmState
-          Operation = if (
-            $document.DocumentType -eq "DatasetOnly"
-          ) {
-            "DatasetOnly"
-          }
-          else {
-            "CreateItem"
-          }
+          Operation = [string]$document.RequestedMode
           ItemCreated = $itemCreated
           PdfImported = $pdfImported
+          PdfImportedThisRun = $pdfImportedThisRun
+          DatasetAlreadyExists = $datasetAlreadyExists
           WorkflowStarted = $workflowStarted
           Succeeded = $true
           DocumentStartedAt = $documentStartedAt.ToString(
@@ -1725,16 +2195,12 @@ function Invoke-DcaMain {
           ClientRevision = $document.ClientRevision
           DocumentType = $document.DocumentType
           PdmState = $document.PdmState
-          Operation = if (
-            $document.DocumentType -eq "DatasetOnly"
-          ) {
-            "DatasetOnly"
-          }
-          else {
-            "CreateItem"
-          }
+          RequestedMode = [string]$document.RequestedMode
+          Operation = [string]$document.RequestedMode
           ItemCreated = $itemCreated
           PdfImported = $pdfImported
+          PdfImportedThisRun = $pdfImportedThisRun
+          DatasetAlreadyExists = $datasetAlreadyExists
           WorkflowStarted = $workflowStarted
           Succeeded = $false
           DocumentStartedAt = $documentStartedAt.ToString(
@@ -1774,6 +2240,50 @@ function Invoke-DcaMain {
   # Apresenta um resultado individual para cada documento,
   # diferenciando criacao, importacao do PDF e workflow.
   foreach ($result in $batchResults) {
+
+    if ($result.DatasetAlreadyExists) {
+
+      Write-Success (
+        "$($result.ItemCode) -> Dataset ja existente; " +
+        "nenhuma nova importacao foi realizada"
+      )
+
+      continue
+    }
+
+    if (
+      $result.Operation -eq "RecoverExisting" -and
+      $result.PdfImported
+    ) {
+
+      $recoveryMessage =
+      "$($result.ItemCode) -> " +
+      "$($result.TeamcenterCode) - " +
+      "PDF recuperado no Item existente"
+
+      if ($result.WorkflowStarted) {
+
+        $recoveryMessage +=
+        " - workflow solicitado"
+      }
+
+      Write-Success $recoveryMessage
+
+      continue
+    }
+
+    if (
+      $result.Operation -eq "RecoverExisting" -and
+      -not $result.PdfImported
+    ) {
+
+      Write-Failure (
+        "$($result.ItemCode) -> Recuperacao do PDF falhou: " +
+        $result.ErrorMessage
+      )
+
+      continue
+    }
 
     if (
       $result.Operation -eq "DatasetOnly" -and

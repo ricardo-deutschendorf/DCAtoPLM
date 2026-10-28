@@ -1519,7 +1519,7 @@ function Find-DcaTeamcenterItemRevision {
     }
   }
 
-    # ============================================================
+  # ============================================================
   # 4. VALIDAR O RESULTADO FINAL DA CONSULTA
   # ============================================================
   if ($null -eq $revision) {
@@ -1572,6 +1572,141 @@ function Find-DcaTeamcenterItemRevision {
       ErrorMessage = (
         "O destino selecionado nao retornou uma revisao valida. " +
         "Tipo recebido: '$revisionTypeName'."
+      )
+    }
+  }
+
+  # ============================================================
+  # 5. CARREGAR AS PROPRIEDADES DA REVISAO
+  # ============================================================
+  #
+  # Load_Item e getItemRevisionfromItem podem retornar o objeto
+  # de revisao sem carregar item_revision_id no modelo cliente.
+  # A propriedade deve ser solicitada explicitamente antes da
+  # leitura e da comparacao com a revisao esperada.
+  try {
+
+    $dataManagementService =
+    Get-TeamcenterDataManagementService
+
+    $getPropertiesMethod =
+    $dataManagementService.GetType().GetMethods() |
+      Where-Object {
+        $_.Name -match "^(?i)GetProperties$" -and
+        $_.GetParameters().Count -eq 2
+      } |
+      Select-Object -First 1
+
+    if ($null -eq $getPropertiesMethod) {
+
+      throw (
+        "DataManagementService.GetProperties nao foi encontrado."
+      )
+    }
+
+    $revisionArrayType =
+    $getPropertiesMethod.GetParameters()[0].ParameterType
+
+    if (-not $revisionArrayType.IsArray) {
+
+      throw (
+        "O primeiro parametro de GetProperties nao e um array."
+      )
+    }
+
+    $revisionObjectType =
+    $revisionArrayType.GetElementType()
+
+    if ($null -eq $revisionObjectType) {
+
+      throw (
+        "O tipo de objeto aceito por GetProperties nao foi " +
+        "identificado."
+      )
+    }
+
+    $revisionArray =
+    [System.Array]::CreateInstance(
+      $revisionObjectType,
+      1
+    )
+
+    $revisionArray.SetValue(
+      $revision,
+      0
+    )
+
+    $revisionPropertyNames =
+    [string[]]@(
+      "item_revision_id",
+      "object_name",
+      "object_string"
+    )
+
+    $propertyArguments =
+    New-Object "System.Object[]" 2
+
+    $propertyArguments[0] =
+    $revisionArray
+
+    $propertyArguments[1] =
+    $revisionPropertyNames
+
+    $propertyResponse =
+    $getPropertiesMethod.Invoke(
+      $dataManagementService,
+      $propertyArguments
+    )
+
+    if ($null -ne $propertyResponse) {
+
+      $propertyErrors =
+      @(
+        Get-TeamcenterServiceErrors `
+          -ServiceData $propertyResponse
+      )
+
+      if ($propertyErrors.Count -gt 0) {
+
+        throw (
+          "O Teamcenter nao carregou as propriedades da revisao: " +
+          ($propertyErrors -join " | ")
+        )
+      }
+    }
+
+    if ($Details) {
+
+      Write-Host (
+        "  Propriedades da revisao carregadas para validacao."
+      ) -ForegroundColor DarkGray
+    }
+  }
+  catch {
+
+    $propertyException =
+    $_.Exception
+
+    while (
+      $null -ne $propertyException.InnerException
+    ) {
+
+      $propertyException =
+      $propertyException.InnerException
+    }
+
+    return [PSCustomObject]@{
+      Status = "Erro"
+      ItemExists = $true
+      RevisionExists = $false
+      ItemCode = $itemCodeClean
+      ExpectedRevision = $expectedRevisionClean
+      FoundRevision = ""
+      Item = $item
+      Revision = $revision
+      ErrorMessage = (
+        "Nao foi possivel carregar item_revision_id da revisao: " +
+        $propertyException.Message
       )
     }
   }

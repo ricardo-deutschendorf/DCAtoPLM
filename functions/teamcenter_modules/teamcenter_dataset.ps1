@@ -17,7 +17,6 @@
 # Este arquivo nao cria Items ou revisoes e nao inicia workflows.
 # ============================================================
 
-
 # ============================================================
 # RECUPERACAO DA REVISAO DE UM ITEM
 # ============================================================
@@ -30,7 +29,6 @@ function Get-TeamcenterRevision {
     [ValidateNotNull()]
     $Item
   )
-
 
   # ============================================================
   # 1. VALIDAR O ITEM E A CONEXAO
@@ -51,7 +49,6 @@ function Get-TeamcenterRevision {
     )
   }
 
-
   # ============================================================
   # 2. NORMALIZAR O OBJETO DO ITEM
   # ============================================================
@@ -68,7 +65,6 @@ function Get-TeamcenterRevision {
     $itemBaseObject
   }
 
-
   # ============================================================
   # 3. LOCALIZAR O METODO DE CONSULTA DA REVISAO
   # ============================================================
@@ -77,7 +73,6 @@ function Get-TeamcenterRevision {
   Get-TeamcenterMethod `
     -MethodName "getItemRevisionfromItem" `
     -ParameterCount 1
-
 
   # ============================================================
   # 4. RECUPERAR A REVISAO
@@ -117,7 +112,6 @@ function Get-TeamcenterRevision {
     return $null
   }
 
-
   # ============================================================
   # 5. NORMALIZAR E RETORNAR A REVISAO
   # ============================================================
@@ -134,6 +128,671 @@ function Get-TeamcenterRevision {
   return $revision
 }
 
+# ============================================================
+# DIAGNOSTICO DAS RELACOES DA REVISAO
+# ============================================================
+function Show-DcaTeamcenterRevisionDatasets {
+
+  # Consulta as propriedades de relacao mais comuns de uma revisao
+  # e apresenta os objetos secundarios encontrados.
+  #
+  # Esta funcao apenas le informacoes. Nenhum Dataset e criado,
+  # alterado ou removido durante o diagnostico.
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNull()]
+    $Revision
+  )
+
+  # ============================================================
+  # 1. NORMALIZAR E VALIDAR A REVISAO
+  # ============================================================
+
+  $revisionBaseObject =
+  $Revision.PSObject.BaseObject
+
+  if ($null -ne $revisionBaseObject) {
+
+    $Revision =
+    $revisionBaseObject
+  }
+
+  if ($null -eq $Revision) {
+
+    throw (
+      "A revisao nao foi fornecida para o diagnostico " +
+      "dos Datasets."
+    )
+  }
+
+  $revisionTypeName =
+  $Revision.GetType().FullName
+
+  if (
+    $revisionTypeName -notmatch
+    '(?i)(ItemRevision|Revision)$'
+  ) {
+
+    throw (
+      "O objeto recebido nao e uma revisao valida. " +
+      "Tipo recebido: '$revisionTypeName'."
+    )
+  }
+
+  # ============================================================
+  # 2. OBTER O DATAMANAGEMENTSERVICE
+  # ============================================================
+
+  $dataManagementService =
+  Get-TeamcenterDataManagementService
+
+  $getPropertiesMethod =
+  $dataManagementService.GetType().GetMethods() |
+    Where-Object {
+    $_.Name -match "^(?i)GetProperties$" -and
+    $_.GetParameters().Count -eq 2
+  } |
+    Select-Object -First 1
+
+  if ($null -eq $getPropertiesMethod) {
+
+    throw (
+      "DataManagementService.GetProperties nao foi encontrado."
+    )
+  }
+
+  # ============================================================
+  # 3. DEFINIR AS RELACOES QUE SERAO TESTADAS
+  # ============================================================
+  #
+  # A relacao utilizada pelo Importar GD pode variar conforme o
+  # modelo do Teamcenter. Por isso, esta etapa testa as relacoes
+  # mais comuns sem assumir antecipadamente qual delas e usada.
+  $relationPropertyNames =
+  [string[]]@(
+    "IMAN_specification",
+    "IMAN_reference",
+    "IMAN_Rendering",
+    "IMAN_manifestation",
+    "IMAN_requirement"
+  )
+
+  # ============================================================
+  # 4. CARREGAR AS PROPRIEDADES DA REVISAO
+  # ============================================================
+
+  $revisionArrayType =
+  $getPropertiesMethod.GetParameters()[0].ParameterType
+
+  if (-not $revisionArrayType.IsArray) {
+
+    throw (
+      "O primeiro parametro de GetProperties nao e um array."
+    )
+  }
+
+  $modelObjectType =
+  $revisionArrayType.GetElementType()
+
+  if ($null -eq $modelObjectType) {
+
+    throw (
+      "O tipo dos objetos de GetProperties nao foi identificado."
+    )
+  }
+
+  $revisionArray =
+  [System.Array]::CreateInstance(
+    $modelObjectType,
+    1
+  )
+
+  $revisionArray.SetValue(
+    $Revision,
+    0
+  )
+
+  $getPropertiesArguments =
+  New-Object "System.Object[]" 2
+
+  $getPropertiesArguments[0] =
+  $revisionArray
+
+  $getPropertiesArguments[1] =
+  $relationPropertyNames
+
+  $propertyResponse =
+  $getPropertiesMethod.Invoke(
+    $dataManagementService,
+    $getPropertiesArguments
+  )
+
+  if ($null -ne $propertyResponse) {
+
+    $propertyErrors =
+    @(
+      Get-TeamcenterServiceErrors `
+        -ServiceData $propertyResponse
+    )
+
+    if ($propertyErrors.Count -gt 0) {
+
+      Write-Warn (
+        "Algumas propriedades nao puderam ser carregadas: " +
+        ($propertyErrors -join " | ")
+      )
+    }
+  }
+
+  # ============================================================
+  # 5. LOCALIZAR O METODO GETPROPERTY
+  # ============================================================
+  #
+  # A versao atual do modelo cliente nao disponibiliza o metodo
+  # GetPropertyObject. As propriedades carregadas pelo servico
+  # sao recuperadas pelo metodo GetProperty.
+  $getPropertyMethod =
+  $Revision.GetType().GetMethods() |
+    Where-Object {
+    $_.Name -eq "GetProperty" -and
+    $_.GetParameters().Count -eq 1 -and
+    $_.GetParameters()[0].ParameterType -eq [string]
+  } |
+    Select-Object -First 1
+
+  if ($null -eq $getPropertyMethod) {
+
+    throw (
+      "O metodo GetProperty(string) nao foi encontrado no objeto " +
+      "de revisao '$revisionTypeName'."
+    )
+  }
+
+  # ============================================================
+  # 6. LER OS OBJETOS DE CADA RELACAO
+  # ============================================================
+
+  Write-AnimatedLine ""
+
+  Write-Host (
+    "  Diagnostico das relacoes da revisao:"
+  ) -ForegroundColor Cyan
+
+  Write-Host (
+    "  Tipo da revisao: $revisionTypeName"
+  ) -ForegroundColor DarkGray
+
+  Write-Host ""
+
+  $foundObjects =
+  [System.Collections.Generic.List[object]]::new()
+
+  foreach ($relationPropertyName in $relationPropertyNames) {
+
+    Write-Host (
+      "  Relacao: $relationPropertyName"
+    ) -ForegroundColor White
+
+    try {
+
+      $propertyObject =
+      $getPropertyMethod.Invoke(
+        $Revision,
+        @(
+          [string]$relationPropertyName
+        )
+      )
+
+      if ($null -eq $propertyObject) {
+
+        Write-Host (
+          "    Propriedade nao disponivel."
+        ) -ForegroundColor DarkGray
+
+        continue
+      }
+
+      # O objeto Property pode disponibilizar a colecao por uma
+      # propriedade publica ou por um metodo getter, dependendo da
+      # versao das bibliotecas SOA carregadas.
+      $arrayValueProperty =
+      $propertyObject.GetType().GetProperties() |
+        Where-Object {
+        $_.Name -match
+        "^(?i)(ModelObjectArrayValue|ObjectArrayValue)$"
+      } |
+        Select-Object -First 1
+
+      $relatedObjects =
+      @()
+
+      if ($null -ne $arrayValueProperty) {
+
+        $relatedObjects =
+        @(
+          $arrayValueProperty.GetValue(
+            $propertyObject,
+            $null
+          )
+        )
+      }
+      else {
+
+        $arrayValueMethod =
+        $propertyObject.GetType().GetMethods() |
+          Where-Object {
+          $_.Name -match
+          "^(?i)(get_|Get)(ModelObjectArrayValue|ObjectArrayValue)$" -and
+          $_.GetParameters().Count -eq 0
+        } |
+          Select-Object -First 1
+
+        if ($null -ne $arrayValueMethod) {
+
+          $relatedObjects =
+          @(
+            $arrayValueMethod.Invoke(
+              $propertyObject,
+              @()
+            )
+          )
+        }
+        elseif ($Details) {
+
+          Write-Host (
+            "    O tipo da propriedade nao disponibiliza um " +
+            "array de objetos relacionados."
+          ) -ForegroundColor DarkGray
+
+          Write-Host (
+            "    Tipo da propriedade: " +
+            $propertyObject.GetType().FullName
+          ) -ForegroundColor DarkGray
+        }
+      }
+
+      $relatedObjects =
+      @(
+        $relatedObjects |
+          Where-Object {
+          $null -ne $_
+        }
+      )
+
+      if ($relatedObjects.Count -eq 0) {
+
+        Write-Host (
+          "    Nenhum objeto relacionado."
+        ) -ForegroundColor DarkGray
+
+        continue
+      }
+
+      Write-Host (
+        "    Objetos encontrados: $($relatedObjects.Count)"
+      ) -ForegroundColor Green
+
+      # Carrega as propriedades utilizadas para identificar os
+      # objetos relacionados e comparar os Datasets encontrados.
+      try {
+
+        $relatedObjectArray =
+        [System.Array]::CreateInstance(
+          $modelObjectType,
+          $relatedObjects.Count
+        )
+
+        for (
+          $relatedIndex = 0
+          $relatedIndex -lt $relatedObjects.Count
+          $relatedIndex++
+        ) {
+
+          $relatedObject =
+          $relatedObjects[$relatedIndex]
+
+          $relatedBaseObject =
+          $relatedObject.PSObject.BaseObject
+
+          if ($null -ne $relatedBaseObject) {
+
+            $relatedObject =
+            $relatedBaseObject
+          }
+
+          $relatedObjectArray.SetValue(
+            $relatedObject,
+            $relatedIndex
+          )
+
+          $relatedObjects[$relatedIndex] =
+          $relatedObject
+        }
+
+        $relatedPropertyNames =
+        [string[]]@(
+          "object_name",
+          "object_string",
+          "object_type"
+        )
+
+        $relatedPropertyArguments =
+        New-Object "System.Object[]" 2
+
+        $relatedPropertyArguments[0] =
+        $relatedObjectArray
+
+        $relatedPropertyArguments[1] =
+        $relatedPropertyNames
+
+        $relatedPropertyResponse =
+        $getPropertiesMethod.Invoke(
+          $dataManagementService,
+          $relatedPropertyArguments
+        )
+
+        if ($null -ne $relatedPropertyResponse) {
+
+          $relatedPropertyErrors =
+          @(
+            Get-TeamcenterServiceErrors `
+              -ServiceData $relatedPropertyResponse
+          )
+
+          if (
+            $relatedPropertyErrors.Count -gt 0 -and
+            $Details
+          ) {
+
+            Write-Warn (
+              "Algumas propriedades dos objetos relacionados " +
+              "nao foram carregadas: " +
+              ($relatedPropertyErrors -join " | ")
+            )
+          }
+        }
+      }
+      catch {
+
+        if ($Details) {
+
+          $relatedPropertyException =
+          $_.Exception
+
+          while (
+            $null -ne $relatedPropertyException.InnerException
+          ) {
+
+            $relatedPropertyException =
+            $relatedPropertyException.InnerException
+          }
+
+          Write-Warn (
+            "Nao foi possivel carregar todas as propriedades " +
+            "dos objetos relacionados: " +
+            $relatedPropertyException.Message
+          )
+        }
+      }
+
+      foreach ($relatedObject in $relatedObjects) {
+
+        $relatedBaseObject =
+        $relatedObject.PSObject.BaseObject
+
+        if ($null -ne $relatedBaseObject) {
+
+          $relatedObject =
+          $relatedBaseObject
+        }
+
+        $relatedTypeName =
+        $relatedObject.GetType().FullName
+
+        $relatedName =
+        Get-TeamcenterModelPropertyText `
+          -ModelObject $relatedObject `
+          -PropertyName "object_name"
+
+        $relatedId =
+        Get-TeamcenterModelPropertyText `
+          -ModelObject $relatedObject `
+          -PropertyName "object_string"
+
+        $relatedBusinessType =
+        Get-TeamcenterModelPropertyText `
+          -ModelObject $relatedObject `
+          -PropertyName "object_type"
+
+        Write-Host (
+          "    Tipo tecnico: $relatedTypeName"
+        ) -ForegroundColor Gray
+
+        if (
+          -not [string]::IsNullOrWhiteSpace(
+            [string]$relatedBusinessType
+          )
+        ) {
+
+          Write-Host (
+            "    Tipo Teamcenter: '$relatedBusinessType'"
+          ) -ForegroundColor Gray
+        }
+
+        Write-Host (
+          "    Nome: '$relatedName'"
+        ) -ForegroundColor Gray
+
+        if (
+          -not [string]::IsNullOrWhiteSpace(
+            [string]$relatedId
+          )
+        ) {
+
+          Write-Host (
+            "    Identificacao: '$relatedId'"
+          ) -ForegroundColor DarkGray
+        }
+
+        Write-Host ""
+
+        $foundObjects.Add(
+          [PSCustomObject]@{
+            Relation = $relationPropertyName
+            TypeName = $relatedTypeName
+            BusinessType = [string]$relatedBusinessType
+            ObjectName = [string]$relatedName
+            ObjectString = [string]$relatedId
+            Object = $relatedObject
+          }
+        )
+      }
+    }
+    catch {
+
+      $realException =
+      $_.Exception
+
+      while (
+        $null -ne $realException.InnerException
+      ) {
+
+        $realException =
+        $realException.InnerException
+      }
+
+      Write-Host (
+        "    Nao foi possivel ler: " +
+        $realException.Message
+      ) -ForegroundColor DarkGray
+    }
+  }
+
+  # ============================================================
+  # 7. RETORNAR OS OBJETOS ENCONTRADOS
+  # ============================================================
+
+  return $foundObjects.ToArray()
+}
+# ============================================================
+# VERIFICACAO DE DATASET EXISTENTE
+# ============================================================
+function Test-DcaTeamcenterDatasetExists {
+
+  # Verifica se a revisao ja possui um Dataset com o nome
+  # esperado antes de chamar o metodo ImportarPDF.
+  #
+  # A funcao apenas consulta os objetos relacionados. Nenhum
+  # objeto do Teamcenter e criado ou alterado nesta etapa.
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNull()]
+    $Revision,
+
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$DatasetName,
+
+    [string]$DatasetRevision
+  )
+
+  # ============================================================
+  # 1. NORMALIZAR OS VALORES ESPERADOS
+  # ============================================================
+
+  $datasetNameClean =
+  $DatasetName.Trim()
+
+  $datasetRevisionClean =
+  ([string]$DatasetRevision).Trim().ToUpperInvariant()
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $datasetNameClean
+    )
+  ) {
+
+    throw (
+      "O nome esperado do Dataset ficou vazio."
+    )
+  }
+
+  # ============================================================
+  # 2. CONSULTAR OS OBJETOS RELACIONADOS
+  # ============================================================
+
+  $relatedObjects =
+  @(
+    Show-DcaTeamcenterRevisionDatasets `
+      -Revision $Revision
+  )
+
+  # ============================================================
+  # 3. FILTRAR SOMENTE OBJETOS DE DATASET
+  # ============================================================
+
+  $datasetCandidates =
+  @(
+    $relatedObjects |
+      Where-Object {
+
+      $technicalType =
+      [string]$_.TypeName
+
+      $businessType =
+      [string]$_.BusinessType
+
+      (
+        $technicalType -match
+        '(?i)(Dataset|PDF)' -or
+        $businessType -match
+        '(?i)(Dataset|PDF)'
+      )
+    }
+  )
+
+  if ($Details) {
+
+    Write-Host (
+      "  Datasets encontrados na revisao: " +
+      $datasetCandidates.Count
+    ) -ForegroundColor DarkGray
+  }
+
+  # ============================================================
+  # 4. COMPARAR O NOME DO DATASET
+  # ============================================================
+
+  foreach ($datasetCandidate in $datasetCandidates) {
+
+    $foundDatasetName =
+    ([string]$datasetCandidate.ObjectName).Trim()
+
+    $foundObjectString =
+    ([string]$datasetCandidate.ObjectString).Trim()
+
+    if ($Details) {
+
+      Write-Host (
+        "  Comparando Dataset:"
+      ) -ForegroundColor DarkGray
+
+      Write-Host (
+        "    Esperado: '$datasetNameClean'"
+      ) -ForegroundColor DarkGray
+
+      Write-Host (
+        "    Encontrado: '$foundDatasetName'"
+      ) -ForegroundColor DarkGray
+
+      Write-Host (
+        "    Relacao: '$($datasetCandidate.Relation)'"
+      ) -ForegroundColor DarkGray
+    }
+
+    $datasetNameMatches =
+    (
+      $foundDatasetName -ieq $datasetNameClean -or
+      $foundObjectString -ieq $datasetNameClean -or
+      $foundObjectString -like "$datasetNameClean/*" -or
+      $foundObjectString -like "$datasetNameClean *"
+    )
+
+    if (-not $datasetNameMatches) {
+      continue
+    }
+
+    # ==========================================================
+    # A. RETORNAR O DATASET ENCONTRADO
+    # ==========================================================
+
+    return [PSCustomObject]@{
+      Exists = $true
+      DatasetName = $foundDatasetName
+      DatasetRevision = $datasetRevisionClean
+      Relation = [string]$datasetCandidate.Relation
+      TypeName = [string]$datasetCandidate.TypeName
+      ObjectString = $foundObjectString
+      Dataset = $datasetCandidate.Object
+      ErrorMessage = $null
+    }
+  }
+
+  # ============================================================
+  # 5. INFORMAR QUE O DATASET NAO EXISTE
+  # ============================================================
+
+  return [PSCustomObject]@{
+    Exists = $false
+    DatasetName = $datasetNameClean
+    DatasetRevision = $datasetRevisionClean
+    Relation = $null
+    TypeName = $null
+    ObjectString = $null
+    Dataset = $null
+    ErrorMessage = $null
+  }
+}
 
 # ============================================================
 # IMPORTACAO DO PDF COMO DATASET
@@ -163,7 +822,6 @@ function Import-TeamcenterPdf {
     [ValidateNotNullOrEmpty()]
     [string]$FilePath
   )
-
 
   # ============================================================
   # 1. VALIDAR A REVISAO E O ARQUIVO PDF
@@ -198,7 +856,6 @@ function Import-TeamcenterPdf {
     )
   }
 
-
   # ============================================================
   # 2. NORMALIZAR O OBJETO DE REVISAO
   # ============================================================
@@ -214,7 +871,6 @@ function Import-TeamcenterPdf {
     $Revision =
     $revisionBaseObject
   }
-
 
   # ============================================================
   # 3. VALIDAR O TIPO TECNICO DA REVISAO
@@ -238,7 +894,6 @@ function Import-TeamcenterPdf {
       "Tipo recebido: '$revisionTypeName'."
     )
   }
-
 
   # ============================================================
   # 4. NORMALIZAR OS DADOS DO DATASET
@@ -272,7 +927,6 @@ function Import-TeamcenterPdf {
     )
   }
 
-
   # ============================================================
   # 5. LOCALIZAR O METODO IMPORTARPDF
   # ============================================================
@@ -288,7 +942,6 @@ function Import-TeamcenterPdf {
   Get-TeamcenterMethod `
     -MethodName "ImportarPDF" `
     -ParameterCount 5
-
 
   # ============================================================
   # 6. PREPARAR OS ARGUMENTOS DA IMPORTACAO
@@ -311,7 +964,6 @@ function Import-TeamcenterPdf {
 
   $invokeArguments[4] =
   [bool]$true
-
 
   # ============================================================
   # 7. APRESENTAR O DIAGNOSTICO DA IMPORTACAO
@@ -339,7 +991,6 @@ function Import-TeamcenterPdf {
       "    Tipo da revisao:  '$revisionTypeName'"
     ) -ForegroundColor Gray
   }
-
 
   # ============================================================
   # 8. IMPORTAR O PDF
@@ -377,7 +1028,6 @@ function Import-TeamcenterPdf {
       $realException.Message
     )
   }
-
 
   # ============================================================
   # 9. RETORNAR A RESPOSTA DO IMPORTADOR
