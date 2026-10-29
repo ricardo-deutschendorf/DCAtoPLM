@@ -42,8 +42,16 @@ function New-DcaTeamcenterItem {
 
     [string]$ClientRevision,
 
+    [Parameter(Mandatory = $false)]
+    [AllowEmptyString()]
+    [string]$Approver,
+
+    [Parameter(Mandatory = $false)]
+    [AllowEmptyString()]
+    [string]$ApprovalDate,
+
     [Parameter(Mandatory = $true)]
-    [ValidateSet("Original", "Processo", "NormaExterna")]
+    [ValidateNotNullOrEmpty()]
     [string]$DocumentType
   )
 
@@ -55,8 +63,14 @@ function New-DcaTeamcenterItem {
   # tanto por excecoes quanto pelos erros parciais do servico SOA.
   $duplicatePattern = '(?i)already exists|ja existe|duplicate|not unique|is not unique'
 
-  $sourceCodeClean = $SourceCode.Trim().ToUpper()
-  $itemNameClean = $ItemName.Trim()
+  $sourceCodeClean =
+  $SourceCode.Trim().ToUpperInvariant()
+
+  $itemNameClean =
+  $ItemName.Trim()
+
+  $approverClean =
+  ([string]$Approver).Trim()
 
   if ([string]::IsNullOrWhiteSpace($sourceCodeClean)) {
     throw "SourceCode ficou vazio."
@@ -201,9 +215,116 @@ function New-DcaTeamcenterItem {
     "object_desc" = $itemNameClean
   }
 
+  # Adiciona as propriedades especificas configuradas para o tipo
+  # de documento, como as revisoes cliente e interna de Processo.
   foreach ($extraKey in $revisionExtraProperties.Keys) {
+
     $revisionProperties[$extraKey] =
     $revisionExtraProperties[$extraKey]
+  }
+
+  # ============================================================
+  # MAPEAR APROVADOR E DATA DO PDM PARA O TEAMCENTER
+  # ============================================================
+  #
+  # Os valores sao enviados diretamente para as propriedades
+  # especificas da revisao de Processo. Nenhum desses dados e
+  # concatenado em comentarios ou em object_desc.
+  if ($DocumentType -eq "Processo") {
+
+    # ==========================================================
+    # A. APROVADOR DO PDM
+    # ==========================================================
+
+    if (
+      -not [string]::IsNullOrWhiteSpace(
+        $approverClean
+      )
+    ) {
+
+      $revisionProperties["gd5AprovadorPDM"] =
+      $approverClean
+
+      if ($Details) {
+
+        Write-Host (
+          "  Aprovador do PDM para o Teamcenter:"
+        ) -ForegroundColor Cyan
+
+        Write-Host (
+          "    gd5AprovadorPDM = '$approverClean'"
+        ) -ForegroundColor Gray
+      }
+    }
+
+    # ==========================================================
+    # B. DATA DE APROVACAO DO PDM
+    # ==========================================================
+
+    $approvalDateClean =
+    ([string]$ApprovalDate).Trim()
+
+    if (
+      -not [string]::IsNullOrWhiteSpace(
+        $approvalDateClean
+      )
+    ) {
+
+      $parsedApprovalDate =
+      [datetime]::MinValue
+
+      $approvalDateWasParsed =
+      [datetime]::TryParseExact(
+        $approvalDateClean,
+        "dd/MM/yyyy",
+        [System.Globalization.CultureInfo]::InvariantCulture,
+        [System.Globalization.DateTimeStyles]::None,
+        [ref]$parsedApprovalDate
+      )
+
+      if (-not $approvalDateWasParsed) {
+
+        throw (
+          "A data de aprovacao '$approvalDateClean' nao possui " +
+          "o formato esperado dd/MM/yyyy."
+        )
+      }
+
+      # O valor e normalizado para um formato sem ambiguidade.
+      # O Teamcenter exige o deslocamento de fuso horario na
+      # representacao textual de propriedades do tipo Date.
+      $approvalDateOffset =
+      [System.TimeZoneInfo]::Local.GetUtcOffset(
+        $parsedApprovalDate
+      )
+
+      $approvalDateWithOffset =
+      [System.DateTimeOffset]::new(
+        $parsedApprovalDate,
+        $approvalDateOffset
+      )
+
+      $approvalDateTeamcenter =
+      $approvalDateWithOffset.ToString(
+        "yyyy-MM-dd'T'HH:mm:sszzz",
+        [System.Globalization.CultureInfo]::InvariantCulture
+      )
+
+      $revisionProperties["gd5AprovadorPDMData"] =
+      $approvalDateTeamcenter
+
+      if ($Details) {
+
+        Write-Host (
+          "  Data de aprovacao do PDM para o Teamcenter:"
+        ) -ForegroundColor Cyan
+
+        Write-Host (
+          "    gd5AprovadorPDMData = " +
+          "'$approvalDateTeamcenter'"
+        ) -ForegroundColor Gray
+      }
+    }
   }
 
   # As propriedades configuradas como inteiras sao enviadas em
@@ -470,6 +591,68 @@ function New-DcaTeamcenterItem {
         "antes do CreateObjects."
       )
     }
+
+    # ==========================================================
+    # VALIDAR APROVADOR E DATA RECEBIDOS DO PDM
+    # ==========================================================
+
+    $finalApprover =
+    ""
+
+    $finalApprovalDate =
+    ""
+
+    if (
+      -not [string]::IsNullOrWhiteSpace(
+        $approverClean
+      )
+    ) {
+
+      $finalApprover =
+      Get-DcaCreateInputPropertyText `
+        -InputObject $revisionSent `
+        -PropertyName "gd5AprovadorPDM"
+
+      if (
+        [string]::IsNullOrWhiteSpace(
+          $finalApprover
+        )
+      ) {
+
+        throw (
+          "gd5AprovadorPDM ficou vazio no objeto de revisao " +
+          "antes do CreateObjects."
+        )
+      }
+    }
+
+    $approvalDateClean =
+    ([string]$ApprovalDate).Trim()
+
+    if (
+      -not [string]::IsNullOrWhiteSpace(
+        $approvalDateClean
+      )
+    ) {
+
+      $finalApprovalDate =
+      Get-DcaCreateInputPropertyText `
+        -InputObject $revisionSent `
+        -PropertyName "gd5AprovadorPDMData"
+
+      if (
+        [string]::IsNullOrWhiteSpace(
+          $finalApprovalDate
+        )
+      ) {
+
+        throw (
+          "gd5AprovadorPDMData ficou vazio no objeto de revisao " +
+          "antes do CreateObjects."
+        )
+      }
+    }
+
     if ($Details) {
 
       Write-Host (
@@ -487,6 +670,28 @@ function New-DcaTeamcenterItem {
       Write-Host (
         "    gd5revinterna    = '$revisionInternal'"
       ) -ForegroundColor Gray
+
+      if (
+        -not [string]::IsNullOrWhiteSpace(
+          $approverClean
+        )
+      ) {
+
+        Write-Host (
+          "    gd5AprovadorPDM = '$finalApprover'"
+        ) -ForegroundColor Gray
+      }
+
+      if (
+        -not [string]::IsNullOrWhiteSpace(
+          $approvalDateClean
+        )
+      ) {
+
+        Write-Host (
+          "    gd5AprovadorPDMData = '$finalApprovalDate'"
+        ) -ForegroundColor Gray
+      }
     }
   }
 

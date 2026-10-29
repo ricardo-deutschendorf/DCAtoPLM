@@ -273,6 +273,8 @@ function Export-DcaBatchReport {
       ClientRevision = [string]$result.ClientRevision
       DocumentType = [string]$result.DocumentType
       PdmState = [string]$result.PdmState
+      Approver = [string]$result.Approver
+      ApprovalDate = [string]$result.ApprovalDate
       Operation = $operationText
       ItemCreated = [bool]$result.ItemCreated
       PdfImported = [bool]$result.PdfImported

@@ -302,8 +302,6 @@ $requiredFunctions =
   "Test-DcaCodeMatch",
   "Get-DcaPdmFileState",
   "Get-DcaPdmCardVariableValue",
-  "Get-DcaPdmCardVariables",
-  "Show-DcaPdmCardVariables",
   "Get-DcaCardRevisionVariableNames",
   "Convert-DcaOriginalDescription",
   "Search-DcaVaultPdfEntries",
@@ -590,6 +588,8 @@ function Invoke-DcaMain {
           TeamcenterItem = $null
           TeamcenterRevision = $null
           RetryMode = [string]$retryRow.RetryMode
+          Approver = [string]$retryRow.Approver
+          ApprovalDate = [string]$retryRow.ApprovalDate
           PreviousError = [string]$retryRow.PreviousError
         }
 
@@ -835,6 +835,178 @@ function Invoke-DcaMain {
         $typedCode.Trim()
       }
     }
+    # ==========================================================
+    # LER O APROVADOR E A DATA DO CARTAO DO PDM
+    # ==========================================================
+    #
+    # Os campos sao lidos somente para documentos de Processo.
+    # Os nomes tecnicos das variaveis permanecem configurados
+    # no arquivo .env.
+    $approver =
+    if (
+      $retryMode -and
+      $selectedPdf.PSObject.Properties["Approver"]
+    ) {
+
+      ([string]$selectedPdf.Approver).Trim()
+    }
+    else {
+
+      $null
+    }
+
+    $approvalDate =
+    if (
+      $retryMode -and
+      $selectedPdf.PSObject.Properties["ApprovalDate"]
+    ) {
+
+      ([string]$selectedPdf.ApprovalDate).Trim()
+    }
+    else {
+
+      $null
+    }
+
+    if (
+      $documentType -eq "Processo" -and
+      -not $retryMode
+    ) {
+
+      # ========================================================
+      # A. LER O APROVADOR
+      # ========================================================
+
+      $approverVariableNames =
+      @(
+        (
+          [string]$env:DCA_PDM_VAR_PROCESS_APPROVER
+        ) -split '[|;]' |
+          ForEach-Object {
+          ([string]$_).Trim()
+        } |
+          Where-Object {
+          -not [string]::IsNullOrWhiteSpace(
+            [string]$_
+          )
+        }
+      )
+
+      if ($Details) {
+
+        Write-Host (
+          "  Campo de aprovador configurado: " +
+          "'$([string]$env:DCA_PDM_VAR_PROCESS_APPROVER)'"
+        ) -ForegroundColor DarkGray
+
+        Write-Host (
+          "  Variaveis de aprovador testadas: " +
+          ($approverVariableNames -join ", ")
+        ) -ForegroundColor DarkGray
+      }
+
+      if ($approverVariableNames.Count -gt 0) {
+
+        $approver =
+        Get-DcaPdmVariableValue `
+          -Entry $selectedPdf.File `
+          -VariableNames $approverVariableNames
+
+        $approver =
+        ([string]$approver).Trim()
+      }
+
+      # ========================================================
+      # B. LER A DATA DA APROVACAO
+      # ========================================================
+
+      $approvalDateVariableNames =
+      @(
+        (
+          [string]$env:DCA_PDM_VAR_PROCESS_APPROVAL_DATE
+        ) -split '[|;]' |
+          ForEach-Object {
+          ([string]$_).Trim()
+        } |
+          Where-Object {
+          -not [string]::IsNullOrWhiteSpace(
+            [string]$_
+          )
+        }
+      )
+
+      if ($Details) {
+
+        Write-Host (
+          "  Campo de data configurado: " +
+          "'$([string]$env:DCA_PDM_VAR_PROCESS_APPROVAL_DATE)'"
+        ) -ForegroundColor DarkGray
+
+        Write-Host (
+          "  Variaveis de data testadas: " +
+          ($approvalDateVariableNames -join ", ")
+        ) -ForegroundColor DarkGray
+      }
+
+      if ($approvalDateVariableNames.Count -gt 0) {
+
+        $approvalDate =
+        Get-DcaPdmVariableValue `
+          -Entry $selectedPdf.File `
+          -VariableNames $approvalDateVariableNames
+
+        $approvalDate =
+        ([string]$approvalDate).Trim()
+      }
+
+      # ========================================================
+      # C. APRESENTAR OS VALORES ENCONTRADOS
+      # ========================================================
+
+      if ($Details) {
+
+        if (
+          [string]::IsNullOrWhiteSpace(
+            $approver
+          )
+        ) {
+
+          Write-Warn (
+            "Aprovador nao encontrado no cartao do PDM para " +
+            "'$itemCodeFromFile'."
+          )
+        }
+        else {
+
+          Write-Host (
+            "  Aprovador do PDM: '$approver'"
+          ) -ForegroundColor Cyan
+        }
+
+        if (
+          $approvalDateVariableNames.Count -gt 0
+        ) {
+
+          if (
+            [string]::IsNullOrWhiteSpace(
+              $approvalDate
+            )
+          ) {
+
+            Write-Warn (
+              "Data da aprovacao nao encontrada no cartao do PDM " +
+              "para '$itemCodeFromFile'."
+            )
+          }
+          else {
+
+            Write-Host (
+              "  Data da aprovacao do PDM: '$approvalDate'"
+            ) -ForegroundColor Cyan
+          }
+        }
+      }
+    }
 
     # A revisao encontrada no cartao de dados ou no nome do arquivo
     # tem prioridade. A entrada manual ocorre somente quando nenhuma
@@ -991,6 +1163,8 @@ function Invoke-DcaMain {
         DocumentType = $documentType
         DisplayType = $selectedPdf.TypeDisplayName
         PdmState = [string]$selectedPdf.PdmState
+        Approver = [string]$approver
+        ApprovalDate = [string]$approvalDate
         TeamcenterItem = $selectedPdf.TeamcenterItem
         TeamcenterRevision = $selectedPdf.TeamcenterRevision
         RequestedMode =
@@ -1141,6 +1315,27 @@ function Invoke-DcaMain {
   # revisao existente. Isso evita consultar centenas de Items antes
   # que o usuario selecione os documentos desejados.
   foreach ($document in $preparedDocuments) {
+
+    # Consulta o destino existente somente quando o fluxo precisa
+    # reutilizar um Item ou uma revisao do Teamcenter.
+    #
+    # Na criacao normal, a consulta e ignorada para impedir que um
+    # Item de outro tipo, mas com o mesmo codigo, bloqueie o fluxo
+    # por possuir uma revisao diferente.
+    $shouldLookupExistingDestination =
+    (
+      $document.DocumentType -eq "DatasetOnly" -or
+      $document.RequestedMode -eq "RecoverExisting" -or
+      $RecoverExisting
+    )
+
+    if (-not $shouldLookupExistingDestination) {
+
+      $document.RequestedMode =
+      "CreateItem"
+
+      continue
+    }
 
     # ==========================================================
     # A. DETERMINAR A REVISAO ESPERADA NO TEAMCENTER
@@ -1609,6 +1804,8 @@ function Invoke-DcaMain {
           -SourceCode $document.ItemCode `
           -ItemName $document.ItemName `
           -ClientRevision $document.ClientRevision `
+          -Approver $document.Approver `
+          -ApprovalDate $document.ApprovalDate `
           -DocumentType $document.DocumentType
 
         if ($null -eq $teamcenterDestination) {
@@ -2099,6 +2296,8 @@ function Invoke-DcaMain {
           ClientRevision = $document.ClientRevision
           DocumentType = $document.DocumentType
           PdmState = $document.PdmState
+          Approver = [string]$document.Approver
+          ApprovalDate = [string]$document.ApprovalDate
           Operation = [string]$document.RequestedMode
           ItemCreated = $itemCreated
           PdfImported = $pdfImported
@@ -2195,6 +2394,8 @@ function Invoke-DcaMain {
           ClientRevision = $document.ClientRevision
           DocumentType = $document.DocumentType
           PdmState = $document.PdmState
+          Approver = [string]$document.Approver
+          ApprovalDate = [string]$document.ApprovalDate
           RequestedMode = [string]$document.RequestedMode
           Operation = [string]$document.RequestedMode
           ItemCreated = $itemCreated
