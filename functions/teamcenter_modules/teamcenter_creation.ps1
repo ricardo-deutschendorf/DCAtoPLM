@@ -17,10 +17,13 @@
 #   1. interpreta os erros retornados pelo servico SOA;
 #   2. recupera o Item e a revisao criados;
 #   3. remove wrappers criados pelo PowerShell;
-#   4. devolve os objetos ao fluxo principal.
+#   4. grava aprovador e data na revisao de Processo;
+#   5. devolve os objetos ao fluxo principal.
 #
 # Esta funcao pode criar objetos efetivamente no Teamcenter.
-# Todas as validacoes locais devem ocorrer antes de CreateObjects.
+# As validacoes da criacao devem ocorrer antes de CreateObjects.
+# As propriedades de aprovacao sao aplicadas depois, quando o
+# objeto da revisao criada estiver disponivel.
 # ============================================================
 function New-DcaTeamcenterItem {
 
@@ -226,29 +229,35 @@ function New-DcaTeamcenterItem {
   # ============================================================
   # MAPEAR APROVADOR E DATA DO PDM PARA O TEAMCENTER
   # ============================================================
+  # Os valores sao validados e preparados antes da criacao.
+  # Depois do CreateObjects, eles sao gravados diretamente nas
+  # propriedades da revisao criada por SetProperties.
   #
-  # Os valores sao enviados diretamente para as propriedades
-  # especificas da revisao de Processo. Nenhum desses dados e
-  # concatenado em comentarios ou em object_desc.
+  # Nenhum desses dados e concatenado em comentarios ou object_desc.
   if ($DocumentType -eq "Processo") {
 
     # ==========================================================
     # A. APROVADOR DO PDM
     # ==========================================================
 
-    if (
-      -not [string]::IsNullOrWhiteSpace(
-        $approverClean
-      )
-    ) {
+    # O valor limpo permanece em $approverClean e sera aplicado
+    # na revisao criada por SetProperties.
+    if ($Details) {
 
-      $revisionProperties["gd5AprovadorPDM"] =
-      $approverClean
-
-      if ($Details) {
+      if (
+        [string]::IsNullOrWhiteSpace(
+          $approverClean
+        )
+      ) {
 
         Write-Host (
-          "  Aprovador do PDM para o Teamcenter:"
+          "  Aprovador do PDM: <vazio>"
+        ) -ForegroundColor DarkGray
+      }
+      else {
+
+        Write-Host (
+          "  Aprovador do PDM preparado:"
         ) -ForegroundColor Cyan
 
         Write-Host (
@@ -290,28 +299,178 @@ function New-DcaTeamcenterItem {
         )
       }
 
-      # O valor e normalizado para um formato sem ambiguidade.
-      # O Teamcenter exige o deslocamento de fuso horario na
-      # representacao textual de propriedades do tipo Date.
-      $approvalDateOffset =
-      [System.TimeZoneInfo]::Local.GetUtcOffset(
-        $parsedApprovalDate
+      # SetProperties recebe a data como texto. O valor deve ser
+      # produzido pelo conversor oficial da biblioteca SOA para
+      # respeitar o formato de data esperado pelo Teamcenter.
+      $teamcenterPropertyType =
+      [System.AppDomain]::CurrentDomain.GetAssemblies() |
+        ForEach-Object {
+
+        try {
+
+          $_.GetTypes()
+        }
+        catch {
+
+          @()
+        }
+      } |
+        Where-Object {
+        $_.FullName -eq
+        "Teamcenter.Soa.Client.Model.Property"
+      } |
+        Select-Object -First 1
+
+      if ($null -eq $teamcenterPropertyType) {
+
+        throw (
+          "O tipo Teamcenter.Soa.Client.Model.Property nao foi " +
+          "encontrado para converter a data de aprovacao."
+        )
+      }
+
+      $toDateStringMethods =
+      @(
+        $teamcenterPropertyType.GetMethods(
+          [System.Reflection.BindingFlags]::Public -bor
+          [System.Reflection.BindingFlags]::Static
+        ) |
+          Where-Object {
+          $_.Name -ieq "ToDateString" -and
+          $_.GetParameters().Count -eq 1
+        }
       )
 
-      $approvalDateWithOffset =
-      [System.DateTimeOffset]::new(
-        $parsedApprovalDate,
-        $approvalDateOffset
-      )
+      if ($toDateStringMethods.Count -eq 0) {
+
+        throw (
+          "O metodo Property.ToDateString nao foi encontrado " +
+          "nas bibliotecas SOA carregadas."
+        )
+      }
+
+      $toDateStringMethod =
+      $toDateStringMethods |
+        Where-Object {
+
+        $parameterType =
+        $_.GetParameters()[0].ParameterType
+
+        $parameterType -eq [datetime]
+      } |
+        Select-Object -First 1
+
+      if ($null -eq $toDateStringMethod) {
+
+        $toDateStringMethod =
+        $toDateStringMethods |
+          Select-Object -First 1
+      }
+
+      $dateParameterType =
+      $toDateStringMethod.GetParameters()[0].ParameterType
+
+      if ($Details) {
+
+        Write-Host (
+          "  Conversor de data localizado:"
+        ) -ForegroundColor Cyan
+
+        Write-Host (
+          "    Tipo:   $($teamcenterPropertyType.FullName)"
+        ) -ForegroundColor DarkGray
+
+        Write-Host (
+          "    Metodo: $($toDateStringMethod.Name)"
+        ) -ForegroundColor DarkGray
+
+        Write-Host (
+          "    Entrada: $($dateParameterType.FullName)"
+        ) -ForegroundColor DarkGray
+      }
+
+      $dateArgument =
+      if ($dateParameterType -eq [datetime]) {
+
+        $parsedApprovalDate
+      }
+      elseif (
+        $dateParameterType -eq [datetimeoffset]
+      ) {
+
+        $localOffset =
+        [System.TimeZoneInfo]::Local.GetUtcOffset(
+          $parsedApprovalDate
+        )
+
+        [System.DateTimeOffset]::new(
+          $parsedApprovalDate,
+          $localOffset
+        )
+      }
+      else {
+
+        throw (
+          "Property.ToDateString possui um parametro nao " +
+          "suportado: '$($dateParameterType.FullName)'."
+        )
+      }
+
+      try {
+
+        $approvalDateTeamcenter =
+        [string]$toDateStringMethod.Invoke(
+          $null,
+          @(
+            $dateArgument
+          )
+        )
+      }
+      catch {
+
+        $realException =
+        $_.Exception
+
+        while (
+          $null -ne $realException.InnerException
+        ) {
+
+          $realException =
+          $realException.InnerException
+        }
+
+        throw (
+          "Nao foi possivel converter a data " +
+          "'$approvalDateClean' com Property.ToDateString: " +
+          $realException.Message
+        )
+      }
 
       $approvalDateTeamcenter =
-      $approvalDateWithOffset.ToString(
-        "yyyy-MM-dd'T'HH:mm:sszzz",
-        [System.Globalization.CultureInfo]::InvariantCulture
-      )
+      $approvalDateTeamcenter.Trim()
 
-      $revisionProperties["gd5AprovadorPDMData"] =
-      $approvalDateTeamcenter
+      if ($Details) {
+
+        Write-Host (
+          "  Texto produzido por Property.ToDateString:"
+        ) -ForegroundColor Cyan
+
+        Write-Host (
+          "    '$approvalDateTeamcenter'"
+        ) -ForegroundColor Yellow
+      }
+
+      if (
+        [string]::IsNullOrWhiteSpace(
+          $approvalDateTeamcenter
+        )
+      ) {
+
+        throw (
+          "Property.ToDateString retornou uma data vazia para " +
+          "'$approvalDateClean'."
+        )
+      }
 
       if ($Details) {
 
@@ -592,67 +751,6 @@ function New-DcaTeamcenterItem {
       )
     }
 
-    # ==========================================================
-    # VALIDAR APROVADOR E DATA RECEBIDOS DO PDM
-    # ==========================================================
-
-    $finalApprover =
-    ""
-
-    $finalApprovalDate =
-    ""
-
-    if (
-      -not [string]::IsNullOrWhiteSpace(
-        $approverClean
-      )
-    ) {
-
-      $finalApprover =
-      Get-DcaCreateInputPropertyText `
-        -InputObject $revisionSent `
-        -PropertyName "gd5AprovadorPDM"
-
-      if (
-        [string]::IsNullOrWhiteSpace(
-          $finalApprover
-        )
-      ) {
-
-        throw (
-          "gd5AprovadorPDM ficou vazio no objeto de revisao " +
-          "antes do CreateObjects."
-        )
-      }
-    }
-
-    $approvalDateClean =
-    ([string]$ApprovalDate).Trim()
-
-    if (
-      -not [string]::IsNullOrWhiteSpace(
-        $approvalDateClean
-      )
-    ) {
-
-      $finalApprovalDate =
-      Get-DcaCreateInputPropertyText `
-        -InputObject $revisionSent `
-        -PropertyName "gd5AprovadorPDMData"
-
-      if (
-        [string]::IsNullOrWhiteSpace(
-          $finalApprovalDate
-        )
-      ) {
-
-        throw (
-          "gd5AprovadorPDMData ficou vazio no objeto de revisao " +
-          "antes do CreateObjects."
-        )
-      }
-    }
-
     if ($Details) {
 
       Write-Host (
@@ -670,28 +768,6 @@ function New-DcaTeamcenterItem {
       Write-Host (
         "    gd5revinterna    = '$revisionInternal'"
       ) -ForegroundColor Gray
-
-      if (
-        -not [string]::IsNullOrWhiteSpace(
-          $approverClean
-        )
-      ) {
-
-        Write-Host (
-          "    gd5AprovadorPDM = '$finalApprover'"
-        ) -ForegroundColor Gray
-      }
-
-      if (
-        -not [string]::IsNullOrWhiteSpace(
-          $approvalDateClean
-        )
-      ) {
-
-        Write-Host (
-          "    gd5AprovadorPDMData = '$finalApprovalDate'"
-        ) -ForegroundColor Gray
-      }
     }
   }
 
@@ -853,8 +929,370 @@ function New-DcaTeamcenterItem {
   }
 
   # ============================================================
-  # 14. RETORNAR O DESTINO CRIADO
+  # 14. GRAVAR APROVADOR E DATA NA REVISAO CRIADA
   # ============================================================
+  #
+  # Utiliza a sobrecarga moderna:
+  #
+  #   SetProperties(
+  #     DataManagement.PropInfo[],
+  #     string[]
+  #   )
+  #
+  # As propriedades sao aplicadas diretamente ao objeto da
+  # revisao retornado pelo CreateObjects.
+  if (
+    $DocumentType -eq "Processo" -and
+    $null -ne $createdRevision
+  ) {
+
+    # ==========================================================
+    # A. LOCALIZAR OS TIPOS NECESSARIOS
+    # ==========================================================
+
+    $propInfoType =
+    [System.AppDomain]::CurrentDomain.GetAssemblies() |
+      ForEach-Object {
+
+      try {
+
+        $_.GetTypes()
+      }
+      catch {
+
+        @()
+      }
+    } |
+      Where-Object {
+      $_.FullName -eq
+      "Teamcenter.Services.Strong.Core._2010_09." +
+      "DataManagement.PropInfo"
+    } |
+      Select-Object -First 1
+
+    if ($null -eq $propInfoType) {
+
+      throw (
+        "O tipo DataManagement.PropInfo nao foi encontrado."
+      )
+    }
+
+    $nameValueStructType =
+    [System.AppDomain]::CurrentDomain.GetAssemblies() |
+      ForEach-Object {
+
+      try {
+
+        $_.GetTypes()
+      }
+      catch {
+
+        @()
+      }
+    } |
+      Where-Object {
+      $_.FullName -eq
+      "Teamcenter.Services.Strong.Core._2010_09." +
+      "DataManagement.NameValueStruct1"
+    } |
+      Select-Object -First 1
+
+    if ($null -eq $nameValueStructType) {
+
+      throw (
+        "O tipo DataManagement.NameValueStruct1 " +
+        "nao foi encontrado."
+      )
+    }
+
+    # ==========================================================
+    # B. PREPARAR A LISTA DE PROPRIEDADES
+    # ==========================================================
+
+    $nameValueEntries =
+    [System.Collections.Generic.List[object]]::new()
+
+    if (
+      -not [string]::IsNullOrWhiteSpace(
+        $approverClean
+      )
+    ) {
+
+      $approverNameValue =
+      [System.Activator]::CreateInstance(
+        $nameValueStructType
+      )
+
+      $approverNameValue.Name =
+      [string]"gd5AprovadorPDM"
+
+      $approverNameValue.Values =
+      [string[]]@(
+        $approverClean
+      )
+
+      $nameValueEntries.Add(
+        $approverNameValue.PSObject.BaseObject
+      )
+    }
+
+    if (
+      -not [string]::IsNullOrWhiteSpace(
+        [string]$approvalDateTeamcenter
+      )
+    ) {
+
+      $approvalDateNameValue =
+      [System.Activator]::CreateInstance(
+        $nameValueStructType
+      )
+
+      $approvalDateNameValue.Name =
+      [string]"gd5AprovadorPDMData"
+
+      $approvalDateNameValue.Values =
+      [string[]]@(
+        $approvalDateTeamcenter
+      )
+
+      $nameValueEntries.Add(
+        $approvalDateNameValue.PSObject.BaseObject
+      )
+    }
+
+    # Somente chama SetProperties quando existir pelo menos uma
+    # propriedade de aprovacao preenchida.
+    if ($nameValueEntries.Count -gt 0) {
+
+      # ========================================================
+      # C. CRIAR O ARRAY TIPADO DE NAMEVALUESTRUCT1
+      # ========================================================
+
+      $nameValueArray =
+      [System.Array]::CreateInstance(
+        $nameValueStructType,
+        $nameValueEntries.Count
+      )
+
+      for (
+        $nameValueIndex = 0
+        $nameValueIndex -lt $nameValueEntries.Count
+        $nameValueIndex++
+      ) {
+
+        $nameValueArray.SetValue(
+          $nameValueEntries[$nameValueIndex],
+          $nameValueIndex
+        )
+      }
+
+      # ========================================================
+      # D. MONTAR O PROPINFO DA REVISAO
+      # ========================================================
+
+      $propertyInfo =
+      [System.Activator]::CreateInstance(
+        $propInfoType
+      )
+
+      $propertyInfo.Object =
+      $createdRevision
+
+      $propertyInfo.VecNameVal =
+      $nameValueArray
+
+      # Timestamp vazio informa que nao sera utilizado controle
+      # otimista de alteracao nesta chamada.
+      $propertyInfo.Timestamp =
+      [datetime]::MinValue
+
+      $propInfoArray =
+      [System.Array]::CreateInstance(
+        $propInfoType,
+        1
+      )
+
+      $propInfoArray.SetValue(
+        $propertyInfo.PSObject.BaseObject,
+        0
+      )
+
+      # ========================================================
+      # E. LOCALIZAR A SOBRECARGA MODERNA DE SETPROPERTIES
+      # ========================================================
+
+      $setPropertiesMethod =
+      $dataManagementService.GetType().GetMethods() |
+        Where-Object {
+
+        if (
+          $_.Name -ne "SetProperties" -or
+          $_.GetParameters().Count -ne 2
+        ) {
+
+          return $false
+        }
+
+        $methodParameters =
+        $_.GetParameters()
+
+        (
+          $methodParameters[0].ParameterType.FullName -eq
+          "Teamcenter.Services.Strong.Core._2010_09." +
+          "DataManagement.PropInfo[]" -and
+          $methodParameters[1].ParameterType -eq
+          [string[]]
+        )
+      } |
+        Select-Object -First 1
+
+      if ($null -eq $setPropertiesMethod) {
+
+        throw (
+          "A sobrecarga SetProperties(" +
+          "PropInfo[], string[]) nao foi encontrada."
+        )
+      }
+
+      # ========================================================
+      # F. MOSTRAR OS VALORES PREPARADOS
+      # ========================================================
+
+      if ($Details) {
+
+        Write-Host ""
+
+        Write-Host (
+          "  Dados que serao aplicados na revisao:"
+        ) -ForegroundColor Cyan
+
+        Write-Host (
+          "    Revisao: $candidateCode/$teamcenterRevisionId"
+        ) -ForegroundColor Gray
+
+        foreach (
+          $nameValueEntry in
+          $nameValueEntries
+        ) {
+
+          Write-Host (
+            "    $($nameValueEntry.Name) = " +
+            "'$(@($nameValueEntry.Values) -join ", ")'"
+          ) -ForegroundColor White
+        }
+      }
+      if ($Details) {
+
+        Write-Host (
+          "  Estrutura de SetProperties:"
+        ) -ForegroundColor Cyan
+
+        Write-Host (
+          "    PropInfo: " +
+          $propertyInfo.GetType().FullName
+        ) -ForegroundColor DarkGray
+
+        Write-Host (
+          "    Objeto alvo: " +
+          $createdRevision.GetType().FullName
+        ) -ForegroundColor DarkGray
+
+        Write-Host (
+          "    Quantidade de propriedades: " +
+          $nameValueArray.Length
+        ) -ForegroundColor DarkGray
+
+        Write-Host (
+          "    Sobrecarga: SetProperties(" +
+          "PropInfo[], string[])"
+        ) -ForegroundColor DarkGray
+      }
+
+      # ========================================================
+      # G. EXECUTAR SETPROPERTIES
+      # ========================================================
+
+      $setPropertiesArguments =
+      [object[]]::new(2)
+
+      $setPropertiesArguments[0] =
+      $propInfoArray
+
+      # Nenhuma opcao adicional e necessaria.
+      $setPropertiesArguments[1] =
+      [string[]]@()
+
+      try {
+
+        $setPropertiesResponse =
+        $setPropertiesMethod.Invoke(
+          $dataManagementService,
+          $setPropertiesArguments
+        )
+      }
+      catch {
+
+        $realException =
+        $_.Exception
+
+        while (
+          $null -ne $realException.InnerException
+        ) {
+
+          $realException =
+          $realException.InnerException
+        }
+
+        throw (
+          "Falha ao gravar os dados de aprovacao na revisao " +
+          "'$candidateCode/$teamcenterRevisionId': " +
+          $realException.Message
+        )
+      }
+
+      if ($null -eq $setPropertiesResponse) {
+
+        throw (
+          "SetProperties retornou NULL ao atualizar a revisao " +
+          "'$candidateCode/$teamcenterRevisionId'."
+        )
+      }
+
+      $setPropertiesServiceData =
+      $setPropertiesResponse.Data
+
+      if ($null -eq $setPropertiesServiceData) {
+
+        throw (
+          "SetProperties nao retornou ServiceData ao atualizar " +
+          "'$candidateCode/$teamcenterRevisionId'."
+        )
+      }
+
+      $setPropertiesErrors =
+      @(
+        Get-TeamcenterServiceErrors `
+          -ServiceData $setPropertiesServiceData
+      )
+
+      if ($setPropertiesErrors.Count -gt 0) {
+
+        throw (
+          "O Teamcenter rejeitou os dados de aprovacao: " +
+          ($setPropertiesErrors -join " | ")
+        )
+      }
+
+      Write-Success (
+        "Aprovador e data gravados na revisao " +
+        "$candidateCode/$teamcenterRevisionId."
+      )
+    }
+  }
+  # ============================================================
+  # 15. RETORNAR O DESTINO CRIADO
+  # ============================================================
+
   return [PSCustomObject]@{
     Code = $candidateCode
     Item = $createdItem

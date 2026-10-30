@@ -5,7 +5,7 @@
 # Responsabilidades deste script:
 #   1. Carregar e validar a configuracao local.
 #   2. Pesquisar e selecionar PDFs no Vault DCA.
-#   3. Ler codigo, revisao, descricao e estado do cartao.
+#   3. Ler codigo, revisao, descricao, aprovador, data e estado.
 #   4. Preparar e exibir o plano de importacao.
 #   5. Localizar ou criar o destino no Teamcenter.
 #   6. Importar o PDF como Dataset.
@@ -587,7 +587,27 @@ function Invoke-DcaMain {
           FolderImport = $true
           TeamcenterItem = $null
           TeamcenterRevision = $null
-          RetryMode = [string]$retryRow.RetryMode
+          RetryMode =
+          if (
+            -not [string]::IsNullOrWhiteSpace(
+              [string]$retryRow.RetryMode
+            )
+          ) {
+
+            [string]$retryRow.RetryMode
+          }
+          elseif (
+            -not [string]::IsNullOrWhiteSpace(
+              [string]$retryRow.Operation
+            )
+          ) {
+
+            [string]$retryRow.Operation
+          }
+          else {
+
+            "CreateItem"
+          }
           Approver = [string]$retryRow.Approver
           ApprovalDate = [string]$retryRow.ApprovalDate
           PreviousError = [string]$retryRow.PreviousError
@@ -774,8 +794,8 @@ function Invoke-DcaMain {
   # 3. NORMALIZAR OS DOCUMENTOS SELECIONADOS
   # ============================================================
   #
-  # Consolida codigo, nome, revisao, tipo e estado antes da
-  # conexao com o Teamcenter.
+  # Consolida codigo, nome, revisao, tipo, estado e dados de
+  # aprovacao antes da conexao com o Teamcenter.
   $preparedDocuments =
   [System.Collections.Generic.List[object]]::new()
 
@@ -840,8 +860,8 @@ function Invoke-DcaMain {
     # ==========================================================
     #
     # Os campos sao lidos somente para documentos de Processo.
-    # Os nomes tecnicos das variaveis permanecem configurados
-    # no arquivo .env.
+    # No modo RetryReport, os valores sao recuperados do CSV.
+    # Na execucao normal, os nomes das variaveis vem do .env.
     $approver =
     if (
       $retryMode -and
@@ -1232,10 +1252,14 @@ function Invoke-DcaMain {
   ).Count
 
   $withoutWorkflowPrepared =
-  $totalPrepared -
-  $approvedPrepared -
-  $obsoletePrepared -
-  $datasetOnlyPrepared
+  @(
+    $preparedDocuments |
+      Where-Object {
+      $_.DocumentType -ne "DatasetOnly" -and
+      $_.PdmState -ine "Aprovado" -and
+      $_.PdmState -ine "Obsoleto"
+    }
+  ).Count
 
   Write-Host ""
   Write-Host (
@@ -1516,9 +1540,9 @@ function Invoke-DcaMain {
     }
   }
 
-  # Impede que o lote avance para a confirmacao quando algum
-  # documento DatasetOnly nao possui Item e revisao de destino
-  # devidamente localizados no Teamcenter.
+  # Impede que o lote avance quando algum documento que depende
+  # de destino existente nao possui Item e revisao devidamente
+  # localizados no Teamcenter.
   $unavailableExistingDestinations =
   @(
     $preparedDocuments |
@@ -1614,10 +1638,101 @@ function Invoke-DcaMain {
     "$datasetOnlyCount somente como Dataset."
   )
 
-  $confirmation =
-  Read-Host (
-    "Digite SIM para continuar ou pressione Enter para abortar"
+  # ============================================================
+  # CONFERIR APROVADOR E DATA ANTES DA IMPORTACAO
+  # ============================================================
+  #
+  # Os valores abaixo serao enviados para as propriedades da
+  # revisao de Processo no Teamcenter:
+  #   gd5AprovadorPDM
+  #   gd5AprovadorPDMData
+
+  $processDocuments =
+  @(
+    $preparedDocuments |
+      Where-Object {
+      $_.DocumentType -eq "Processo"
+    }
   )
+
+  if ($processDocuments.Count -gt 0) {
+
+    Write-AnimatedLine ""
+
+    Write-Host (
+      "  Conferencia dos dados de aprovacao:"
+    ) -ForegroundColor Cyan
+
+    Write-Host (
+      "  " + ("-" * 68)
+    ) -ForegroundColor DarkGray
+
+    foreach ($processDocument in $processDocuments) {
+
+      $approverDisplay =
+      ([string]$processDocument.Approver).Trim()
+
+      $approvalDateDisplay =
+      ([string]$processDocument.ApprovalDate).Trim()
+
+      if (
+        [string]::IsNullOrWhiteSpace(
+          $approverDisplay
+        )
+      ) {
+
+        $approverDisplay =
+        "<vazio>"
+      }
+
+      if (
+        [string]::IsNullOrWhiteSpace(
+          $approvalDateDisplay
+        )
+      ) {
+
+        $approvalDateDisplay =
+        "<vazia ou desmarcada>"
+      }
+
+      Write-Host (
+        "  Codigo: $($processDocument.ItemCode)"
+      ) -ForegroundColor White
+
+      Write-Host (
+        "    Aprovador PDM: '$approverDisplay'"
+      ) -ForegroundColor Gray
+
+      Write-Host (
+        "    Data aprovacao: '$approvalDateDisplay'"
+      ) -ForegroundColor Gray
+
+      if ($Details) {
+
+        Write-Host (
+          "    Destino TC: gd5AprovadorPDM / " +
+          "gd5AprovadorPDMData"
+        ) -ForegroundColor DarkGray
+      }
+
+      Write-Host ""
+    }
+  }
+
+  $confirmationMessage =
+  if ($processDocuments.Count -gt 0) {
+
+    "Confira os documentos e os dados de aprovacao acima. " +
+    "Digite SIM para continuar ou pressione Enter para abortar"
+  }
+  else {
+
+    "Confira os documentos acima. " +
+    "Digite SIM para continuar ou pressione Enter para abortar"
+  }
+
+  $confirmation =
+  Read-Host $confirmationMessage
 
   if (
     $confirmation.Trim() -ine "SIM"
@@ -1698,8 +1813,8 @@ function Invoke-DcaMain {
     # A. Localizar ou criar o destino no Teamcenter
     # ==================================================
 
-    # DatasetOnly reutiliza um Item existente. Os demais tipos
-    # criam um novo Item e uma nova revisao.
+    # DatasetOnly e RecoverExisting reutilizam um destino existente.
+    # CreateItem cria um novo Item e sua primeira revisao.
     try {
 
       $teamcenterItem =
@@ -1714,7 +1829,8 @@ function Invoke-DcaMain {
       ) {
 
         # O Item e a revisao ja existem. O script utiliza os objetos
-        # encontrados anteriormente e importa somente o Dataset.
+        # encontrados anteriormente, evita nova criacao e garante o
+        # Dataset na revisao de destino.
         $createdCode =
         [string]$document.ItemCode
 
@@ -2544,7 +2660,7 @@ function Invoke-DcaMain {
     else {
 
       Write-Failure (
-        "$($result.ItemCode) -> Item nao criado: " +
+        "$($result.ItemCode) -> Criacao nao concluida: " +
         $result.ErrorMessage
       )
     }
