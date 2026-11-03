@@ -36,7 +36,16 @@ function Select-DcaPdfByCode {
   #
   # Confirma se a raiz informada existe e prepara o padrao usado
   # para localizar correspondencias parciais do codigo.
-  if (-not (Test-Path -LiteralPath $FolderPath -PathType Container)) {
+  if (-not (
+      Test-Path `
+        -LiteralPath $FolderPath `
+        -PathType Container
+    )) {
+
+    throw (
+      "Vault DCA nao encontrado em '$FolderPath'."
+    )
+  } {
     throw "Vault DCA nao encontrado em '$FolderPath'."
   }
 
@@ -88,8 +97,13 @@ function Select-DcaPdfByCode {
       -ErrorAction Stop
   )
 
-  $documentationFolder = $rootFolders |
-    Where-Object { $_.Name -like "Documenta*" } |
+  $documentationFolder =
+  $rootFolders |
+    Where-Object {
+    $_.Name -like "Documenta*"
+  } |
+    Select-Object -First 1
+  Where-Object { $_.Name -like "Documenta*" } |
     Select-Object -First 1
 
   if ($null -eq $documentationFolder) {
@@ -149,12 +163,23 @@ function Select-DcaPdfByCode {
 
   foreach ($categoryDefinition in $categoryDefinitions) {
 
-    $categoryFolder = $documentationSubfolders |
-      Where-Object { $_.Name.Trim() -ieq $categoryDefinition.FolderName } |
+    $categoryFolder =
+    $documentationSubfolders |
+      Where-Object {
+      $_.Name.Trim() -ieq
+      $categoryDefinition.FolderName
+    } |
       Select-Object -First 1
-
     if ($null -eq $categoryFolder) {
-      Write-Warn "Pasta nao encontrada: $($categoryDefinition.FolderName)"
+
+      if ($Details) {
+
+        Write-Warn (
+          "Pasta nao encontrada: " +
+          $categoryDefinition.FolderName
+        )
+      }
+
       continue
     }
 
@@ -219,6 +244,18 @@ function Select-DcaPdfByCode {
         "Resultados retornados pelo Vault: " +
         $apiEntries.Count
       )
+
+      if ($apiEntries.Count -eq 0) {
+
+        Write-Warn (
+          "A API do PDM nao retornou resultados. " +
+          "A pesquisa sera repetida nos arquivos locais."
+        )
+
+        $apiEntries =
+        $null
+      }
+
     }
     catch {
 
@@ -249,10 +286,21 @@ function Select-DcaPdfByCode {
         $separator
       ) + $separator
 
-      $pdfEntries = @(
+      $pdfEntries =
+      @(
         $apiEntries |
           Where-Object {
-          $_.FullName.StartsWith($categoryPrefix, [System.StringComparison]::OrdinalIgnoreCase)
+
+          $entryFullName =
+          [string]$_.FullName
+
+          -not [string]::IsNullOrWhiteSpace(
+            $entryFullName
+          ) -and
+          $entryFullName.StartsWith(
+            $categoryPrefix,
+            [System.StringComparison]::OrdinalIgnoreCase
+          )
         } |
           Sort-Object FullName
       )
@@ -321,6 +369,7 @@ function Select-DcaPdfByCode {
           DocumentType = $searchFolder.DocumentType
           TypeDisplayName = $searchFolder.DisplayName
           CodeParsed = $parsedName.CodeParsed
+          FolderImport = $false
           PdmState = $pdmState
           TeamcenterItem = $null
           TeamcenterRevision = $null

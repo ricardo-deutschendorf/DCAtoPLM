@@ -502,7 +502,9 @@ function Select-DcaDocumentsWithFolderNavigation {
         continue
       }
 
-      return $documents
+      return @(
+        $documents
+      )
     }
 
     # ============================================================
@@ -835,72 +837,51 @@ function Select-DcaDocumentsWithFolderNavigation {
       }
     }
 
-    if (
-      -not $validNumber -or
-      $selectedNumber -lt 1 -or
-      $selectedNumber -gt $documents.Count
-    ) {
+    if (-not $selectionIsValid) {
+      continue
+    }
+
+    if ($selectedNumbers.Count -eq 0) {
 
       Write-Warn (
-        "Documento invalido: '$currentPart'."
+        "Use Pnumero para abrir uma pasta ou Dnumero para " +
+        "selecionar documentos."
       )
 
-      $selectionIsValid =
-      $false
-
-      break
+      continue
     }
 
-    if ($knownNumbers.Add($selectedNumber)) {
-      $selectedNumbers.Add($selectedNumber)
+    # ============================================================
+    # 13. MONTAR O RETORNO DA SELECAO
+    # ============================================================
+    $selectedDocuments =
+    [System.Collections.Generic.List[object]]::new()
+
+    # Ordena os numeros antes de montar o resultado para manter
+    # a mesma ordem visual apresentada ao usuario.
+    foreach (
+      $selectedNumber in (
+        $selectedNumbers |
+          Sort-Object
+      )
+    ) {
+
+      $selectedDocument =
+      $documents[$selectedNumber - 1]
+
+      $selectedDocuments.Add(
+        $selectedDocument
+      )
+
+      Write-Success (
+        "PDF selecionado [D$selectedNumber]: " +
+        $selectedDocument.File.Name
+      )
     }
+
+    # ============================================================
+    # 14. RETORNAR OS DOCUMENTOS SELECIONADOS
+    # ============================================================
+    return $selectedDocuments.ToArray()
   }
-
-  if (-not $selectionIsValid) {
-    continue
-  }
-
-  if ($selectedNumbers.Count -eq 0) {
-
-    Write-Warn (
-      "Use Pnumero para abrir uma pasta ou Dnumero para " +
-      "selecionar documentos."
-    )
-
-    continue
-  }
-
-  # ============================================================
-  # 13. MONTAR O RETORNO DA SELECAO
-  # ============================================================
-  $selectedDocuments =
-  [System.Collections.Generic.List[object]]::new()
-
-  # Ordena os numeros antes de montar o resultado para manter
-  # a mesma ordem visual apresentada ao usuario.
-  foreach (
-    $selectedNumber in (
-      $selectedNumbers |
-        Sort-Object
-    )
-  ) {
-
-    $selectedDocument =
-    $documents[$selectedNumber - 1]
-
-    $selectedDocuments.Add(
-      $selectedDocument
-    )
-
-    Write-Success (
-      "PDF selecionado [D$selectedNumber]: " +
-      $selectedDocument.File.Name
-    )
-  }
-
-  # ============================================================
-  # 14. RETORNAR OS DOCUMENTOS SELECIONADOS
-  # ============================================================
-  return $selectedDocuments.ToArray()
 }
-

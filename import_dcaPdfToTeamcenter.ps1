@@ -233,7 +233,6 @@ $functionFiles =
   # Teamcenter: estado, conexao, consultas, criacao e workflow.
   "functions\teamcenter_modules\teamcenter_state.ps1",
   "functions\teamcenter_modules\teamcenter_connections.ps1",
-  "functions\teamcenter_modules\teamcenter_query_diagnostics.ps1",
   "functions\teamcenter_modules\teamcenter_query_properties.ps1",
   "functions\teamcenter_modules\teamcenter_item_lookup.ps1",
   "functions\teamcenter_modules\teamcenter_dataset.ps1",
@@ -334,10 +333,7 @@ $requiredFunctions =
   "Connect-Teamcenter",
   "Get-TeamcenterMethod",
   "Get-TeamcenterConnection",
-  "Show-DcaTeamcenterLookupMethods",
   "Import-TeamcenterQueryAssemblies",
-  "Show-TeamcenterQueryServiceTypes",
-  "Show-TeamcenterSavedQueryTypeDetails",
   "Get-TeamcenterRevision",
   "Get-TeamcenterModelPropertyText",
   "Show-DcaTeamcenterRevisionProperties",
@@ -610,7 +606,19 @@ function Invoke-DcaMain {
           }
           Approver = [string]$retryRow.Approver
           ApprovalDate = [string]$retryRow.ApprovalDate
-          PreviousError = [string]$retryRow.PreviousError
+          PreviousError =
+          if (
+            -not [string]::IsNullOrWhiteSpace(
+              [string]$retryRow.PreviousError
+            )
+          ) {
+
+            [string]$retryRow.PreviousError
+          }
+          else {
+
+            [string]$retryRow.ErrorMessage
+          }
         }
 
         $selectedDocuments.Add(
@@ -662,12 +670,50 @@ function Invoke-DcaMain {
           }
           else {
 
-            $selectedPdfs =
+            $searchOutputs =
             @(
               Select-DcaPdfByCode `
                 -FolderPath $rootPath `
                 -Code $currentSearchCode
             )
+
+            $selectedPdfs =
+            @(
+              $searchOutputs |
+                Where-Object {
+
+                if ($null -eq $_) {
+                  return $false
+                }
+
+                if (
+                  -not $_.PSObject.Properties["File"] -or
+                  $null -eq $_.File
+                ) {
+                  return $false
+                }
+
+                $candidatePath =
+                ([string]$_.File.FullName).Trim()
+
+                -not [string]::IsNullOrWhiteSpace(
+                  $candidatePath
+                )
+              }
+            )
+
+            if ($Details) {
+
+              Write-Host (
+                "  Saidas totais da pesquisa: " +
+                $searchOutputs.Count
+              ) -ForegroundColor DarkGray
+
+              Write-Host (
+                "  PDFs validos da pesquisa: " +
+                $selectedPdfs.Count
+              ) -ForegroundColor DarkGray
+            }
           }
           if ($selectedPdfs.Count -eq 0) {
 
@@ -912,6 +958,14 @@ function Invoke-DcaMain {
         }
       )
 
+      if ($approverVariableNames.Count -eq 0) {
+
+        throw (
+          "DCA_PDM_VAR_PROCESS_APPROVER nao possui nenhum " +
+          "nome de variavel valido no arquivo .env."
+        )
+      }
+
       if ($Details) {
 
         Write-Host (
@@ -925,16 +979,13 @@ function Invoke-DcaMain {
         ) -ForegroundColor DarkGray
       }
 
-      if ($approverVariableNames.Count -gt 0) {
+      $approver =
+      Get-DcaPdmVariableValue `
+        -Entry $selectedPdf.File `
+        -VariableNames $approverVariableNames
 
-        $approver =
-        Get-DcaPdmVariableValue `
-          -Entry $selectedPdf.File `
-          -VariableNames $approverVariableNames
-
-        $approver =
-        ([string]$approver).Trim()
-      }
+      $approver =
+      ([string]$approver).Trim()
 
       # ========================================================
       # B. LER A DATA DA APROVACAO
@@ -955,6 +1006,14 @@ function Invoke-DcaMain {
         }
       )
 
+      if ($approvalDateVariableNames.Count -eq 0) {
+
+        throw (
+          "DCA_PDM_VAR_PROCESS_APPROVAL_DATE nao possui nenhum " +
+          "nome de variavel valido no arquivo .env."
+        )
+      }
+
       if ($Details) {
 
         Write-Host (
@@ -968,16 +1027,13 @@ function Invoke-DcaMain {
         ) -ForegroundColor DarkGray
       }
 
-      if ($approvalDateVariableNames.Count -gt 0) {
+      $approvalDate =
+      Get-DcaPdmVariableValue `
+        -Entry $selectedPdf.File `
+        -VariableNames $approvalDateVariableNames
 
-        $approvalDate =
-        Get-DcaPdmVariableValue `
-          -Entry $selectedPdf.File `
-          -VariableNames $approvalDateVariableNames
-
-        $approvalDate =
-        ([string]$approvalDate).Trim()
-      }
+      $approvalDate =
+      ([string]$approvalDate).Trim()
 
       # ========================================================
       # C. APRESENTAR OS VALORES ENCONTRADOS
@@ -1004,26 +1060,21 @@ function Invoke-DcaMain {
         }
 
         if (
-          $approvalDateVariableNames.Count -gt 0
+          [string]::IsNullOrWhiteSpace(
+            $approvalDate
+          )
         ) {
 
-          if (
-            [string]::IsNullOrWhiteSpace(
-              $approvalDate
-            )
-          ) {
+          Write-Warn (
+            "Data da aprovacao nao encontrada no cartao do PDM " +
+            "para '$itemCodeFromFile'."
+          )
+        }
+        else {
 
-            Write-Warn (
-              "Data da aprovacao nao encontrada no cartao do PDM " +
-              "para '$itemCodeFromFile'."
-            )
-          }
-          else {
-
-            Write-Host (
-              "  Data da aprovacao do PDM: '$approvalDate'"
-            ) -ForegroundColor Cyan
-          }
+          Write-Host (
+            "  Data da aprovacao do PDM: '$approvalDate'"
+          ) -ForegroundColor Cyan
         }
       }
     }
@@ -1189,14 +1240,20 @@ function Invoke-DcaMain {
         TeamcenterRevision = $selectedPdf.TeamcenterRevision
         RequestedMode =
         if (
-          $selectedPdf.PSObject.Properties["RetryMode"]
+          $selectedPdf.PSObject.Properties["RetryMode"] -and
+          -not [string]::IsNullOrWhiteSpace(
+            [string]$selectedPdf.RetryMode
+          )
         ) {
+
           [string]$selectedPdf.RetryMode
         }
         elseif ($documentType -eq "DatasetOnly") {
+
           "DatasetOnly"
         }
         else {
+
           "CreateItem"
         }
 
@@ -1329,9 +1386,10 @@ function Invoke-DcaMain {
   # 5. CONECTAR E VALIDAR OS DESTINOS EXISTENTES
   # ============================================================
 
-  # Somente documentos do tipo DatasetOnly precisam localizar
-  # antecipadamente um Item e uma revisao existentes. Os demais
-  # documentos criam um novo Item durante a execucao do lote.
+  # Documentos DatasetOnly e RecoverExisting precisam localizar
+  # antecipadamente o Item e a revisao de destino.
+  #
+  # Documentos CreateItem criam um novo Item durante a execucao.
   $null =
   Connect-Teamcenter
 
@@ -1642,8 +1700,9 @@ function Invoke-DcaMain {
   # CONFERIR APROVADOR E DATA ANTES DA IMPORTACAO
   # ============================================================
   #
-  # Os valores abaixo serao enviados para as propriedades da
-  # revisao de Processo no Teamcenter:
+  # Os valores abaixo foram lidos do PDM para documentos de
+  # Processo. Durante CreateItem, eles serao gravados nas
+  # propriedades da revisao:
   #   gd5AprovadorPDM
   #   gd5AprovadorPDMData
 
@@ -1651,7 +1710,8 @@ function Invoke-DcaMain {
   @(
     $preparedDocuments |
       Where-Object {
-      $_.DocumentType -eq "Processo"
+      $_.DocumentType -eq "Processo" -and
+      $_.RequestedMode -eq "CreateItem"
     }
   )
 
@@ -1698,6 +1758,10 @@ function Invoke-DcaMain {
       Write-Host (
         "  Codigo: $($processDocument.ItemCode)"
       ) -ForegroundColor White
+
+      Write-Host (
+        "    Operacao: $($processDocument.RequestedMode)"
+      ) -ForegroundColor DarkGray
 
       Write-Host (
         "    Aprovador PDM: '$approverDisplay'"
@@ -1914,7 +1978,7 @@ function Invoke-DcaMain {
       }
       else {
 
-        # Para os demais tipos, cria o Item e a revisao normalmente.
+        # No modo CreateItem, cria o Item e sua primeira revisao.
         $teamcenterDestination =
         New-DcaTeamcenterItem `
           -SourceCode $document.ItemCode `
@@ -2042,34 +2106,78 @@ function Invoke-DcaMain {
       # ==================================================
       # C. Garantir que o PDF esteja no cache local
       # ==================================================
+      $localPdfOutputs =
+      @(
+        Confirm-DcaLocalPdf `
+          -Entry $document.SelectedPdf.File
+      )
+
+      $localPdfCandidates =
+      @(
+        $localPdfOutputs |
+          Where-Object {
+          $_ -is [string]
+        } |
+          ForEach-Object {
+
+          $candidateLocalPath =
+          ([string]$_).Trim()
+
+          if (
+            -not [string]::IsNullOrWhiteSpace(
+              $candidateLocalPath
+            ) -and
+            (
+              Test-Path `
+                -LiteralPath $candidateLocalPath `
+                -PathType Leaf
+            )
+          ) {
+
+            $candidateLocalPath
+          }
+        }
+      )
+
+      if ($Details) {
+
+        Write-Host (
+          "  Saidas de Confirm-DcaLocalPdf: " +
+          $localPdfOutputs.Count
+        ) -ForegroundColor DarkGray
+
+        foreach ($localPdfOutput in $localPdfOutputs) {
+
+          if ($null -eq $localPdfOutput) {
+            continue
+          }
+
+          Write-Host (
+            "    Tipo:  " +
+            $localPdfOutput.GetType().FullName
+          ) -ForegroundColor DarkGray
+
+          Write-Host (
+            "    Valor: '$([string]$localPdfOutput)'"
+          ) -ForegroundColor DarkGray
+        }
+      }
+
+      if ($localPdfCandidates.Count -eq 0) {
+
+        throw (
+          "Confirm-DcaLocalPdf nao retornou um caminho local " +
+          "valido para '$createdCode'."
+        )
+      }
 
       $localPdfPath =
-      Confirm-DcaLocalPdf `
-        -Entry $document.SelectedPdf.File
+      [string]$localPdfCandidates[
+      $localPdfCandidates.Count - 1
+      ]
 
-      if (
-        [string]::IsNullOrWhiteSpace(
-          $localPdfPath
-        )
-      ) {
-
-        throw (
-          "Confirm-DcaLocalPdf nao retornou o caminho " +
-          "do PDF para '$createdCode'."
-        )
-      }
-
-      if (-not (
-          Test-Path `
-            -LiteralPath $localPdfPath `
-            -PathType Leaf
-        )) {
-
-        throw (
-          "O PDF local nao foi encontrado para '$createdCode': " +
-          "'$localPdfPath'."
-        )
-      }
+      $localPdfPath =
+      $localPdfPath.Trim()
 
       # ==================================================
       # D. Preparar uma copia local validada para o importador
@@ -2077,11 +2185,79 @@ function Invoke-DcaMain {
 
       # O Importar GD recebe uma copia local independente do cache
       # do Vault. O arquivo e validado antes da chamada ao importador.
-      $temporaryPdfPath =
-      Copy-PdfToTemporaryFolder `
-        -SourcePdfPath $localPdfPath `
-        -ItemCode $createdCode
+      $temporaryPdfOutputs =
+      @(
+        Copy-PdfToTemporaryFolder `
+          -SourcePdfPath $localPdfPath `
+          -ItemCode $createdCode
+      )
 
+      $temporaryPdfCandidates =
+      @(
+        $temporaryPdfOutputs |
+          Where-Object {
+            $_ -is [string]
+          } |
+          ForEach-Object {
+
+          $candidatePath =
+          ([string]$_).Trim()
+
+          if (
+            -not [string]::IsNullOrWhiteSpace(
+              $candidatePath
+            ) -and
+            (
+              Test-Path `
+                -LiteralPath $candidatePath `
+                -PathType Leaf
+            )
+          ) {
+
+            $candidatePath
+          }
+        }
+      )
+
+      if ($Details) {
+
+        Write-Host (
+          "  Saidas da preparacao do PDF: " +
+          $temporaryPdfOutputs.Count
+        ) -ForegroundColor DarkGray
+
+        foreach ($temporaryPdfOutput in $temporaryPdfOutputs) {
+
+          if ($null -eq $temporaryPdfOutput) {
+            continue
+          }
+
+          Write-Host (
+            "    Tipo: " +
+            $temporaryPdfOutput.GetType().FullName
+          ) -ForegroundColor DarkGray
+
+          Write-Host (
+            "    Valor: '$([string]$temporaryPdfOutput)'"
+          ) -ForegroundColor DarkGray
+        }
+      }
+
+      if ($temporaryPdfCandidates.Count -eq 0) {
+
+        throw (
+          "Copy-PdfToTemporaryFolder nao retornou um caminho " +
+          "de arquivo valido."
+        )
+      }
+
+      $temporaryPdfPath =
+      [string]$temporaryPdfCandidates[
+      $temporaryPdfCandidates.Count - 1
+      ]
+
+      $temporaryPdfPath =
+      $temporaryPdfPath.Trim()
       if (
         [string]::IsNullOrWhiteSpace(
           $temporaryPdfPath
@@ -2249,6 +2425,71 @@ function Invoke-DcaMain {
           "Revisao do Dataset: '$($document.ClientRevision)'"
         )
 
+        if ($null -eq $temporaryPdfPath) {
+
+          throw (
+            "O caminho temporario ficou NULL antes da chamada " +
+            "ao ImportarPDF."
+          )
+        }
+
+        if ($temporaryPdfPath -isnot [string]) {
+
+          throw (
+            "O caminho temporario nao e uma string. " +
+            "Tipo recebido: " +
+            $temporaryPdfPath.GetType().FullName
+          )
+        }
+
+        $temporaryPdfPath =
+        $temporaryPdfPath.Trim()
+
+        if (
+          [string]::IsNullOrWhiteSpace(
+            $temporaryPdfPath
+          )
+        ) {
+
+          throw (
+            "O caminho temporario ficou vazio antes da chamada " +
+            "ao ImportarPDF."
+          )
+        }
+
+        if (-not (
+            Test-Path `
+              -LiteralPath $temporaryPdfPath `
+              -PathType Leaf
+          )) {
+
+          throw (
+            "O caminho temporario nao aponta para um arquivo: " +
+            "'$temporaryPdfPath'."
+          )
+        }
+
+        if ($Details) {
+
+          Write-Host (
+            "  Caminho final enviado ao ImportarPDF:"
+          ) -ForegroundColor Cyan
+
+          Write-Host (
+            "    Valor: '$temporaryPdfPath'"
+          ) -ForegroundColor DarkGray
+
+          Write-Host (
+            "    Tipo:  " +
+            $temporaryPdfPath.GetType().FullName
+          ) -ForegroundColor DarkGray
+
+          Write-Host (
+            "    Tamanho do texto: " +
+            $temporaryPdfPath.Length
+          ) -ForegroundColor DarkGray
+        }
+
         $pdfImportResult =
         Import-TeamcenterPdf `
           -Revision $teamcenterRevision `
@@ -2300,7 +2541,7 @@ function Invoke-DcaMain {
       # processos para o mesmo documento.
       if (
         $datasetAlreadyExists -and
-        $document.RequestedMode -eq "RecoverExisting"
+        $document.DocumentType -ne "DatasetOnly"
       ) {
 
         Write-Info (
@@ -2512,7 +2753,6 @@ function Invoke-DcaMain {
           PdmState = $document.PdmState
           Approver = [string]$document.Approver
           ApprovalDate = [string]$document.ApprovalDate
-          RequestedMode = [string]$document.RequestedMode
           Operation = [string]$document.RequestedMode
           ItemCreated = $itemCreated
           PdfImported = $pdfImported
@@ -2557,6 +2797,51 @@ function Invoke-DcaMain {
   # Apresenta um resultado individual para cada documento,
   # diferenciando criacao, importacao do PDF e workflow.
   foreach ($result in $batchResults) {
+    if (-not $result.Succeeded) {
+
+      if ($result.Operation -eq "RecoverExisting") {
+
+        Write-Failure (
+          "$($result.ItemCode) -> Recuperacao nao concluida: " +
+          $result.ErrorMessage
+        )
+      }
+      elseif ($result.Operation -eq "DatasetOnly") {
+
+        Write-Failure (
+          "$($result.ItemCode) -> Dataset nao importado: " +
+          $result.ErrorMessage
+        )
+      }
+      elseif (
+        $result.ItemCreated -and
+        $result.PdfImported
+      ) {
+
+        Write-Failure (
+          "$($result.ItemCode) -> Item e PDF importados, " +
+          "mas uma etapa posterior falhou: " +
+          $result.ErrorMessage
+        )
+      }
+      elseif ($result.ItemCreated) {
+
+        Write-Failure (
+          "$($result.ItemCode) -> Item criado, " +
+          "mas o processamento nao foi concluido: " +
+          $result.ErrorMessage
+        )
+      }
+      else {
+
+        Write-Failure (
+          "$($result.ItemCode) -> Criacao nao concluida: " +
+          $result.ErrorMessage
+        )
+      }
+
+      continue
+    }
 
     if ($result.DatasetAlreadyExists) {
 
@@ -2590,19 +2875,6 @@ function Invoke-DcaMain {
     }
 
     if (
-      $result.Operation -eq "RecoverExisting" -and
-      -not $result.PdfImported
-    ) {
-
-      Write-Failure (
-        "$($result.ItemCode) -> Recuperacao do PDF falhou: " +
-        $result.ErrorMessage
-      )
-
-      continue
-    }
-
-    if (
       $result.Operation -eq "DatasetOnly" -and
       $result.PdfImported
     ) {
@@ -2610,19 +2882,6 @@ function Invoke-DcaMain {
       Write-Success (
         "$($result.ItemCode) -> " +
         "$($result.TeamcenterCode)"
-      )
-
-      continue
-    }
-
-    if (
-      $result.Operation -eq "DatasetOnly" -and
-      -not $result.PdfImported
-    ) {
-
-      Write-Failure (
-        "$($result.ItemCode) -> Dataset nao importado: " +
-        $result.ErrorMessage
       )
 
       continue
@@ -2659,9 +2918,8 @@ function Invoke-DcaMain {
     }
     else {
 
-      Write-Failure (
-        "$($result.ItemCode) -> Criacao nao concluida: " +
-        $result.ErrorMessage
+      Write-Warn (
+        "$($result.ItemCode) -> Resultado sem classificacao."
       )
     }
   }
@@ -2724,7 +2982,7 @@ function Invoke-DcaMain {
 }
 
 # ============================================================
-# 9. PONTO DE ENTRADA E CODIGO DE SAIDA
+# PONTO DE ENTRADA E CODIGO DE SAIDA
 # ============================================================
 #
 # Codigo 0:

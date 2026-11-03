@@ -18,7 +18,8 @@
 #   Ambiente atualmente conectado: Teste ou Processo.
 #
 # TeamcenterQueryAssemblies:
-#   Assemblies SOA utilizados pelas Saved Queries.
+#   Lista dos assemblies SOA utilizados pelas Saved Queries.
+#   A lista e reinicializada durante o carregamento das bibliotecas.
 # ============================================================
 
 $script:ImporterAssembly =

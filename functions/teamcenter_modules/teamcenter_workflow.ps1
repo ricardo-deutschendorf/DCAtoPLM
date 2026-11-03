@@ -18,7 +18,6 @@
 # principal, conforme o estado do documento no PDM.
 # ============================================================
 
-
 function Start-TeamcenterWorkflow {
 
   # Cria a lista exigida pelo Importar GD e solicita o inicio
@@ -29,9 +28,9 @@ function Start-TeamcenterWorkflow {
     [string]$WorkflowTemplate,
 
     [Parameter(Mandatory = $true)]
+    [ValidateNotNull()]
     $Revision
   )
-
 
   # ============================================================
   # 1. VALIDAR O TEMPLATE E A REVISAO
@@ -63,7 +62,6 @@ function Start-TeamcenterWorkflow {
       "Execute Connect-Teamcenter primeiro."
     )
   }
-
 
   # ============================================================
   # 2. NORMALIZAR E VALIDAR O OBJETO DE REVISAO
@@ -99,7 +97,6 @@ function Start-TeamcenterWorkflow {
     )
   }
 
-
   # ============================================================
   # 3. LOCALIZAR O METODO DE INICIALIZACAO DO WORKFLOW
   # ============================================================
@@ -111,9 +108,9 @@ function Start-TeamcenterWorkflow {
   $workflowMethod =
   $script:TeamcenterFunctions.GetMethods() |
     Where-Object {
-      $_.Name -eq "Start_Workflow" -and
-      $_.GetParameters().Count -eq 2
-    } |
+    $_.Name -eq "Start_Workflow" -and
+    $_.GetParameters().Count -eq 2
+  } |
     Select-Object -First 1
 
   if ($null -eq $workflowMethod) {
@@ -123,7 +120,6 @@ function Start-TeamcenterWorkflow {
       "nao encontrado no Importar GD."
     )
   }
-
 
   # ============================================================
   # 4. CRIAR A LISTA DE REVISOES
@@ -161,7 +157,6 @@ function Start-TeamcenterWorkflow {
     )
   }
 
-
   # ============================================================
   # 5. ADICIONAR A REVISAO NA LISTA
   # ============================================================
@@ -169,15 +164,33 @@ function Start-TeamcenterWorkflow {
   $addMethod =
   $revisionListType.GetMethods() |
     Where-Object {
-      $_.Name -eq "Add" -and
-      $_.GetParameters().Count -eq 1
-    } |
+
+    if (
+      $_.Name -ne "Add" -or
+      $_.GetParameters().Count -ne 1
+    ) {
+
+      return $false
+    }
+
+    $addParameterType =
+    $_.GetParameters()[0].ParameterType
+
+    (
+      $addParameterType.IsAssignableFrom(
+        $Revision.GetType()
+      ) -or
+      $addParameterType -eq [object]
+    )
+  } |
     Select-Object -First 1
 
   if ($null -eq $addMethod) {
 
     throw (
-      "Metodo Add nao encontrado na lista de revisoes."
+      "Metodo Add compativel com o tipo de revisao " +
+      "'$revisionTypeName' nao foi encontrado na lista " +
+      "'$($revisionListType.FullName)'."
     )
   }
 
@@ -187,20 +200,18 @@ function Start-TeamcenterWorkflow {
     @($Revision)
   )
 
-
   # ============================================================
   # 6. PREPARAR OS ARGUMENTOS DO WORKFLOW
   # ============================================================
 
   $workflowArguments =
-  New-Object "System.Object[]" 2
+  [object[]]::new(2)
 
   $workflowArguments[0] =
   [string]$workflowTemplateClean
 
   $workflowArguments[1] =
   $revisionList
-
 
   # ============================================================
   # 7. SOLICITAR O INICIO DO WORKFLOW

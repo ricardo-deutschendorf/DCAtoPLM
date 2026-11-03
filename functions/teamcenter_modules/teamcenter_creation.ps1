@@ -75,6 +75,9 @@ function New-DcaTeamcenterItem {
   $approverClean =
   ([string]$Approver).Trim()
 
+  $approvalDateTeamcenter =
+  ""
+
   if ([string]::IsNullOrWhiteSpace($sourceCodeClean)) {
     throw "SourceCode ficou vazio."
   }
@@ -631,7 +634,8 @@ function New-DcaTeamcenterItem {
   $revisionInputArray = [System.Array]::CreateInstance($createInputType, 1)
   $revisionInputArray.SetValue($revisionInput, 0)
 
-  $compoundInput = New-Object System.Collections.Hashtable
+  $compoundInput =
+  [System.Collections.Hashtable]::new()
   $compoundInput["revision"] = $revisionInputArray
 
   if ($Details) {
@@ -706,13 +710,25 @@ function New-DcaTeamcenterItem {
     }
 
     if (
+      [string]::IsNullOrWhiteSpace(
+        $revisionClient
+      )
+    ) {
+
+      throw (
+        "gd5revcliente ficou vazio antes do CreateObjects."
+      )
+    }
+
+    if (
       $revisionClient -notmatch
       '^[A-Z0-9-]{1,2}$'
     ) {
 
       throw (
-        "gd5revcliente possui valor invalido: " +
-        "'$revisionClient'."
+        "gd5revcliente possui valor incompatível com o " +
+        "Teamcenter: '$revisionClient'. O limite do campo " +
+        "Revisao Cliente e de 2 caracteres."
       )
     }
 
@@ -794,7 +810,8 @@ function New-DcaTeamcenterItem {
   # ============================================================
   # 9. PREPARAR A CHAMADA CREATEOBJECTS
   # ============================================================
-  $invokeArguments = New-Object "System.Object[]" 1
+  $invokeArguments =
+  [object[]]::new(1)
   $invokeArguments[0] = $createInArray
 
   # ============================================================
@@ -907,6 +924,15 @@ function New-DcaTeamcenterItem {
     )
   }
 
+  if ($null -eq $createdRevision) {
+
+    throw (
+      "CreateObjects nao retornou a revisao criada para " +
+      "'$candidateCode/$teamcenterRevisionId'. " +
+      "Objetos retornados: $($createdObjects.Count)."
+    )
+  }
+
   # ============================================================
   # 13. NORMALIZAR OS OBJETOS CRIADOS
   # ============================================================
@@ -941,10 +967,7 @@ function New-DcaTeamcenterItem {
   #
   # As propriedades sao aplicadas diretamente ao objeto da
   # revisao retornado pelo CreateObjects.
-  if (
-    $DocumentType -eq "Processo" -and
-    $null -ne $createdRevision
-  ) {
+  if ($DocumentType -eq "Processo") {
 
     # ==========================================================
     # A. LOCALIZAR OS TIPOS NECESSARIOS
@@ -1157,7 +1180,6 @@ function New-DcaTeamcenterItem {
       # ========================================================
       # F. MOSTRAR OS VALORES PREPARADOS
       # ========================================================
-
       if ($Details) {
 
         Write-Host ""
@@ -1180,8 +1202,6 @@ function New-DcaTeamcenterItem {
             "'$(@($nameValueEntry.Values) -join ", ")'"
           ) -ForegroundColor White
         }
-      }
-      if ($Details) {
 
         Write-Host (
           "  Estrutura de SetProperties:"
@@ -1283,9 +1303,19 @@ function New-DcaTeamcenterItem {
         )
       }
 
+      $updatedApprovalPropertyNames =
+      @(
+        $nameValueEntries |
+          ForEach-Object {
+          [string]$_.Name
+        }
+      )
+
       Write-Success (
-        "Aprovador e data gravados na revisao " +
-        "$candidateCode/$teamcenterRevisionId."
+        "Propriedades de aprovacao gravadas na revisao " +
+        "$candidateCode/${teamcenterRevisionId}: " +
+        ($updatedApprovalPropertyNames -join ", ") +
+        "."
       )
     }
   }

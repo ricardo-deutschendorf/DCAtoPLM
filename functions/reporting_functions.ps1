@@ -33,7 +33,7 @@ function Initialize-DcaExecutionArtifacts {
 
   $script:DcaExecutionId =
   $script:DcaExecutionStartedAt.ToString(
-    "yyyyMMdd_HHmmss"
+    "yyyyMMdd_HHmmss_fff"
   )
 
   # ============================================================
@@ -118,6 +118,9 @@ function Initialize-DcaExecutionArtifacts {
   # 5. INICIAR A CAPTURA DA SAIDA
   # ============================================================
 
+  $script:DcaTranscriptStarted =
+  $false
+
   try {
 
     Start-Transcript `
@@ -155,7 +158,10 @@ function Stop-DcaExecutionLog {
   # 1. VERIFICAR SE O LOG FOI INICIADO
   # ============================================================
 
-  if (-not $script:DcaTranscriptStarted) {
+  if (
+    $script:DcaTranscriptStarted -ne $true
+  ) {
+
     return
   }
 
@@ -203,6 +209,22 @@ function Export-DcaBatchReport {
   # 1. VALIDAR OS RESULTADOS RECEBIDOS
   # ============================================================
 
+  if ($ExecutionStartedAt -eq [datetime]::MinValue) {
+
+    if (
+      $script:DcaExecutionStartedAt -is [datetime]
+    ) {
+
+      $ExecutionStartedAt =
+      $script:DcaExecutionStartedAt
+    }
+    else {
+
+      $ExecutionStartedAt =
+      Get-Date
+    }
+  }
+
   if ($Results.Count -eq 0) {
 
     Write-Warn (
@@ -246,15 +268,23 @@ function Export-DcaBatchReport {
     switch ([string]$result.Operation) {
 
       "DatasetOnly" {
+
         "Importar Dataset em revisao existente"
       }
 
       "RecoverExisting" {
+
         "Recuperar Item existente e importar Dataset"
       }
 
-      default {
+      "CreateItem" {
+
         "Criar Item e importar Dataset"
+      }
+
+      default {
+
+        "Operacao nao identificada"
       }
     }
 
@@ -275,7 +305,8 @@ function Export-DcaBatchReport {
       PdmState = [string]$result.PdmState
       Approver = [string]$result.Approver
       ApprovalDate = [string]$result.ApprovalDate
-      Operation = $operationText
+      Operation = [string]$result.Operation
+      OperationDescription = $operationText
       ItemCreated = [bool]$result.ItemCreated
       PdfImported = [bool]$result.PdfImported
       PdfImportedThisRun = [bool]$result.PdfImportedThisRun
@@ -333,6 +364,7 @@ function Export-DcaBatchReport {
 
   return $script:DcaReportFilePath
 }
+
 function Import-DcaRetryReport {
 
   param(
@@ -433,10 +465,13 @@ function Import-DcaRetryReport {
   # ============================================================
   # 4. SELECIONAR SOMENTE FALHAS REPROCESSAVEIS
   # ============================================================
-  #
   # Documentos cujo PDF ja foi importado nao sao reprocessados.
-  # Isso evita criar um Dataset duplicado apenas para repetir um
-  # workflow que falhou.
+  # Isso evita criar ou relacionar um Dataset duplicado.
+  #
+  # Falhas exclusivas de workflow devem ser tratadas por um fluxo
+  # separado, pois este reprocessamento atua somente em criacao de
+  # Item e importacao de Dataset.
+
   $retryRows =
   [System.Collections.Generic.List[object]]::new()
 
@@ -504,6 +539,20 @@ function Import-DcaRetryReport {
       continue
     }
 
+    if (-not (
+        Test-Path `
+          -LiteralPath $sourceFile `
+          -PathType Leaf
+      )) {
+
+      Write-Warn (
+        "O documento '$itemCode' foi ignorado porque o arquivo " +
+        "de origem nao foi encontrado: '$sourceFile'."
+      )
+
+      continue
+    }
+
     $retryMode =
     if ($documentType -eq "DatasetOnly") {
       "DatasetOnly"
@@ -515,6 +564,30 @@ function Import-DcaRetryReport {
       "CreateItem"
     }
 
+    $retryApprover =
+    if (
+      $availableColumns -contains "Approver"
+    ) {
+
+      ([string]$reportRow.Approver).Trim()
+    }
+    else {
+
+      ""
+    }
+
+    $retryApprovalDate =
+    if (
+      $availableColumns -contains "ApprovalDate"
+    ) {
+
+      ([string]$reportRow.ApprovalDate).Trim()
+    }
+    else {
+
+      ""
+    }
+
     $retryRows.Add(
       [PSCustomObject]@{
         ItemCode = $itemCode
@@ -524,6 +597,8 @@ function Import-DcaRetryReport {
         PdmState = ([string]$reportRow.PdmState).Trim()
         SourceFile = $sourceFile
         RetryMode = $retryMode
+        Approver = $retryApprover
+        ApprovalDate = $retryApprovalDate
         PreviousError = [string]$reportRow.ErrorMessage
       }
     )

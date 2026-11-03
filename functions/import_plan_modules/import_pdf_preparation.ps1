@@ -37,15 +37,30 @@ function Copy-PdfToTemporaryFolder {
   #
   # Confirma que o caminho recebido aponta para um arquivo antes
   # de verificar sua extensao e seu tamanho.
+
+  $sourcePdfPathClean =
+  $SourcePdfPath.Trim()
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $sourcePdfPathClean
+    )
+  ) {
+
+    throw (
+      "O caminho do PDF de origem ficou vazio."
+    )
+  }
+
   if (-not (
       Test-Path `
-        -LiteralPath $SourcePdfPath `
+        -LiteralPath $sourcePdfPathClean `
         -PathType Leaf
     )) {
 
     throw (
       "PDF de origem nao encontrado: " +
-      "'$SourcePdfPath'."
+      "'$sourcePdfPathClean'."
     )
   }
 
@@ -53,7 +68,7 @@ function Copy-PdfToTemporaryFolder {
   # sua extensao e comparar posteriormente o tamanho da copia.
   $sourceFile =
   Get-Item `
-    -LiteralPath $SourcePdfPath `
+    -LiteralPath $sourcePdfPathClean `
     -ErrorAction Stop
 
   # Somente arquivos com extensao PDF podem ser preparados para
@@ -74,7 +89,8 @@ function Copy-PdfToTemporaryFolder {
   #
   # O caminho da pasta temporaria deve ser informado no arquivo
   # .env por meio da variavel DCA_TEMP_FOLDER.
-  $temporaryFolder = $env:DCA_TEMP_FOLDER
+  $temporaryFolder =
+  ([string]$env:DCA_TEMP_FOLDER).Trim()
 
   if ([string]::IsNullOrWhiteSpace($temporaryFolder)) {
     throw (
@@ -107,6 +123,12 @@ function Copy-PdfToTemporaryFolder {
   $safeItemCode =
   $ItemCode.Trim() -replace '[\\/:*?"<>|]', '_'
 
+  $safeItemCode =
+  $safeItemCode.Trim().TrimEnd(
+    ".",
+    " "
+  )
+
   # O codigo precisa manter algum caractere utilizavel depois da
   # substituicao dos caracteres invalidos.
   if (
@@ -132,6 +154,29 @@ function Copy-PdfToTemporaryFolder {
     -Path $temporaryFolder `
     -ChildPath "$safeItemCode.pdf"
 
+  $sourceFullPath =
+  [System.IO.Path]::GetFullPath(
+    $sourceFile.FullName
+  )
+
+  $temporaryFullPath =
+  [System.IO.Path]::GetFullPath(
+    $temporaryPdfPath
+  )
+
+  if (
+    $sourceFullPath.Equals(
+      $temporaryFullPath,
+      [System.StringComparison]::OrdinalIgnoreCase
+    )
+  ) {
+
+    throw (
+      "O PDF de origem ja corresponde ao caminho temporario: " +
+      "'$temporaryFullPath'."
+    )
+  }
+
   # ============================================================
   # 5. REMOVER UMA COPIA TEMPORARIA ANTERIOR
   # ============================================================
@@ -140,12 +185,12 @@ function Copy-PdfToTemporaryFolder {
   # anterior para impedir que o importador utilize um PDF antigo.
   if (
     Test-Path `
-      -LiteralPath $temporaryPdfPath `
+      -LiteralPath $temporaryFullPath `
       -PathType Leaf
   ) {
 
     Remove-Item `
-      -LiteralPath $temporaryPdfPath `
+      -LiteralPath $temporaryFullPath `
       -Force `
       -ErrorAction Stop
   }
@@ -158,21 +203,55 @@ function Copy-PdfToTemporaryFolder {
   # importador trabalhe somente com o arquivo temporario.
   Write-Info "Preparando o PDF para importacao..."
 
-  Copy-Item `
-    -LiteralPath $SourcePdfPath `
-    -Destination $temporaryPdfPath `
-    -Force `
-    -ErrorAction Stop
+  try {
+
+    Copy-Item `
+      -LiteralPath $sourcePdfPathClean `
+      -Destination $temporaryFullPath `
+      -Force `
+      -ErrorAction Stop
+  }
+  catch {
+
+    if (
+      Test-Path `
+        -LiteralPath $temporaryFullPath `
+        -PathType Leaf
+    ) {
+
+      Remove-Item `
+        -LiteralPath $temporaryFullPath `
+        -Force `
+        -ErrorAction SilentlyContinue
+    }
+
+    throw (
+      "Nao foi possivel copiar o PDF para a pasta temporaria: " +
+      $_.Exception.Message
+    )
+  }
 
   # Confirma que a operacao de copia realmente criou o arquivo no
   # caminho esperado antes de continuar a validacao.
-  if (-not (Test-Path -LiteralPath $temporaryPdfPath -PathType Leaf)) {
+  if (-not (
+      Test-Path `
+        -LiteralPath $temporaryFullPath `
+        -PathType Leaf
+    )) {
+
+    throw (
+      "O PDF nao foi criado na pasta temporaria."
+    )
+  } {
     throw "O PDF nao foi criado na pasta temporaria."
   }
 
   # Recupera as informacoes da copia para comparar seu tamanho com
   # o arquivo de origem.
-  $temporaryFile = Get-Item -LiteralPath $temporaryPdfPath -ErrorAction Stop
+  $temporaryFile =
+  Get-Item `
+    -LiteralPath $temporaryFullPath `
+    -ErrorAction Stop
 
   # ============================================================
   # 7. VALIDAR O TAMANHO DA COPIA
@@ -203,7 +282,7 @@ function Copy-PdfToTemporaryFolder {
     # Abre o arquivo somente para leitura e permite o acesso
     # simultaneo de outros processos tambem em modo de leitura.
     $stream = [System.IO.File]::Open(
-      $temporaryPdfPath,
+      $temporaryFullPath,
       [System.IO.FileMode]::Open,
       [System.IO.FileAccess]::Read,
       [System.IO.FileShare]::Read
@@ -214,6 +293,35 @@ function Copy-PdfToTemporaryFolder {
     if ($stream.Length -le 0) {
       throw "A copia temporaria do PDF esta vazia."
     }
+    $headerBytes =
+    [byte[]]::new(5)
+
+    $bytesRead =
+    $stream.Read(
+      $headerBytes,
+      0,
+      $headerBytes.Length
+    )
+
+    if ($bytesRead -lt 5) {
+
+      throw (
+        "A copia temporaria e pequena demais para ser um PDF valido."
+      )
+    }
+
+    $pdfHeader =
+    [System.Text.Encoding]::ASCII.GetString(
+      $headerBytes
+    )
+
+    if ($pdfHeader -ne "%PDF-") {
+
+      throw (
+        "A copia temporaria nao possui uma assinatura PDF valida."
+      )
+    }
+
   }
   finally {
 

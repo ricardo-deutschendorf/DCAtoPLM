@@ -50,7 +50,7 @@ function Get-TeamcenterModelPropertyText {
   $objectType.GetMethods() |
     Where-Object {
     $_.Name -match
-    "^(?i)(GetProperty|getPropertyObject)$" -and
+    "(?i)^(GetProperty|getPropertyObject)$" -and
     $_.GetParameters().Count -eq 1
   } |
     Sort-Object {
@@ -169,6 +169,7 @@ function Get-TeamcenterModelPropertyText {
     return ""
   }
 }
+
 # ============================================================
 # DIAGNOSTICO DAS PROPRIEDADES DA REVISAO
 # ============================================================
@@ -228,6 +229,16 @@ function Show-DcaTeamcenterRevisionProperties {
   # 2. OBTER OS NOMES DAS PROPRIEDADES
   # ============================================================
 
+  if (
+    -not $Revision.PSObject.Properties["PropertyNames"]
+  ) {
+
+    throw (
+      "O objeto de revisao '$revisionTypeName' nao disponibiliza " +
+      "a colecao PropertyNames."
+    )
+  }
+
   $propertyNames =
   @(
     $Revision.PropertyNames |
@@ -259,7 +270,7 @@ function Show-DcaTeamcenterRevisionProperties {
   $getPropertiesMethod =
   $dataManagementService.GetType().GetMethods() |
     Where-Object {
-    $_.Name -match "^(?i)GetProperties$" -and
+    $_.Name -ieq "GetProperties" -and
     $_.GetParameters().Count -eq 2
   } |
     Select-Object -First 1
@@ -303,7 +314,7 @@ function Show-DcaTeamcenterRevisionProperties {
   )
 
   $propertyArguments =
-  New-Object "System.Object[]" 2
+  [object[]]::new(2)
 
   $propertyArguments[0] =
   $revisionArray
@@ -395,6 +406,9 @@ function Show-DcaTeamcenterRevisionProperties {
   # 5. LER OS VALORES DAS PROPRIEDADES
   # ============================================================
 
+  $searchTextClean =
+  ([string]$SearchText).Trim()
+
   $propertyResults =
   [System.Collections.Generic.List[object]]::new()
 
@@ -468,18 +482,18 @@ function Show-DcaTeamcenterRevisionProperties {
 
     if (
       -not [string]::IsNullOrWhiteSpace(
-        $SearchText
+        $searchTextClean
       )
     ) {
 
       $matchesSearch =
       (
         $propertyName.IndexOf(
-          $SearchText,
+          $searchTextClean,
           [System.StringComparison]::OrdinalIgnoreCase
         ) -ge 0 -or
         $propertyValue.IndexOf(
-          $SearchText,
+          $searchTextClean,
           [System.StringComparison]::OrdinalIgnoreCase
         ) -ge 0
       )
@@ -513,12 +527,12 @@ function Show-DcaTeamcenterRevisionProperties {
 
   if (
     -not [string]::IsNullOrWhiteSpace(
-      $SearchText
+      $SearchTextClean
     )
   ) {
 
     Write-Host (
-      "  Filtro: '$SearchText'"
+      "  Filtro: '$SearchTextClean'"
     ) -ForegroundColor DarkGray
   }
 

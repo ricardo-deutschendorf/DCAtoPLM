@@ -238,6 +238,7 @@ function Select-DcaPdfsByFolder {
       }
     )
   }
+  
   if ($matchingFolders.Count -eq 0) {
 
     throw (
@@ -376,140 +377,12 @@ function Select-DcaPdfsByFolder {
 
   foreach ($matchingFolder in $matchingFolders) {
 
-    # A lista sera preenchida pelo Vault ou pelo sistema de
-    # arquivos, conforme a disponibilidade da API.
-    $folderPdfEntries =
-    @()
-
-    if ($null -ne $vault) {
-
-      if ($Details) {
-
-        Write-Info (
-          "Consultando PDFs da pasta: " +
-          $matchingFolder.RelativePath
-        )
-      }
-
-      $folderSearchResults =
-      @(
-        Search-DcaVaultPdfEntries `
-          -Vault $vault `
-          -SearchText "*" `
-          -StartFolderPath $matchingFolder.FullName
-      )
-
-      # A pesquisa do PDM pode retornar arquivos das subpastas.
-      # Mantemos somente os PDFs diretamente dentro da pasta
-      # que esta sendo preparada.
-      $folderPdfEntries =
-      @(
-        $folderSearchResults |
-          Where-Object {
-
-          $pdfFullName =
-          [string]$_.FullName
-
-          if (
-            [string]::IsNullOrWhiteSpace(
-              $pdfFullName
-            )
-          ) {
-            return $false
-          }
-
-          $pdfDirectory =
-          [System.IO.Path]::GetDirectoryName(
-            $pdfFullName
-          )
-
-          $pdfDirectory -ieq
-          $matchingFolder.FullName
-        } |
-          Sort-Object FullName
-      )
-    }
-    else {
-
-      # Sem uma conexao com o Vault, utiliza somente os PDFs
-      # existentes diretamente no sistema de arquivos.
-      $diskFiles =
-      @(
-        Get-ChildItem `
-          -LiteralPath $matchingFolder.FullName `
-          -Filter "*.pdf" `
-          -File `
-          -Force `
-          -ErrorAction SilentlyContinue
-      )
-
-      $folderPdfEntries =
-      @(
-        foreach ($diskFile in $diskFiles) {
-
-          [PSCustomObject]@{
-            Name = $diskFile.Name
-            BaseName = $diskFile.BaseName.Trim()
-            FullName = $diskFile.FullName
-            FromVault = $false
-          }
-        }
-      )
-    }
-
-    # ============================================================
-    # 9. TRANSFORMAR OS PDFS EM DOCUMENTOS DCA
-    # ============================================================
     $folderDocuments =
-    [System.Collections.Generic.List[object]]::new()
-
-    foreach ($pdfEntry in $folderPdfEntries) {
-
-      $parsedName =
-      ConvertFrom-PdfFileName `
-        -BaseName $pdfEntry.BaseName `
-        -DocumentType $matchingFolder.DocumentType
-
-      $clientRevision =
-      [string]$parsedName.ClientRevision
-
-      $pdmState =
-      Get-DcaPdmFileState `
-        -Entry $pdfEntry
-
-      $folderDocuments.Add(
-        [PSCustomObject]@{
-          File = $pdfEntry
-          SourceCode = $parsedName.SourceCode
-          ClientRevision = $clientRevision
-          DocumentTitle = $parsedName.DocumentTitle
-          DocumentType = $matchingFolder.DocumentType
-          TypeDisplayName = $matchingFolder.DisplayName
-          CodeParsed = $parsedName.CodeParsed
-          PdmState = $pdmState
-          FolderImport = $true
-          FolderPattern = $folderPattern
-          SourceFolder = $matchingFolder.RelativePath
-          CategoryFolder = $matchingFolder.CategoryFolder
-          TeamcenterItem = $null
-          TeamcenterRevision = $null
-        }
-      )
-    }
-
-    # Depois da interpretacao do nome, complementa cada documento
-    # com a revisao e a descricao encontradas no cartao do PDM.
-    #
-    # Os valores do cartao possuem prioridade sobre os valores
-    # extraidos somente do nome fisico do PDF.
-    foreach ($folderDocument in $folderDocuments) {
-
-      Update-DcaMatchRevisionFromCard `
-        -Match $folderDocument
-
-      Update-DcaMatchDescriptionFromCard `
-        -Match $folderDocument
-    }
+    @(
+      Get-DcaDocumentsFromFolderPath `
+        -FolderOption $matchingFolder `
+        -Vault $vault
+    )
 
     # Pastas sem PDFs diretamente dentro delas nao sao adicionadas
     # como opcoes de selecao.
@@ -517,9 +390,9 @@ function Select-DcaPdfsByFolder {
       continue
     }
 
-    # ============================================================
-    # 10. CALCULAR O RESUMO DA PASTA
-    # ============================================================
+    # ==========================================================
+    # 9. CALCULAR O RESUMO DA PASTA
+    # ==========================================================
     $approvedCount =
     @(
       $folderDocuments |
@@ -537,9 +410,13 @@ function Select-DcaPdfsByFolder {
     ).Count
 
     $otherCount =
-    $folderDocuments.Count -
-    $approvedCount -
-    $obsoleteCount
+    @(
+      $folderDocuments |
+        Where-Object {
+        $_.PdmState -ine "Aprovado" -and
+        $_.PdmState -ine "Obsoleto"
+      }
+    ).Count
 
     $folderOptions.Add(
       [PSCustomObject]@{
@@ -550,7 +427,7 @@ function Select-DcaPdfsByFolder {
         CategoryFolder = $matchingFolder.CategoryFolder
         DocumentType = $matchingFolder.DocumentType
         DisplayName = $matchingFolder.DisplayName
-        Documents = $folderDocuments.ToArray()
+        Documents = @($folderDocuments)
         Total = $folderDocuments.Count
         ApprovedCount = $approvedCount
         ObsoleteCount = $obsoleteCount
@@ -560,12 +437,11 @@ function Select-DcaPdfsByFolder {
   }
 
   # ============================================================
-  # 11. VALIDAR E ORDENAR AS OPCOES DE PASTA
+  # 10. VALIDAR E ORDENAR AS OPCOES DE PASTA
   # ============================================================
   if ($folderOptions.Count -eq 0) {
-
     throw (
-      "As pastas encontradas para '\$folderPattern' " +
+      "As pastas encontradas para '$folderPattern' " +
       "nao possuem PDFs diretamente dentro delas."
     )
   }
@@ -590,7 +466,7 @@ function Select-DcaPdfsByFolder {
   }
 
   # ============================================================
-  # 12. SELECIONAR AUTOMATICAMENTE UMA PASTA UNICA
+  # 11. SELECIONAR AUTOMATICAMENTE UMA PASTA UNICA
   # ============================================================
   #
   # Quando somente uma pasta for encontrada, nao e necessario
@@ -647,7 +523,7 @@ function Select-DcaPdfsByFolder {
   }
 
   # ============================================================
-  # 13. APRESENTAR AS PASTAS PARA SELECAO
+  # 12. APRESENTAR AS PASTAS PARA SELECAO
   # ============================================================
   Write-AnimatedLine ""
 
@@ -710,7 +586,7 @@ function Select-DcaPdfsByFolder {
     ) -ForegroundColor DarkGray
   }
   # ============================================================
-  # 14. RECEBER E VALIDAR A SELECAO DAS PASTAS
+  # 13. RECEBER E VALIDAR A SELECAO DAS PASTAS
   # ============================================================
 
   while ($true) {
@@ -754,6 +630,22 @@ function Select-DcaPdfsByFolder {
     $selectionIsValid =
     $true
 
+       if (
+      $ListFolderItems -and
+      (
+        $selectionText -ieq "T" -or
+        $selectionText -ieq "TODAS"
+      )
+    ) {
+
+      Write-Warn (
+        "No modo de visualizacao de itens, selecione apenas " +
+        "o numero de uma pasta."
+      )
+
+      continue
+    }
+
     if (
       $selectionText -ieq "T" -or
       $selectionText -ieq "TODAS"
@@ -772,7 +664,11 @@ function Select-DcaPdfsByFolder {
     }
     else {
 
-      foreach ($selectionPart in ($selectionText -split ",")) {
+      foreach (
+        $selectionPart in (
+          $selectionText -split ","
+        )
+      ) {
 
         $currentPart =
         ([string]$selectionPart).Trim()
@@ -887,7 +783,7 @@ function Select-DcaPdfsByFolder {
     }
 
     # ============================================================
-    # 15. ABRIR A PASTA ESCOLHIDA PARA SELECAO DOS DOCUMENTOS
+    # 14. ABRIR A PASTA ESCOLHIDA PARA SELECAO DOS DOCUMENTOS
     # ============================================================
     if ($ListFolderItems) {
 
@@ -924,7 +820,7 @@ function Select-DcaPdfsByFolder {
     }
 
     # ============================================================
-    # 16. REUNIR OS DOCUMENTOS DAS PASTAS SELECIONADAS
+    # 15. REUNIR OS DOCUMENTOS DAS PASTAS SELECIONADAS
     # ============================================================
     #
     # O HashSet de caminhos impede que o mesmo PDF seja adicionado
@@ -986,7 +882,7 @@ function Select-DcaPdfsByFolder {
     ) -ForegroundColor Cyan
 
     # ============================================================
-    # 17. RETORNAR OS DOCUMENTOS REUNIDOS
+    # 16. RETORNAR OS DOCUMENTOS REUNIDOS
     # ============================================================
     return $selectedDocuments.ToArray()
   }

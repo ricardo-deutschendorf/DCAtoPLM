@@ -44,6 +44,46 @@ function Get-DcaDocumentsFromFolderPath {
     $Vault
   )
 
+  $folderFullName =
+  ([string]$FolderOption.FullName).Trim()
+
+  $documentType =
+  ([string]$FolderOption.DocumentType).Trim()
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $folderFullName
+    )
+  ) {
+
+    throw (
+      "FolderOption nao possui um caminho completo valido."
+    )
+  }
+
+  if (-not (
+      Test-Path `
+        -LiteralPath $folderFullName `
+        -PathType Container
+    )) {
+
+    throw (
+      "A pasta informada nao foi encontrada: " +
+      "'$folderFullName'."
+    )
+  }
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $documentType
+    )
+  ) {
+
+    throw (
+      "FolderOption nao possui um tipo de documento valido."
+    )
+  }
+
   # ============================================================
   # 1. PREPARAR A COLECAO DE PDFS
   # ============================================================
@@ -53,6 +93,8 @@ function Get-DcaDocumentsFromFolderPath {
   $pdfEntries =
   @()
 
+  $useDiskSearch =
+  $null -eq $Vault
   # ============================================================
   # 2. PESQUISAR OS PDFS PELO VAULT
   # ============================================================
@@ -61,48 +103,70 @@ function Get-DcaDocumentsFromFolderPath {
   # Por isso, os resultados sao filtrados pelo diretorio completo.
   if ($null -ne $Vault) {
 
-    # Pesquisa todos os PDFs abaixo da pasta informada utilizando
-    # o indice do SOLIDWORKS PDM.
-    $searchResults =
-    @(
-      Search-DcaVaultPdfEntries `
-        -Vault $Vault `
-        -SearchText "*" `
-        -StartFolderPath $FolderOption.FullName
-    )
+    try {
 
-    # Mantem somente os arquivos cujo diretorio corresponde
-    # exatamente a pasta atual.
-    $pdfEntries =
-    @(
-      $searchResults |
-        Where-Object {
+      $searchResults =
+      @(
+        Search-DcaVaultPdfEntries `
+          -Vault $Vault `
+          -SearchText "*" `
+          -StartFolderPath $folderFullName
+      )
 
-        # Resultados sem caminho completo nao podem ser utilizados
-        # na preparacao do documento.
-        $pdfPath =
-        [string]$_.FullName
+      $pdfEntries =
+      @(
+        $searchResults |
+          Where-Object {
 
-        if (
-          [string]::IsNullOrWhiteSpace(
+          $pdfPath =
+          ([string]$_.FullName).Trim()
+
+          if (
+            [string]::IsNullOrWhiteSpace(
+              $pdfPath
+            )
+          ) {
+
+            return $false
+          }
+
+          $pdfDirectory =
+          [System.IO.Path]::GetDirectoryName(
             $pdfPath
           )
-        ) {
-          return $false
+
+          $pdfDirectory -ieq
+          $folderFullName
+        } |
+          Sort-Object FullName
+      )
+
+      if ($pdfEntries.Count -eq 0) {
+
+        $useDiskSearch =
+        $true
+
+        if ($Details) {
+
+          Write-Info (
+            "O Vault nao retornou PDFs diretamente em " +
+            "'$folderFullName'. A pasta local sera consultada."
+          )
         }
+      }
+    }
+    catch {
 
-        $pdfDirectory =
-        [System.IO.Path]::GetDirectoryName(
-          $pdfPath
-        )
+      $useDiskSearch =
+      $true
 
-        $pdfDirectory -ieq
-        $FolderOption.FullName
-      } |
-        Sort-Object FullName
-    )
+      Write-Warn (
+        "Nao foi possivel consultar os PDFs pelo Vault: " +
+        $_.Exception.Message +
+        " A pasta local sera consultada."
+      )
+    }
   }
-
   # ============================================================
   # 3. PESQUISAR OS PDFS NO SISTEMA DE ARQUIVOS
   # ============================================================
@@ -112,12 +176,12 @@ function Get-DcaDocumentsFromFolderPath {
   #
   # A pesquisa nao utiliza Recurse, portanto somente os PDFs
   # diretamente dentro da pasta atual sao retornados.
-  else {
+  if ($useDiskSearch) {
 
     $diskFiles =
     @(
       Get-ChildItem `
-        -LiteralPath $FolderOption.FullName `
+        -LiteralPath $folderFullName `
         -Filter "*.pdf" `
         -File `
         -Force `
@@ -152,6 +216,35 @@ function Get-DcaDocumentsFromFolderPath {
 
   foreach ($pdfEntry in $pdfEntries) {
 
+    if ($null -eq $pdfEntry) {
+      continue
+    }
+
+    $pdfBaseName =
+    ([string]$pdfEntry.BaseName).Trim()
+
+    $pdfFullName =
+    ([string]$pdfEntry.FullName).Trim()
+
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $pdfBaseName
+      ) -or
+      [string]::IsNullOrWhiteSpace(
+        $pdfFullName
+      )
+    ) {
+
+      if ($Details) {
+
+        Write-Warn (
+          "Uma entrada de PDF foi ignorada porque nao possui " +
+          "nome base ou caminho completo."
+        )
+      }
+
+      continue
+    }
     # Interpreta o nome do arquivo conforme o tipo de documento.
     #
     # O retorno pode conter:
@@ -161,8 +254,8 @@ function Get-DcaDocumentsFromFolderPath {
     #   4. indicador de codigo reconhecido.
     $parsedName =
     ConvertFrom-PdfFileName `
-      -BaseName $pdfEntry.BaseName `
-      -DocumentType $FolderOption.DocumentType
+      -BaseName $pdfBaseName `
+      -DocumentType $documentType
 
     # Consulta o estado atual do arquivo no workflow do PDM.
     # Sem uma conexao com o Vault, o estado permanece vazio.
@@ -178,7 +271,7 @@ function Get-DcaDocumentsFromFolderPath {
       SourceCode = $parsedName.SourceCode
       ClientRevision = [string]$parsedName.ClientRevision
       DocumentTitle = $parsedName.DocumentTitle
-      DocumentType = $FolderOption.DocumentType
+      DocumentType = $documentType
       TypeDisplayName = $FolderOption.DisplayName
       CodeParsed = $parsedName.CodeParsed
       PdmState = $pdmState
@@ -218,5 +311,16 @@ function Get-DcaDocumentsFromFolderPath {
   #
   # ToArray devolve uma colecao simples para a navegacao e para
   # o fluxo principal.
+  if (
+    $documents.Count -eq 0 -and
+    $Details
+  ) {
+
+    Write-Info (
+      "Nenhum PDF foi encontrado diretamente na pasta " +
+      "'$folderFullName'."
+    )
+  }
+
   return $documents.ToArray()
 }

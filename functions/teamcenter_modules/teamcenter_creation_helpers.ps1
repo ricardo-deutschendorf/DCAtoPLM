@@ -32,7 +32,8 @@ function Get-DcaClientRevisionInfo {
 
   # Normaliza o valor recebido antes de procurar o sufixo interno
   # utilizado em algumas revisoes do Desenho Original.
-  $value = ([string]$ClientRevision).Trim().ToUpper()
+  $value =
+  ([string]$ClientRevision).Trim().ToUpperInvariant()
   $revision = $value
 
   # Quando a revisao termina com A0, A1, A2, A3 ou A4, remove
@@ -297,8 +298,12 @@ function Get-DcaTypeConfiguration {
   #   - revisao do cliente;
   #   - revisao interna numerica.
   #
-  # O item_revision_id e formado pela concatenacao dos dois
-  # valores normalizados.
+  # O item_revision_id e reconstruido a partir da revisao cliente
+  # normalizada e do digito da revisao interna.
+  #
+  # Quando o hifen fizer parte da revisao cliente, como em C-4,
+  # ele permanece armazenado em gd5revcliente.
+
   if ($DocumentType -eq "Processo") {
 
     $processValueRaw =
@@ -316,43 +321,37 @@ function Get-DcaTypeConfiguration {
     # O cartao pode retornar a revisao de Processo com ou sem
     # separador. Exemplos aceitos: AH-3, AH3, BA-4 e BA4.
     # Primeiro tenta o formato com separador, por exemplo AH-3.
-    $processRevisionWithSeparatorMatch =
-    [System.Text.RegularExpressions.Regex]::Match(
-      $processValueRaw,
-      '^([A-Z0-9]{2})-([0-9])$'
-    )
-
-    # Depois tenta o formato sem separador, por exemplo AH3.
-    $processRevisionWithoutSeparatorMatch =
-    [System.Text.RegularExpressions.Regex]::Match(
-      $processValueRaw,
-      '^([A-Z0-9-]{1,2})([0-9])$'
-    )
-
-    if ($processRevisionWithSeparatorMatch.Success) {
-
-      $clientRevisionValue =
-      $processRevisionWithSeparatorMatch.Groups[1].Value
-
-      $internalRevisionValue =
-      $processRevisionWithSeparatorMatch.Groups[2].Value
-    }
-    elseif ($processRevisionWithoutSeparatorMatch.Success) {
-
-      $clientRevisionValue =
-      $processRevisionWithoutSeparatorMatch.Groups[1].Value
-
-      $internalRevisionValue =
-      $processRevisionWithoutSeparatorMatch.Groups[2].Value
-    }
-    else {
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $processValueRaw
+      )
+    ) {
 
       throw (
-        "A revisao '$processValueRaw' nao segue o padrao " +
-        "de DCA Processo. Formatos aceitos: AH-3, AH3, " +
-        "BA-4, BA4 ou --4."
+        "A revisao do Processo ficou vazia."
       )
     }
+
+    if ($processValueRaw.Length -lt 2) {
+
+      throw (
+        "A revisao '$processValueRaw' nao possui caracteres " +
+        "suficientes para separar a revisao cliente da revisao " +
+        "interna."
+      )
+    }
+
+    $internalRevisionValue =
+    $processValueRaw.Substring(
+      $processValueRaw.Length - 1,
+      1
+    )
+
+    $clientRevisionValue =
+    $processValueRaw.Substring(
+      0,
+      $processValueRaw.Length - 1
+    )
 
     $clientRevisionValue =
     ([string]$clientRevisionValue).Trim().ToUpperInvariant()
@@ -366,7 +365,9 @@ function Get-DcaTypeConfiguration {
     ) {
 
       throw (
-        "A revisao cliente '$clientRevisionValue' e invalida."
+        "A revisao cliente '$clientRevisionValue' extraida de " +
+        "'$processValueRaw' nao pode ser enviada ao Teamcenter. " +
+        "O campo Revisao Cliente aceita no maximo 2 caracteres."
       )
     }
 
@@ -547,7 +548,9 @@ function Get-DcaIntegerPropertyNames {
   }
 
   $names =
-  [System.Collections.Generic.List[string]]::new()
+  [System.Collections.Generic.HashSet[string]]::new(
+    [System.StringComparer]::OrdinalIgnoreCase
+  )
 
   # Aceita nomes separados por barra vertical, ponto e virgula
   # ou virgula.
@@ -557,11 +560,14 @@ function Get-DcaIntegerPropertyNames {
     ([string]$part).Trim()
 
     if (-not [string]::IsNullOrWhiteSpace($name)) {
+      $null =
       $names.Add($name)
     }
   }
 
-  return $names.ToArray()
+  return @(
+    $names
+  )
 }
 
 # ============================================================
@@ -600,6 +606,7 @@ function Get-DcaCreateInputPropertyText {
 
   return ""
 }
+
 # ============================================================
 # CONSTRUCAO DOS OBJETOS CREATEINPUT
 # ============================================================
@@ -614,6 +621,7 @@ function New-DcaCreateInputObject {
     [type]$InputType,
 
     [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
     [string]$BoName,
 
     [Parameter(Mandatory = $true)]
@@ -636,8 +644,11 @@ function New-DcaCreateInputObject {
   # ============================================================
   # 2. PREPARAR AS COLECOES DE PROPRIEDADES
   # ============================================================
-  $stringProps = New-Object System.Collections.Hashtable
-  $intProps = New-Object System.Collections.Hashtable
+  $stringProps =
+  [System.Collections.Hashtable]::new()
+
+  $intProps =
+  [System.Collections.Hashtable]::new()
 
   # ============================================================
   # 3. SEPARAR STRINGPROPS E INTPROPS
@@ -733,9 +744,21 @@ function Get-DcaCreatedObjects {
   # ============================================================
   # 2. LER OS OBJETOS DA RESPOSTA DIRETA
   # ============================================================
-  if ($null -ne $CreateResponse.Output) {
+  $responseOutput =
+  $null
 
-    foreach ($outputEntry in $CreateResponse.Output) {
+  if (
+    $null -ne $CreateResponse -and
+    $CreateResponse.PSObject.Properties["Output"]
+  ) {
+
+    $responseOutput =
+    $CreateResponse.Output
+  }
+
+  if ($null -ne $responseOutput) {
+
+    foreach ($outputEntry in $responseOutput) {
 
       if ($null -eq $outputEntry) {
         continue
@@ -779,17 +802,57 @@ function Get-DcaCreatedObjects {
   # ============================================================
   if ($null -ne $ServiceData) {
 
-    $createdCount = $ServiceData.SizeOfCreatedObjects()
+    $serviceDataType =
+    $ServiceData.GetType()
 
-    for ($objectIndex = 0; $objectIndex -lt $createdCount; $objectIndex++) {
+    $sizeCreatedObjectsMethod =
+    $serviceDataType.GetMethods() |
+      Where-Object {
+      $_.Name -ieq "SizeOfCreatedObjects" -and
+      $_.GetParameters().Count -eq 0
+    } |
+      Select-Object -First 1
 
-      $createdObject = $ServiceData.GetCreatedObject($objectIndex)
+    $getCreatedObjectMethod =
+    $serviceDataType.GetMethods() |
+      Where-Object {
+      $_.Name -ieq "GetCreatedObject" -and
+      $_.GetParameters().Count -eq 1
+    } |
+      Select-Object -First 1
 
-      if (
-        $null -ne $createdObject -and
-        -not $createdObjects.Contains($createdObject)
+    if (
+      $null -ne $sizeCreatedObjectsMethod -and
+      $null -ne $getCreatedObjectMethod
+    ) {
+
+      $createdCount =
+      [int]$sizeCreatedObjectsMethod.Invoke(
+        $ServiceData,
+        @()
+      )
+
+      for (
+        $objectIndex = 0
+        $objectIndex -lt $createdCount
+        $objectIndex++
       ) {
-        $createdObjects.Add($createdObject)
+
+        $createdObject =
+        $getCreatedObjectMethod.Invoke(
+          $ServiceData,
+          @([int]$objectIndex)
+        )
+
+        if (
+          $null -ne $createdObject -and
+          -not $createdObjects.Contains($createdObject)
+        ) {
+
+          $createdObjects.Add(
+            $createdObject
+          )
+        }
       }
     }
   }

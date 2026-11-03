@@ -222,6 +222,7 @@ function Test-DcaTeamcenterItemExists {
 
   return $result
 }
+
 function Find-DcaTeamcenterItemBySavedQuery {
 
   # Executa a Saved Query Item_Name_or_ID para localizar todos
@@ -446,7 +447,7 @@ function Find-DcaTeamcenterItemBySavedQuery {
   )
 
   $executeArguments =
-  New-Object "System.Object[]" 1
+  [object[]]::new(1)
 
   $executeArguments[0] =
   $queryInputArray
@@ -605,7 +606,7 @@ function Find-DcaTeamcenterItemBySavedQuery {
     $loadObjectsMethod =
     $dataManagementService.GetType().GetMethods() |
       Where-Object {
-      $_.Name -match "^(?i)LoadObjects$" -and
+      $_.Name -ieq "LoadObjects" -and
       $_.GetParameters().Count -eq 1
     } |
       Select-Object -First 1
@@ -623,7 +624,7 @@ function Find-DcaTeamcenterItemBySavedQuery {
     )
 
     $loadArguments =
-    New-Object "System.Object[]" 1
+    [object[]]::new(1)
 
     $loadArguments[0] =
     $uidArray
@@ -641,7 +642,7 @@ function Find-DcaTeamcenterItemBySavedQuery {
     $plainObjectMethod =
     $serviceData.GetType().GetMethods() |
       Where-Object {
-      $_.Name -match "^(?i)GetPlainObject$" -and
+      $_.Name -ieq "GetPlainObject" -and
       $_.GetParameters().Count -eq 1
     } |
       Select-Object -First 1
@@ -677,7 +678,7 @@ function Find-DcaTeamcenterItemBySavedQuery {
       $getPropertiesMethod =
       $dataManagementService.GetType().GetMethods() |
         Where-Object {
-        $_.Name -match "^(?i)GetProperties$" -and
+        $_.Name -ieq "GetProperties" -and
         $_.GetParameters().Count -eq 2
       } |
         Select-Object -First 1
@@ -708,7 +709,7 @@ function Find-DcaTeamcenterItemBySavedQuery {
         )
 
         $propertyArguments =
-        New-Object "System.Object[]" 2
+        [object[]]::new(2)
 
         $propertyArguments[0] =
         $objectArray
@@ -799,6 +800,7 @@ function Find-DcaTeamcenterItemBySavedQuery {
 
   return $matchingItems.ToArray()
 }
+
 function Find-DcaTeamcenterItemRevision {
 
   # Localiza o Item e a revisao esperada utilizando ate tres
@@ -977,9 +979,13 @@ function Find-DcaTeamcenterItemRevision {
           $itemBaseObject
         }
 
-        Write-Success (
-          "Item localizado com empresa '$companyDisplay'."
-        )
+        if ($Details) {
+
+          Write-Host (
+            "  Item localizado com empresa " +
+            "'$companyDisplay'."
+          ) -ForegroundColor Green
+        }
 
         $revision =
         $getRevisionMethod.Invoke(
@@ -1128,7 +1134,7 @@ function Find-DcaTeamcenterItemRevision {
             $getPropertiesMethod =
             $dataManagementService.GetType().GetMethods() |
               Where-Object {
-              $_.Name -match "^(?i)GetProperties$" -and
+              $_.Name -ieq "GetProperties" -and
               $_.GetParameters().Count -eq 2
             } |
               Select-Object -First 1
@@ -1171,7 +1177,7 @@ function Find-DcaTeamcenterItemRevision {
             )
 
             $getRevisionPropertiesArguments =
-            New-Object "System.Object[]" 2
+            [object[]]::new(2)
 
             $getRevisionPropertiesArguments[0] =
             $revisionObjectArray
@@ -1411,10 +1417,28 @@ function Find-DcaTeamcenterItemRevision {
                 $null -ne $suggestedCandidateNumber
               ) {
 
-                $selectedDestination =
+                $selectedCandidate =
                 $destinationCandidates[
-                $suggestedCandidateNumber - 1
+                $selectedDestinationNumber - 1
                 ]
+
+                if (
+                  $selectedCandidate.RevisionId -ine
+                  $expectedRevisionClean
+                ) {
+
+                  Write-Warn (
+                    "O destino selecionado possui revisao " +
+                    "'$($selectedCandidate.RevisionId)'. " +
+                    "Escolha um destino com revisao " +
+                    "'$expectedRevisionClean'."
+                  )
+
+                  continue
+                }
+
+                $selectedDestination =
+                $selectedCandidate
 
                 break
               }
@@ -1592,9 +1616,9 @@ function Find-DcaTeamcenterItemRevision {
     $getPropertiesMethod =
     $dataManagementService.GetType().GetMethods() |
       Where-Object {
-        $_.Name -match "^(?i)GetProperties$" -and
-        $_.GetParameters().Count -eq 2
-      } |
+      $_.Name -ieq "GetProperties" -and
+      $_.GetParameters().Count -eq 2
+    } |
       Select-Object -First 1
 
     if ($null -eq $getPropertiesMethod) {

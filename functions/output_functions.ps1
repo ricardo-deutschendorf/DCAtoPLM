@@ -15,7 +15,6 @@
 # o PDM e nao realizam alteracoes no Teamcenter.
 # ============================================================
 
-
 # ============================================================
 # CONFIGURACAO DA SAIDA
 # ============================================================
@@ -24,18 +23,30 @@
 # utiliza atraso zero para evitar dependencia de variaveis que
 # ainda nao foram inicializadas.
 
-if ($null -eq $OutputDelayMilliseconds) {
+if (
+  $null -eq (
+    Get-Variable `
+      -Name "OutputDelayMilliseconds" `
+      -ErrorAction SilentlyContinue
+  )
+) {
 
   $OutputDelayMilliseconds =
   0
 }
 
-if ($null -eq $script:SearchResultDelayMilliseconds) {
+if (
+  $null -eq (
+    Get-Variable `
+      -Name "SearchResultDelayMilliseconds" `
+      -Scope Script `
+      -ErrorAction SilentlyContinue
+  )
+) {
 
   $script:SearchResultDelayMilliseconds =
   0
 }
-
 
 # ============================================================
 # ESCRITA BASICA NO CONSOLE
@@ -68,7 +79,6 @@ function Write-AnimatedLine {
   }
 }
 
-
 # ============================================================
 # CABECALHOS DE SECAO
 # ============================================================
@@ -92,8 +102,20 @@ function Write-Section {
   $sectionBorder =
   "+" + ("-" * 68) + "+"
 
+  $sectionTitleText =
+  $Title.Trim()
+
+  if ($sectionTitleText.Length -gt 66) {
+
+    $sectionTitleText =
+    $sectionTitleText.Substring(
+      0,
+      63
+    ) + "..."
+  }
+
   $sectionTitle =
-  "| {0,-66} |" -f $Title
+  "| {0,-66} |" -f $sectionTitleText
 
   Write-AnimatedLine `
     -Message $sectionBorder `
@@ -107,7 +129,6 @@ function Write-Section {
     -Message $sectionBorder `
     -Color Gray
 }
-
 
 # ============================================================
 # RESULTADOS DE PESQUISA
@@ -143,7 +164,6 @@ function Write-SearchResultLine {
     -DelayMilliseconds $searchDelay
 }
 
-
 # ============================================================
 # MENSAGENS PADRONIZADAS
 # ============================================================
@@ -166,7 +186,6 @@ function Write-Success {
     -Color Green
 }
 
-
 function Write-Failure {
 
   # Exibe uma mensagem de falha com o prefixo padronizado.
@@ -180,7 +199,6 @@ function Write-Failure {
     -Message "  Algo deu errado: $Message" `
     -Color Red
 }
-
 
 function Write-Warn {
 
@@ -196,7 +214,6 @@ function Write-Warn {
     -Message "  Atencao: $Message" `
     -Color Yellow
 }
-
 
 function Write-Info {
 

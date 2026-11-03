@@ -189,7 +189,7 @@ function Show-DcaTeamcenterRevisionDatasets {
   $getPropertiesMethod =
   $dataManagementService.GetType().GetMethods() |
     Where-Object {
-    $_.Name -match "^(?i)GetProperties$" -and
+    $_.Name -ieq "GetProperties" -and
     $_.GetParameters().Count -eq 2
   } |
     Select-Object -First 1
@@ -253,7 +253,7 @@ function Show-DcaTeamcenterRevisionDatasets {
   )
 
   $getPropertiesArguments =
-  New-Object "System.Object[]" 2
+  [object[]]::new(2)
 
   $getPropertiesArguments[0] =
   $revisionArray
@@ -312,26 +312,32 @@ function Show-DcaTeamcenterRevisionDatasets {
   # 6. LER OS OBJETOS DE CADA RELACAO
   # ============================================================
 
-  Write-AnimatedLine ""
+  if ($Details) {
 
-  Write-Host (
-    "  Diagnostico das relacoes da revisao:"
-  ) -ForegroundColor Cyan
+    Write-AnimatedLine ""
 
-  Write-Host (
-    "  Tipo da revisao: $revisionTypeName"
-  ) -ForegroundColor DarkGray
+    Write-Host (
+      "  Diagnostico das relacoes da revisao:"
+    ) -ForegroundColor Cyan
 
-  Write-Host ""
+    Write-Host (
+      "  Tipo da revisao: $revisionTypeName"
+    ) -ForegroundColor DarkGray
+
+    Write-Host ""
+  }
 
   $foundObjects =
   [System.Collections.Generic.List[object]]::new()
 
   foreach ($relationPropertyName in $relationPropertyNames) {
 
-    Write-Host (
-      "  Relacao: $relationPropertyName"
-    ) -ForegroundColor White
+    if ($Details) {
+
+      Write-Host (
+        "  Relacao: $relationPropertyName"
+      ) -ForegroundColor White
+    }
 
     try {
 
@@ -345,9 +351,12 @@ function Show-DcaTeamcenterRevisionDatasets {
 
       if ($null -eq $propertyObject) {
 
-        Write-Host (
-          "    Propriedade nao disponivel."
-        ) -ForegroundColor DarkGray
+        if ($Details) {
+
+          Write-Host (
+            "    Propriedade nao disponivel."
+          ) -ForegroundColor DarkGray
+        }
 
         continue
       }
@@ -359,7 +368,7 @@ function Show-DcaTeamcenterRevisionDatasets {
       $propertyObject.GetType().GetProperties() |
         Where-Object {
         $_.Name -match
-        "^(?i)(ModelObjectArrayValue|ObjectArrayValue)$"
+        "(?i)^(ModelObjectArrayValue|ObjectArrayValue)$"
       } |
         Select-Object -First 1
 
@@ -382,7 +391,7 @@ function Show-DcaTeamcenterRevisionDatasets {
         $propertyObject.GetType().GetMethods() |
           Where-Object {
           $_.Name -match
-          "^(?i)(get_|Get)(ModelObjectArrayValue|ObjectArrayValue)$" -and
+          "(?i)^(get_|Get)(ModelObjectArrayValue|ObjectArrayValue)$" -and
           $_.GetParameters().Count -eq 0
         } |
           Select-Object -First 1
@@ -421,16 +430,22 @@ function Show-DcaTeamcenterRevisionDatasets {
 
       if ($relatedObjects.Count -eq 0) {
 
-        Write-Host (
-          "    Nenhum objeto relacionado."
-        ) -ForegroundColor DarkGray
+        if ($Details) {
+
+          Write-Host (
+            "    Nenhum objeto relacionado."
+          ) -ForegroundColor DarkGray
+        }
 
         continue
       }
 
-      Write-Host (
-        "    Objetos encontrados: $($relatedObjects.Count)"
-      ) -ForegroundColor Green
+      if ($Details) {
+
+        Write-Host (
+          "    Objetos encontrados: $($relatedObjects.Count)"
+        ) -ForegroundColor Green
+      }
 
       # Carrega as propriedades utilizadas para identificar os
       # objetos relacionados e comparar os Datasets encontrados.
@@ -477,7 +492,7 @@ function Show-DcaTeamcenterRevisionDatasets {
         )
 
         $relatedPropertyArguments =
-        New-Object "System.Object[]" 2
+        [object[]]::new(2)
 
         $relatedPropertyArguments[0] =
         $relatedObjectArray
@@ -564,37 +579,40 @@ function Show-DcaTeamcenterRevisionDatasets {
           -ModelObject $relatedObject `
           -PropertyName "object_type"
 
-        Write-Host (
-          "    Tipo tecnico: $relatedTypeName"
-        ) -ForegroundColor Gray
-
-        if (
-          -not [string]::IsNullOrWhiteSpace(
-            [string]$relatedBusinessType
-          )
-        ) {
+        if ($Details) {
 
           Write-Host (
-            "    Tipo Teamcenter: '$relatedBusinessType'"
+            "    Tipo tecnico: $relatedTypeName"
           ) -ForegroundColor Gray
-        }
 
-        Write-Host (
-          "    Nome: '$relatedName'"
-        ) -ForegroundColor Gray
+          if (
+            -not [string]::IsNullOrWhiteSpace(
+              [string]$relatedBusinessType
+            )
+          ) {
 
-        if (
-          -not [string]::IsNullOrWhiteSpace(
-            [string]$relatedId
-          )
-        ) {
+            Write-Host (
+              "    Tipo Teamcenter: '$relatedBusinessType'"
+            ) -ForegroundColor Gray
+          }
 
           Write-Host (
-            "    Identificacao: '$relatedId'"
-          ) -ForegroundColor DarkGray
-        }
+            "    Nome: '$relatedName'"
+          ) -ForegroundColor Gray
 
-        Write-Host ""
+          if (
+            -not [string]::IsNullOrWhiteSpace(
+              [string]$relatedId
+            )
+          ) {
+
+            Write-Host (
+              "    Identificacao: '$relatedId'"
+            ) -ForegroundColor DarkGray
+          }
+
+          Write-Host ""
+        }
 
         $foundObjects.Add(
           [PSCustomObject]@{
@@ -621,10 +639,13 @@ function Show-DcaTeamcenterRevisionDatasets {
         $realException.InnerException
       }
 
-      Write-Host (
-        "    Nao foi possivel ler: " +
-        $realException.Message
-      ) -ForegroundColor DarkGray
+      if ($Details) {
+
+        Write-Host (
+          "    Nao foi possivel ler: " +
+          $realException.Message
+        ) -ForegroundColor DarkGray
+      }
     }
   }
 
@@ -634,6 +655,7 @@ function Show-DcaTeamcenterRevisionDatasets {
 
   return $foundObjects.ToArray()
 }
+
 # ============================================================
 # VERIFICACAO DE DATASET EXISTENTE
 # ============================================================
@@ -720,8 +742,12 @@ function Test-DcaTeamcenterDatasetExists {
   }
 
   # ============================================================
-  # 4. COMPARAR O NOME DO DATASET
+  # 4. COMPARAR A IDENTIFICACAO DO DATASET
   # ============================================================
+  #
+  # A versao atual identifica o Dataset pelo nome e pelo texto de
+  # object_string. DatasetRevision permanece registrada no retorno,
+  # mas ainda nao participa da comparacao.
 
   foreach ($datasetCandidate in $datasetCandidates) {
 
@@ -827,6 +853,39 @@ function Import-TeamcenterPdf {
   # 1. VALIDAR A REVISAO E O ARQUIVO PDF
   # ============================================================
 
+  if ($Details) {
+
+    Write-Host (
+      "  Diagnostico inicial de Import-TeamcenterPdf:"
+    ) -ForegroundColor Cyan
+
+    Write-Host (
+      "    ItemCode: '$ItemCode'"
+    ) -ForegroundColor DarkGray
+
+    Write-Host (
+      "    DatasetName: '$DatasetName'"
+    ) -ForegroundColor DarkGray
+
+    Write-Host (
+      "    DatasetRevision: '$DatasetRevision'"
+    ) -ForegroundColor DarkGray
+
+    Write-Host (
+      "    FilePath: '$FilePath'"
+    ) -ForegroundColor DarkGray
+
+    Write-Host (
+      "    Tipo de FilePath: " +
+      $FilePath.GetType().FullName
+    ) -ForegroundColor DarkGray
+
+    Write-Host (
+      "    Comprimento de FilePath: " +
+      $FilePath.Length
+    ) -ForegroundColor DarkGray
+  }
+
   if ($null -eq $Revision) {
 
     throw (
@@ -845,16 +904,63 @@ function Import-TeamcenterPdf {
     )
   }
 
-  if (
-    [System.IO.Path]::GetExtension(
-      $FilePath
-    ) -ine ".pdf"
-  ) {
+  $pdfFile =
+  Get-Item `
+    -LiteralPath $FilePath `
+    -ErrorAction Stop
+
+  if ($pdfFile.Extension -ine ".pdf") {
 
     throw (
-      "O arquivo informado nao possui extensao PDF."
+      "O arquivo informado nao possui extensao PDF: " +
+      "'$FilePath'."
     )
   }
+
+  if ($pdfFile.Length -le 0) {
+
+    throw (
+      "O PDF informado para '$ItemCode' esta vazio."
+    )
+  }
+
+  $FilePath =
+  $pdfFile.FullName
+
+  $invalidPathCharacters =
+  [System.IO.Path]::GetInvalidPathChars()
+
+  if ($FilePath.IndexOfAny($invalidPathCharacters) -ge 0) {
+
+    $pathCharacterCodes =
+    @(
+      $FilePath.ToCharArray() |
+        ForEach-Object {
+        [int][char]$_
+      }
+    ) -join ", "
+
+    throw (
+      "O caminho do PDF possui caracteres invalidos. " +
+      "Caminho: '$FilePath'. " +
+      "Codigos dos caracteres: $pathCharacterCodes"
+    )
+  }
+
+  $pdfFile =
+  Get-Item `
+    -LiteralPath $FilePath `
+    -ErrorAction Stop
+
+  if ($pdfFile.Length -le 0) {
+
+    throw (
+      "O PDF informado para '$ItemCode' esta vazio."
+    )
+  }
+
+  $FilePath =
+  $pdfFile.FullName
 
   # ============================================================
   # 2. NORMALIZAR O OBJETO DE REVISAO
@@ -943,12 +1049,44 @@ function Import-TeamcenterPdf {
     -MethodName "ImportarPDF" `
     -ParameterCount 5
 
+  if ($Details) {
+
+    Write-Host (
+      "  Assinatura selecionada de ImportarPDF:"
+    ) -ForegroundColor Cyan
+
+    $importParameters =
+    $importMethod.GetParameters()
+
+    for (
+      $parameterIndex = 0
+      $parameterIndex -lt $importParameters.Count
+      $parameterIndex++
+    ) {
+
+      $importParameter =
+      $importParameters[$parameterIndex]
+
+      Write-Host (
+        "    [{0}] {1} {2}" -f
+        $parameterIndex,
+        $importParameter.ParameterType.FullName,
+        $importParameter.Name
+      ) -ForegroundColor DarkGray
+    }
+
+    Write-Host (
+      "    Retorno: " +
+      $importMethod.ReturnType.FullName
+    ) -ForegroundColor DarkGray
+  }
+
   # ============================================================
   # 6. PREPARAR OS ARGUMENTOS DA IMPORTACAO
   # ============================================================
 
   $invokeArguments =
-  New-Object "System.Object[]" 5
+  [object[]]::new(5)
 
   $invokeArguments[0] =
   [string]$datasetId
@@ -1028,10 +1166,35 @@ function Import-TeamcenterPdf {
       $realException.Message
     )
   }
+  $importResultText =
+  ([string]$importResult).Trim()
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $importResultText
+    )
+  ) {
+
+    throw (
+      "ImportarPDF nao retornou uma confirmacao para " +
+      "'$ItemCode'."
+    )
+  }
+
+  if (
+    $importResultText -notmatch
+    '^(?i:sim|true|1|yes)$'
+  ) {
+
+    throw (
+      "ImportarPDF nao confirmou a importacao de '$ItemCode'. " +
+      "Retorno recebido: '$importResultText'."
+    )
+  }
 
   # ============================================================
   # 9. RETORNAR A RESPOSTA DO IMPORTADOR
   # ============================================================
 
-  return $importResult
+  return $importResultText
 }

@@ -189,8 +189,7 @@ function Get-TeamcenterSettings {
     ) -AsSecureString
 
     $credential =
-    New-Object `
-      System.Net.NetworkCredential(
+    [System.Net.NetworkCredential]::new(
       "",
       $securePassword
     )
@@ -233,6 +232,17 @@ function Get-TeamcenterSettings {
       "URL invalida para o ambiente " +
       "'$teamcenterEnvironment': " +
       "'$teamcenterServerUrl'."
+    )
+  }
+
+  if (
+    $parsedUri.Scheme -ine "http" -and
+    $parsedUri.Scheme -ine "https"
+  ) {
+
+    throw (
+      "A URL do Teamcenter deve utilizar HTTP ou HTTPS. " +
+      "Protocolo recebido: '$($parsedUri.Scheme)'."
     )
   }
 
@@ -335,13 +345,39 @@ function Connect-Teamcenter {
   # ============================================================
   # 3. CARREGAR O ASSEMBLY DO IMPORTAR GD
   # ============================================================
-  $script:ImporterAssembly =
-  [System.Reflection.Assembly]::LoadFrom(
-    $importerExecutablePath
-  )
+  try {
+
+    $script:ImporterAssembly =
+    [System.Reflection.Assembly]::LoadFrom(
+      $importerExecutablePath
+    )
+  }
+  catch {
+
+    $realException =
+    $_.Exception
+
+    while (
+      $null -ne $realException.InnerException
+    ) {
+
+      $realException =
+      $realException.InnerException
+    }
+
+    throw (
+      "Nao foi possivel carregar o Importar GD em " +
+      "'$importerExecutablePath': " +
+      $realException.Message
+    )
+  }
 
   if ($null -eq $script:ImporterAssembly) {
-    throw "Nao foi possivel carregar o Importar GD."
+
+    throw (
+      "O carregamento do Importar GD retornou NULL para " +
+      "'$importerExecutablePath'."
+    )
   }
 
   # ============================================================
@@ -393,18 +429,6 @@ function Connect-Teamcenter {
     throw (
       "A senha do Teamcenter ficou vazia antes da autenticacao."
     )
-  }
-
-  if ($Details) {
-
-    Write-Host (
-      "  Credenciais preparadas para autenticacao."
-    ) -ForegroundColor DarkGray
-
-    Write-Host (
-      "  Tamanho da senha recebida: " +
-      "$(([string]$settings.Password).Length) caractere(s)"
-    ) -ForegroundColor DarkGray
   }
 
   try {
@@ -544,21 +568,30 @@ function Get-TeamcenterConnection {
   }
 
   # Localiza novamente o tipo Session no assembly carregado.
-  $sessionType = $script:ImporterAssembly.GetType("Teamcenter.ClientX.Session")
-
+  $sessionType =
+  $script:ImporterAssembly.GetType(
+    "Teamcenter.ClientX.Session"
+  )
   if ($null -eq $sessionType) {
     throw "Tipo Teamcenter.ClientX.Session nao encontrado."
   }
 
   # getConnection e um metodo estatico que fornece a conexao SOA
   # mantida pela sessao autenticada.
-  $getConnectionMethod = $sessionType.GetMethod("getConnection")
+  $getConnectionMethod =
+  $sessionType.GetMethod(
+    "getConnection"
+  )
 
   if ($null -eq $getConnectionMethod) {
     throw "Metodo Session.getConnection nao encontrado."
   }
 
-  $connection = $getConnectionMethod.Invoke($null, @())
+  $connection =
+  $getConnectionMethod.Invoke(
+    $null,
+    @()
+  )
 
   if ($null -eq $connection) {
     throw "A conexao SOA do Teamcenter retornou NULL."
@@ -709,9 +742,11 @@ function Import-TeamcenterQueryAssemblies {
 function Get-TeamcenterDataManagementService {
 
   # ============================================================
-  # SERVICOS SOA COMPARTILHADOS
+  # 1. RECUPERAR A CONEXAO SOA
   # ============================================================
-  $connection = Get-TeamcenterConnection
+
+  $connection =
+  Get-TeamcenterConnection
 
   # ============================================================
   # 2. LOCALIZAR O TIPO DATAMANAGEMENTSERVICE
@@ -777,6 +812,8 @@ function Get-TeamcenterServiceErrors {
   # lista vazia e retornada para manter compatibilidade entre
   # diferentes versoes das bibliotecas SOA.
   param(
+    [Parameter(Mandatory = $true)]
+    [AllowNull()]
     $ServiceData
   )
 
@@ -800,8 +837,7 @@ function Get-TeamcenterServiceErrors {
   $sizeMethod =
   $serviceDataType.GetMethods() |
     Where-Object {
-    $_.Name -match
-    '^(?i)SizeOfPartialErrors$' -and
+    $_.Name -ieq "SizeOfPartialErrors" -and
     $_.GetParameters().Count -eq 0
   } |
     Select-Object -First 1
@@ -809,8 +845,7 @@ function Get-TeamcenterServiceErrors {
   $getErrorMethod =
   $serviceDataType.GetMethods() |
     Where-Object {
-    $_.Name -match
-    '^(?i)GetPartialError$' -and
+    $_.Name -ieq "GetPartialError" -and
     $_.GetParameters().Count -eq 1
   } |
     Select-Object -First 1
@@ -941,5 +976,8 @@ function Get-TeamcenterServiceErrors {
   # ============================================================
   # 4. RETORNAR AS MENSAGENS ENCONTRADAS
   # ============================================================
-  return $errorMessages.ToArray()
+  return @(
+    $errorMessages |
+      Select-Object -Unique
+  )
 }

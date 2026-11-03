@@ -32,6 +32,7 @@ function Select-DcaDocumentsFromFolder {
   # para a selecao de pastas sem escolher nenhum documento.
   param(
     [Parameter(Mandatory = $true)]
+    [ValidateNotNull()]
     $FolderOption,
 
     [switch]$AllowBack
@@ -43,6 +44,16 @@ function Select-DcaDocumentsFromFolder {
   #
   # A ordenacao mantem os resultados previsiveis entre execucoes:
   # primeiro pelo codigo e depois pelo nome fisico do PDF.
+
+  if (
+    -not $FolderOption.PSObject.Properties["Documents"]
+  ) {
+
+    throw (
+      "A opcao de pasta nao possui a colecao Documents."
+    )
+  }
+
   $documents =
   @(
     $FolderOption.Documents |
@@ -55,11 +66,16 @@ function Select-DcaDocumentsFromFolder {
 
   # Uma pasta sem PDFs nao abre a tela de selecao.
   if ($documents.Count -eq 0) {
+
     Write-Warn (
       "A pasta '$($FolderOption.RelativePath)' nao possui PDFs."
     )
 
-    return $null
+    if ($AllowBack) {
+      return $null
+    }
+
+    return @()
   }
 
   # ============================================================
