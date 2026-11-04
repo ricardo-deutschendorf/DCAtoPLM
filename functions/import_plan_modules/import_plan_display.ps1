@@ -94,7 +94,7 @@ function Show-DcaImportPlan {
   # Teste e utilizado como configuracao inicial. Quando o ambiente
   # for Processo, a URL e a cor serao substituidas abaixo.
   $serverUrl =
-  [string]$env:DCA_TC_TEST_URL
+  ([string]$env:DCA_TC_TEST_URL).Trim()
 
   $environmentColor =
   [System.ConsoleColor]::Cyan
@@ -104,7 +104,7 @@ function Show-DcaImportPlan {
   if ($environmentName -eq "Processo") {
 
     $serverUrl =
-    [string]$env:DCA_TC_PROCESS_URL
+    ([string]$env:DCA_TC_PROCESS_URL).Trim()
 
     $environmentColor =
     [System.ConsoleColor]::Yellow
@@ -117,10 +117,10 @@ function Show-DcaImportPlan {
   # Os templates sao utilizados somente para montar e apresentar
   # o plano. Nenhum workflow e iniciado nesta funcao.
   $approvedTemplate =
-  [string]$env:DCA_TC_APPROVED_WORKFLOW
+  ([string]$env:DCA_TC_APPROVED_WORKFLOW).Trim()
 
   $obsoleteTemplate =
-  [string]$env:DCA_TC_OBSOLETE_WORKFLOW
+  ([string]$env:DCA_TC_OBSOLETE_WORKFLOW).Trim()
 
   # ============================================================
   # 4. MONTAR O PLANO DE CADA DOCUMENTO
@@ -158,7 +158,10 @@ function Show-DcaImportPlan {
     $workflowTemplate =
     $null
 
-    if ($pdmState -ieq "Aprovado") {
+    if (
+      $document.DocumentType -ne "DatasetOnly" -and
+      $pdmState -ieq "Aprovado"
+    ) {
 
       $workflowLabel =
       "aprovacao"
@@ -166,7 +169,10 @@ function Show-DcaImportPlan {
       $workflowTemplate =
       $approvedTemplate
     }
-    elseif ($pdmState -ieq "Obsoleto") {
+    elseif (
+      $document.DocumentType -ne "DatasetOnly" -and
+      $pdmState -ieq "Obsoleto"
+    ) {
 
       $workflowLabel =
       "obsolescencia"
@@ -181,6 +187,43 @@ function Show-DcaImportPlan {
     #
     # A configuracao informa os tipos do Item e da revisao, as
     # propriedades adicionais e a revisao usada no Teamcenter.
+    $documentType =
+    ([string]$document.DocumentType).Trim()
+
+    $documentCode =
+    ([string]$document.ItemCode).Trim()
+
+    $documentRevision =
+    ([string]$document.ClientRevision).Trim()
+
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $documentType
+      )
+    ) {
+
+      $configurationError =
+      "O tipo do documento ficou vazio."
+    }
+    elseif (
+      [string]::IsNullOrWhiteSpace(
+        $documentCode
+      )
+    ) {
+
+      $configurationError =
+      "O codigo do Item ficou vazio."
+    }
+    elseif (
+      [string]::IsNullOrWhiteSpace(
+        $documentRevision
+      )
+    ) {
+
+      $configurationError =
+      "A revisao do documento ficou vazia."
+    }
+
     $configuration =
     $null
 
@@ -189,7 +232,12 @@ function Show-DcaImportPlan {
 
     # DatasetOnly reutiliza um Item e uma revisao existentes.
     # Por isso, nao precisa consultar uma configuracao de criacao.
-    if ($document.DocumentType -eq "DatasetOnly") {
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $configurationError
+      ) -and
+      $documentType -eq "DatasetOnly"
+    ) {
 
       $configuration =
       [PSCustomObject]@{
@@ -243,25 +291,34 @@ function Show-DcaImportPlan {
       # As propriedades adicionais da revisao sao convertidas em
       # um texto unico para apresentacao no modo Details.
       $revisionParts =
-      @()
+      [System.Collections.Generic.List[string]]::new()
 
-      foreach (
-        $propertyName in (
-          $configuration.RevisionProperties.Keys |
-            Sort-Object
-        )
-      ) {
+      $revisionProperties =
+      $configuration.RevisionProperties
 
-        $revisionParts +=
-        (
-          "{0}={1}" -f
-          $propertyName,
-          $configuration.RevisionProperties[$propertyName]
-        )
+      if ($null -ne $revisionProperties) {
+
+        foreach (
+          $propertyName in (
+            $revisionProperties.Keys |
+              Sort-Object
+          )
+        ) {
+
+          $revisionParts.Add(
+            (
+              "{0}={1}" -f
+              $propertyName,
+              $revisionProperties[$propertyName]
+            )
+          )
+        }
       }
 
       $revisionText =
-      $revisionParts -join "; "
+      @(
+        $revisionParts
+      ) -join "; "
     }
 
     # ==========================================================
@@ -445,9 +502,14 @@ function Show-DcaImportPlan {
   # Todo documento que nao estiver associado aos dois workflows
   # conhecidos sera contabilizado como sem workflow.
   $withoutWorkflowCount =
-  $planItems.Count -
-  $approvedCount -
-  $obsoleteCount
+  @(
+    $planItems |
+      Where-Object {
+      [string]::IsNullOrWhiteSpace(
+        [string]$_.WorkflowLabel
+      )
+    }
+  ).Count
 
   # Os nomes configurados sao preparados para apresentacao. Um
   # valor vazio recebe o texto NAO CONFIGURADO.
@@ -530,6 +592,15 @@ function Show-DcaImportPlan {
     $workflowText =
     "sem workflow"
 
+    if ($planItem.DocumentType -eq "DatasetOnly") {
+
+      $workflowText =
+      "somente Dataset"
+
+      $lineColor =
+      [System.ConsoleColor]::Cyan
+    }
+
     $lineColor =
     [System.ConsoleColor]::Gray
 
@@ -539,7 +610,10 @@ function Show-DcaImportPlan {
     #
     # Workflows configurados recebem a cor correspondente. Quando
     # o template estiver ausente, a linha recebe um aviso amarelo.
-    if ($null -ne $planItem.WorkflowLabel) {
+    if (
+      $planItem.DocumentType -ne "DatasetOnly" -and
+      $null -ne $planItem.WorkflowLabel
+    ) {
 
       if (
         [string]::IsNullOrWhiteSpace(
@@ -575,7 +649,11 @@ function Show-DcaImportPlan {
 
     # Um erro de configuracao possui prioridade visual sobre o
     # estado do workflow e deixa a linha em vermelho.
-    if ($null -ne $planItem.ConfigurationError) {
+    if (
+      -not [string]::IsNullOrWhiteSpace(
+        [string]$planItem.ConfigurationError
+      )
+    ) {
 
       $lineColor =
       [System.ConsoleColor]::Red
@@ -615,7 +693,11 @@ function Show-DcaImportPlan {
 
     # O motivo completo da configuracao invalida e apresentado
     # imediatamente abaixo do documento correspondente.
-    if ($null -ne $planItem.ConfigurationError) {
+    if (
+      -not [string]::IsNullOrWhiteSpace(
+        [string]$planItem.ConfigurationError
+      )
+    ) {
 
       Write-Host (
         "       ERRO: {0}" -f

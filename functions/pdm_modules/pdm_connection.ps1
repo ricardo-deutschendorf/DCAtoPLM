@@ -44,6 +44,29 @@ function Get-DcaVault {
   # uma excecao durante o carregamento ou login impede repeticoes.
   $script:DcaVaultTried = $true
 
+  $vaultNameClean =
+  ([string]$VaultName).Trim()
+
+  $pdmLibraryPathClean =
+  ([string]$PdmLibraryPath).Trim()
+
+  $vaultCredentialPathClean =
+  ([string]$VaultCredentialPath).Trim()
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $vaultNameClean
+    )
+  ) {
+
+    Write-Warn (
+      "DCA_VAULT_NAME nao foi configurado. " +
+      "Usando somente o sistema de arquivos."
+    )
+
+    return $null
+  }
+
   # O ponteiro sera utilizado somente no login com credenciais.
   # O valor inicial permite verificar com seguranca se a memoria
   # nao gerenciada precisa ser liberada no bloco finally.
@@ -59,25 +82,28 @@ function Get-DcaVault {
     # criacao dos objetos COM utilizados para acessar o Vault.
     if (
       [string]::IsNullOrWhiteSpace(
-        [string]$PdmLibraryPath
+        $pdmLibraryPathClean
       ) -or
-      $PdmLibraryPath -like "<*>" -or
+      $pdmLibraryPathClean -like "<*>" -or
       -not (
         Test-Path `
-          -LiteralPath $PdmLibraryPath `
+          -LiteralPath $pdmLibraryPathClean `
           -PathType Leaf
       )
     ) {
 
       throw (
         "Interop.EdmLib.dll nao encontrada em " +
-        "'$PdmLibraryPath'. Verifique DCA_PDM_LIB no arquivo .env."
+        "'$pdmLibraryPathClean'. Verifique DCA_PDM_LIB " +
+        "no arquivo .env."
       )
     }
 
     # A biblioteca EdmLib disponibiliza os objetos COM utilizados
     # para login, pesquisa e leitura dos cartoes do PDM.
-    Add-Type -Path $PdmLibraryPath
+    Add-Type `
+      -Path $pdmLibraryPathClean `
+      -ErrorAction Stop
 
     # Cria o objeto principal da API utilizado para autenticar e
     # acessar os arquivos e pastas do Vault.
@@ -87,18 +113,20 @@ function Get-DcaVault {
     # Esses tipos disponibilizam os objetos COM utilizados para
     # login, pesquisa e leitura dos cartoes do PDM.
     $hasCredentialFile =
-    -not [string]::IsNullOrWhiteSpace(
-      [string]$VaultCredentialPath
-    ) -and
-    $VaultCredentialPath -notlike "<*>" -and
     (
-      Test-Path `
-        -LiteralPath $VaultCredentialPath `
-        -PathType Leaf
+      -not [string]::IsNullOrWhiteSpace(
+        $vaultCredentialPathClean
+      ) -and
+      $vaultCredentialPathClean -notlike "<*>" -and
+      (
+        Test-Path `
+          -LiteralPath $vaultCredentialPathClean `
+          -PathType Leaf
+      )
     )
 
     # ============================================================
-    # 4. AUTENTICAR COM CREDENCIAIS CONFIGURADAS
+    # 3. AUTENTICAR COM CREDENCIAIS CONFIGURADAS
     # ============================================================
     #
     # O arquivo pode armazenar diretamente um PSCredential ou uma
@@ -107,7 +135,10 @@ function Get-DcaVault {
 
       # Import-Clixml recupera a estrutura protegida anteriormente
       # no contexto do usuario e da maquina correspondentes.
-      $credential = Import-Clixml -LiteralPath $VaultCredentialPath
+      $credential =
+      Import-Clixml `
+        -LiteralPath $vaultCredentialPathClean `
+        -ErrorAction Stop
 
       if ($null -eq $credential) {
         throw "O arquivo de credencial do vault nao pode ser lido."
@@ -171,6 +202,16 @@ function Get-DcaVault {
         )
       }
 
+      if (
+        $securePassword -isnot
+        [System.Security.SecureString]
+      ) {
+
+        throw (
+          "A senha recuperada do arquivo de credenciais nao e " +
+          "uma SecureString valida."
+        )
+      }
       # ==========================================================
       # C. REALIZAR O LOGIN COM CREDENCIAIS
       # ==========================================================
@@ -178,15 +219,29 @@ function Get-DcaVault {
       # O metodo Login da API exige a senha em texto. Por isso, a
       # SecureString e convertida temporariamente para uma area de
       # memoria nao gerenciada, removida posteriormente no finally.
-      $passwordPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePassword)
+      $passwordPointer =
+      [Runtime.InteropServices.Marshal]::SecureStringToBSTR(
+        $securePassword
+      )
 
       # Recupera o texto somente durante a chamada de autenticacao.
       # A variavel sera removida ao final da tentativa de conexao.
-      $plainTextPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($passwordPointer)
+      $plainTextPassword =
+      [Runtime.InteropServices.Marshal]::PtrToStringBSTR(
+        $passwordPointer
+      )
 
       # Autentica no Vault configurado utilizando o usuario e a
       # senha recuperados do arquivo de credenciais.
-      $vault.Login($credentialUser, $plainTextPassword, $VaultName)
+      $vault.Login(
+        $credentialUser,
+        $plainTextPassword,
+        $vaultNameClean
+      )
+
+      # Remove a referencia textual assim que a chamada termina.
+      $plainTextPassword =
+      $null
     }
     else {
 
@@ -199,29 +254,42 @@ function Get-DcaVault {
       # Apresenta o aviso somente quando um caminho real tiver sido
       # configurado, mas o arquivo correspondente nao for encontrado.
       if (
-        -not [string]::IsNullOrWhiteSpace($VaultCredentialPath) -and
-        $VaultCredentialPath -notlike "<*>" -and
-        -not (Test-Path -LiteralPath $VaultCredentialPath -PathType Leaf)
+        -not [string]::IsNullOrWhiteSpace(
+          $vaultCredentialPathClean
+        ) -and
+        $vaultCredentialPathClean -notlike "<*>" -and
+        -not (
+          Test-Path `
+            -LiteralPath $vaultCredentialPathClean `
+            -PathType Leaf
+        )
       ) {
+
         Write-Warn (
           "Arquivo de credencial do vault nao encontrado em " +
-          "'$VaultCredentialPath'. Tentando LoginAuto."
+          "'$vaultCredentialPathClean'. Tentando LoginAuto."
         )
       }
 
       # Solicita a conexao utilizando a autenticacao ja estabelecida
       # para o usuario atual no cliente do SOLIDWORKS PDM.
-      $vault.LoginAuto($VaultName, 0)
+      $vault.LoginAuto(
+        $vaultNameClean,
+        0
+      )
     }
 
     # ============================================================
-    # 5. VALIDAR E ARMAZENAR A CONEXAO
+    # 4. VALIDAR E ARMAZENAR A CONEXAO
     # ============================================================
     #
     # Confirma que a API considera a sessao autenticada antes de
     # disponibilizar o objeto do Vault para as demais funcoes.
     if (-not $vault.IsLoggedIn) {
-      throw "Nao foi possivel autenticar no vault '$VaultName'."
+      throw (
+        "Nao foi possivel autenticar no vault " +
+        "'$vaultNameClean'."
+      )
     }
 
     # Mantem a conexao no estado compartilhado do script para que
@@ -232,7 +300,7 @@ function Get-DcaVault {
   }
 
   # ============================================================
-  # 6. PERMITIR A CONTINUIDADE SEM A API
+  # 5. PERMITIR A CONTINUIDADE SEM A API
   # ============================================================
   #
   # Uma falha de biblioteca ou autenticacao nao encerra o fluxo.
@@ -240,10 +308,23 @@ function Get-DcaVault {
   # somente os arquivos disponiveis no sistema de arquivos.
   catch {
 
+    $realException =
+    $_.Exception
+
+    while (
+      $null -ne $realException.InnerException
+    ) {
+
+      $realException =
+      $realException.InnerException
+    }
+
     Write-Warn (
-      "Falha no login do vault '$VaultName': $($_.Exception.Message) " +
-      "Usando apenas o sistema de arquivos. Verifique o nome do vault, " +
-      "o login do PDM e DCA_VAULT_CREDENTIAL."
+      "Falha no login do vault '$vaultNameClean': " +
+      $realException.Message +
+      " Usando apenas o sistema de arquivos. " +
+      "Verifique o nome do vault, o login do PDM e " +
+      "DCA_VAULT_CREDENTIAL."
     )
 
     return $null
@@ -251,16 +332,30 @@ function Get-DcaVault {
   finally {
 
     # ============================================================
-    # 7. LIMPAR OS DADOS TEMPORARIOS DA AUTENTICACAO
+    # 6. LIMPAR OS DADOS TEMPORARIOS DA AUTENTICACAO
     # ============================================================
-    # Remove da memoria nao gerenciada a representacao temporaria
-    # da senha utilizada pelo metodo Login.
-    if ($passwordPointer -ne [System.IntPtr]::Zero) {
-      [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordPointer)
+
+    # Apaga e libera a memoria nao gerenciada utilizada pela
+    # representacao temporaria da senha.
+    if (
+      $passwordPointer -ne
+      [System.IntPtr]::Zero
+    ) {
+
+      [Runtime.InteropServices.Marshal]::ZeroFreeBSTR(
+        $passwordPointer
+      )
+
+      $passwordPointer =
+      [System.IntPtr]::Zero
     }
 
-    # Remove tambem a variavel que armazenou temporariamente a
-    # representacao textual da senha durante o login.
-    Remove-Variable plainTextPassword -ErrorAction SilentlyContinue
+    # Remove a referencia ao texto temporario da senha.
+    $plainTextPassword =
+    $null
+
+    Remove-Variable `
+      -Name "plainTextPassword" `
+      -ErrorAction SilentlyContinue
   }
 }

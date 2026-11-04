@@ -19,6 +19,13 @@
 function Get-DcaCardRevisionVariableNames {
 
   param(
+    [Parameter(Mandatory = $true)]
+    [ValidateSet(
+      "Original",
+      "Processo",
+      "NormaExterna",
+      "DatasetOnly"
+    )]
     [string]$DocumentType
   )
 
@@ -59,7 +66,9 @@ function Get-DcaCardRevisionVariableNames {
   # A configuracao pode possuir mais de uma variavel separada por
   # barra vertical ou ponto e virgula. Nomes vazios sao ignorados.
   $variableNames =
-  [System.Collections.Generic.List[string]]::new()
+  [System.Collections.Generic.HashSet[string]]::new(
+    [System.StringComparer]::OrdinalIgnoreCase
+  )
 
   foreach ($part in ($configuredValue -split '[|;]')) {
 
@@ -67,13 +76,19 @@ function Get-DcaCardRevisionVariableNames {
     ([string]$part).Trim()
 
     if (-not [string]::IsNullOrWhiteSpace($currentName)) {
-      $variableNames.Add($currentName)
+      $null =
+      $variableNames.Add(
+        $currentName
+      )
+
     }
   }
 
   # Retorna um array vazio quando nenhuma variavel estiver
   # configurada para o tipo de documento recebido.
-  return $variableNames.ToArray()
+  return @(
+    $variableNames
+  )
 }
 
 function Convert-DcaOriginalDescription {
@@ -154,6 +169,7 @@ function Convert-DcaOriginalDescription {
 function Update-DcaMatchDescriptionFromCard {
   param(
     [Parameter(Mandatory = $true)]
+    [ValidateNotNull()]
     $Match
   )
 
@@ -175,6 +191,12 @@ function Update-DcaMatchDescriptionFromCard {
       $Match.DocumentTitle =
       [string]$Match.SourceCode
     }
+
+    Add-Member `
+      -InputObject $Match `
+      -NotePropertyName "DescriptionSource" `
+      -NotePropertyValue "codigo do documento" `
+      -Force
 
     return
   }
@@ -204,17 +226,22 @@ function Update-DcaMatchDescriptionFromCard {
     [string]$env:DCA_PDM_VAR_STANDARD_DESCRIPTION
   }
 
-  $descriptionVariableName =
-  ([string]$descriptionVariableName).Trim()
+  $descriptionVariableNames =
+  @(
+    ([string]$descriptionVariableName) -split '[|;]' |
+      ForEach-Object {
+      ([string]$_).Trim()
+    } |
+      Where-Object {
+      -not [string]::IsNullOrWhiteSpace(
+        [string]$_
+      )
+    } |
+      Select-Object -Unique
+  )
 
-  if (
-    [string]::IsNullOrWhiteSpace(
-      $descriptionVariableName
-    )
-  ) {
+  if ($descriptionVariableNames.Count -eq 0) {
 
-    # Registra que a descricao nao foi consultada porque nenhuma
-    # variavel foi configurada para o tipo atual.
     Add-Member `
       -InputObject $Match `
       -NotePropertyName "DescriptionSource" `
@@ -233,9 +260,7 @@ function Update-DcaMatchDescriptionFromCard {
   $cardDescription =
   Get-DcaPdmVariableValue `
     -Entry $Match.File `
-    -VariableNames @(
-    $descriptionVariableName
-  )
+    -VariableNames $descriptionVariableNames
 
   $cardDescription =
   ([string]$cardDescription).Trim()
@@ -248,6 +273,7 @@ function Update-DcaMatchDescriptionFromCard {
     Convert-DcaOriginalDescription `
       -Description $cardDescription
   }
+
   if (
     [string]::IsNullOrWhiteSpace(
       $cardDescription
@@ -267,7 +293,8 @@ function Update-DcaMatchDescriptionFromCard {
       Write-Warn (
         "A descricao do cartao esta vazia em " +
         "'$($Match.File.Name)'. " +
-        "Variavel: '$descriptionVariableName'."
+        "Variavel(is): " +
+        "'$($descriptionVariableNames -join "', '")'."
       )
     }
 
@@ -311,36 +338,18 @@ function Update-DcaMatchDescriptionFromCard {
 function Update-DcaMatchRevisionFromCard {
   param(
     [Parameter(Mandatory = $true)]
+    [ValidateNotNull()]
     $Match
   )
 
   # ============================================================
-  # 1. VERIFICAR O MODO DE DESCOBERTA DO CARTAO
-  # ============================================================
-  #
-  # Quando habilitada no arquivo .env, esta opcao apresenta todas
-  # as variaveis encontradas no cartao para auxiliar diagnosticos
-  # e ajustes de configuracao.
-  $discoverCardVariables =
-  ([string]$env:DCA_PDM_DISCOVER_CARD_VARIABLES).Trim()
-
-  if (
-    $discoverCardVariables -match
-    '^(?i:true|1|sim|yes)$'
-  ) {
-
-    Show-DcaPdmCardVariables `
-      -Entry $Match.File
-  }
-
-  # ============================================================
-  # 2. PRESERVAR A REVISAO DO NOME DO ARQUIVO
+  # 1. PRESERVAR A REVISAO DO NOME DO ARQUIVO
   # ============================================================
   #
   # A revisao interpretada pelo nome e preservada separadamente
   # para permitir identificar posteriormente sua origem.
   $fileRevision =
-  ([string]$Match.ClientRevision).Trim().ToUpper()
+  ([string]$Match.ClientRevision).Trim().ToUpperInvariant()
 
   # A origem inicial permanece como nome do arquivo. Esse valor
   # sera alterado somente quando o cartao fornecer uma revisao.
@@ -348,7 +357,7 @@ function Update-DcaMatchRevisionFromCard {
   "nome do arquivo"
 
   # ============================================================
-  # 3. OBTER AS VARIAVEIS DE REVISAO CONFIGURADAS
+  # 2. OBTER AS VARIAVEIS DE REVISAO CONFIGURADAS
   # ============================================================
   #
   # Seleciona os campos do cartao associados ao tipo atual do
@@ -378,7 +387,7 @@ function Update-DcaMatchRevisionFromCard {
   }
 
   # ============================================================
-  # 4. CONSULTAR A REVISAO NO CARTAO
+  # 3. CONSULTAR A REVISAO NO CARTAO
   # ============================================================
   #
   # Testa as variaveis configuradas e utiliza o primeiro valor
@@ -442,7 +451,7 @@ function Update-DcaMatchRevisionFromCard {
   }
 
   # ============================================================
-  # 5. INFORMAR UMA CONFIGURACAO AUSENTE
+  # 4. INFORMAR UMA CONFIGURACAO AUSENTE
   # ============================================================
   #
   # Quando nenhuma variavel estiver configurada, o modo Details
@@ -489,7 +498,7 @@ function Update-DcaMatchRevisionFromCard {
   }
 
   # ============================================================
-  # 6. REGISTRAR A ORIGEM DA REVISAO
+  # 5. REGISTRAR A ORIGEM DA REVISAO
   # ============================================================
   #
   # FileRevision preserva a revisao extraida do nome do arquivo.

@@ -33,7 +33,12 @@ function Get-NormaCodeFromText {
   # Remove espacos das extremidades e substitui sequencias de
   # espacos por um unico espaco antes de aplicar as regras de
   # reconhecimento do codigo.
-  $normalizedText = $Text.Trim() -replace '\s+', ' '
+  $normalizedText =
+  (
+    $Text.Trim() -replace
+    '\s+',
+    ' '
+  )
 
   # Um texto vazio nao possui codigo ou titulo identificavel.
   # O retorno mantem a mesma estrutura utilizada pelos demais
@@ -164,60 +169,47 @@ function Get-NormaCodeFromText {
   #
   # Cada regra informa um nome para diagnostico, o prefixo
   # correspondente e a expressao regular utilizada na leitura.
-  $specialPatterns = @(
+  $specialPatterns =
+  @(
     [PSCustomObject]@{
       Name = "AMS A numero sufixo"
-
       Prefix = "AMS A"
-
       Regex = '^(?<Code>AMS\s+A\s+\d+[A-Z0-9./-]*(?:\s+[A-Z])?)(?:\s+-?\s*(?<Title>.*))?$'
     }
 
     [PSCustomObject]@{
       Name = "AMS STD com espaco"
-
       Prefix = "AMS STD"
-
       Regex = '^(?<Code>AMS\s+STD\s+\d+[A-Z0-9./-]*)(?:\s+-?\s*(?<Title>.*))?$'
     }
 
     [PSCustomObject]@{
       Name = "AMS M com espaco"
-
       Prefix = "AMS M"
-
       Regex = '^(?<Code>AMS\s+M\s*\d+[A-Z0-9./-]*)(?:\s+-?\s*(?<Title>.*))?$'
     }
 
     [PSCustomObject]@{
       Name = "AMS S com espaco"
-
       Prefix = "AMS S"
-
       Regex = '^(?<Code>AMS\s+S\s*\d+[A-Z0-9./-]*)(?:\s+-?\s*(?<Title>.*))?$'
     }
 
     [PSCustomObject]@{
       Name = "AMS numerico com espaco"
-
       Prefix = "AMS"
-
       Regex = '^(?<Code>AMS\s+\d+[A-Z]?(?:-\d+)?)(?:\s+-?\s*(?<Title>.*))?$'
     }
 
     [PSCustomObject]@{
       Name = "AMS numerico sem espaco"
-
       Prefix = "AMS"
-
       Regex = '^(?<Code>AMS\d+[A-Z]?(?:-\d+)?)(?:\s+-?\s*(?<Title>.*))?$'
     }
 
     [PSCustomObject]@{
       Name = "AMS composto com hifen"
-
       Prefix = "AMS composto"
-
       Regex = '^(?<Code>AMS(?:-[A-Z0-9]+)+)(?:\s+-?\s*(?<Title>.*))?$'
     }
   )
@@ -397,7 +389,7 @@ function Get-NormaCodeFromText {
   # Esta e a ultima tentativa de separar um codigo tecnico de sua
   # descricao quando nenhum formato especial ou prefixo conhecido
   # tiver sido identificado.
-  $genericPattern = (
+  $genericPattern =(
     "^(?<Code>" +
     "[A-Z][A-Z0-9-]*" +
     "(?:\s+[A-Z]+)?" +
@@ -473,6 +465,7 @@ function ConvertFrom-PdfFileName {
   # valores obtidos somente pelo nome do arquivo.
   param(
     [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
     [string]$BaseName,
 
     [Parameter(Mandatory = $true)]
@@ -492,6 +485,18 @@ function ConvertFrom-PdfFileName {
   # Remove espacos das extremidades e utiliza inicialmente todo
   # o nome base como codigo de origem.
   $name = $BaseName.Trim()
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $name
+    )
+  ) {
+
+    throw (
+      "O nome base do PDF ficou vazio."
+    )
+  }
+
   $sourceCodeText = $name
   $clientRevision = $null
 
@@ -511,7 +516,7 @@ function ConvertFrom-PdfFileName {
     $Matches["Code"].Trim()
 
     $possibleRevision =
-    $Matches["BracketValue"].Trim().ToUpper()
+    $Matches["BracketValue"].Trim().ToUpperInvariant()
 
     # Cada tipo de documento possui uma regra propria para validar
     # o formato da revisao encontrada entre colchetes.
@@ -527,7 +532,7 @@ function ConvertFrom-PdfFileName {
       # AA4 ou --4.
       $validRevision =
       $possibleRevision -match
-      '^[A-Z0-9-]{1,2}\d$'
+      '^[A-Z0-9-]{1,3}\d$'
     }
     elseif ($DocumentType -eq "Original") {
 
@@ -558,11 +563,11 @@ function ConvertFrom-PdfFileName {
     }
     else {
 
-      # O texto entre colchetes nao e uma revisao.
-      # Mantem o codigo anterior aos colchetes, mas deixa
-      # a revisao vazia para o tratamento posterior.
+      # O texto entre colchetes nao corresponde a uma revisao
+      # valida. Mantem o nome completo para evitar remover uma
+      # parte que possa pertencer ao codigo ou ao titulo.
       $sourceCodeText =
-      $possibleCode
+      $name
 
       $clientRevision =
       $null
@@ -602,6 +607,15 @@ function ConvertFrom-PdfFileName {
   # Retorna uma estrutura unica para todos os tipos de documento.
   # Esses valores ainda podem ser substituidos posteriormente
   # pelos dados obtidos no cartao do PDM.
+  $sourceCodeText =
+  ([string]$sourceCodeText).Trim()
+
+  $clientRevision =
+  ([string]$clientRevision).Trim().ToUpperInvariant()
+
+  $documentTitle =
+  ([string]$documentTitle).Trim()
+
   return [PSCustomObject]@{
     SourceCode = $sourceCodeText
     ClientRevision = $clientRevision
@@ -615,9 +629,17 @@ function Test-DcaCodeMatch {
   # Compara o termo pesquisado com o nome original do PDF e com
   # o codigo tecnico extraido desse nome.
   param(
+    [AllowEmptyString()]
     [string]$BaseName,
+
+    [AllowEmptyString()]
     [string]$ParsedCode,
+
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
     [string]$Pattern,
+
+    [Parameter(Mandatory = $true)]
     [bool]$UsesWildcard
   )
 
@@ -631,9 +653,34 @@ function Test-DcaCodeMatch {
   # Quando a pesquisa utilizar curingas, aplica -like. Nos demais
   # casos, exige correspondencia completa sem diferenciar letras
   # maiusculas e minusculas.
-  if ($UsesWildcard) {
-    return (($BaseName -like $Pattern) -or ($ParsedCode -like $Pattern))
+  $baseNameText =
+  ([string]$BaseName).Trim()
+
+  $parsedCodeText =
+  ([string]$ParsedCode).Trim()
+
+  $patternText =
+  $Pattern.Trim()
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $patternText
+    )
+  ) {
+
+    return $false
   }
 
-  return (($BaseName -ieq $Pattern) -or ($ParsedCode -ieq $Pattern))
+  if ($UsesWildcard) {
+
+    return (
+      $baseNameText -like $patternText -or
+      $parsedCodeText -like $patternText
+    )
+  }
+
+  return (
+    $baseNameText -ieq $patternText -or
+    $parsedCodeText -ieq $patternText
+  )
 }

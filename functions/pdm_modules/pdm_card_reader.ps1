@@ -76,11 +76,25 @@ function Get-DcaPdmFileState {
   }
   catch {
 
-    Write-Warn (
-      "Nao foi possivel consultar o estado no PDM para " +
-      "'$filePath': " +
-      $_.Exception.Message
-    )
+    if ($Details) {
+
+      $realException =
+      $_.Exception
+
+      while (
+        $null -ne $realException.InnerException
+      ) {
+
+        $realException =
+        $realException.InnerException
+      }
+
+      Write-Warn (
+        "Nao foi possivel consultar o estado no PDM para " +
+        "'$filePath': " +
+        $realException.Message
+      )
+    }
 
     return $null
   }
@@ -111,6 +125,17 @@ function Get-DcaPdmCardVariableValue {
   $variableNameClean =
   $VariableName.Trim()
 
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $variableNameClean
+    )
+  ) {
+
+    throw (
+      "O nome da variavel do cartao ficou vazio."
+    )
+  }
+
   $configurations =
   [string[]]@(
     "",
@@ -139,7 +164,7 @@ function Get-DcaPdmCardVariableValue {
   } |
     Where-Object {
     $_.IsInterface -and
-    $_.Name -eq "IEdmEnumeratorVariable6"
+    $_.Name -ieq "IEdmEnumeratorVariable6"
   } |
     Select-Object -First 1
 
@@ -148,7 +173,7 @@ function Get-DcaPdmCardVariableValue {
     $getVarFromDbMethod =
     $enumeratorVariable6Type.GetMethods() |
       Where-Object {
-      $_.Name -eq "GetVarFromDb" -and
+      $_.Name -ieq "GetVarFromDb" -and
       $_.GetParameters().Count -eq 3
     } |
       Select-Object -First 1
@@ -161,7 +186,7 @@ function Get-DcaPdmCardVariableValue {
       ) {
 
         $arguments =
-        New-Object "System.Object[]" 3
+        [object[]]::new(3)
 
         $arguments[0] =
         [string]$variableNameClean
@@ -327,13 +352,32 @@ function Get-DcaPdmVariableValue {
   }
 
   $filePath =
-  [string]$Entry.FullName
+  ([string]$Entry.FullName).Trim()
 
   if (
     [string]::IsNullOrWhiteSpace(
       $filePath
     )
   ) {
+
+    return $null
+  }
+
+  $variableNamesClean =
+  @(
+    $VariableNames |
+      ForEach-Object {
+      ([string]$_).Trim()
+    } |
+      Where-Object {
+      -not [string]::IsNullOrWhiteSpace(
+        [string]$_
+      )
+    } |
+      Select-Object -Unique
+  )
+
+  if ($variableNamesClean.Count -eq 0) {
 
     return $null
   }
@@ -393,7 +437,7 @@ function Get-DcaPdmVariableValue {
 
     foreach (
       $variableName in
-      $VariableNames
+      $variableNamesClean
     ) {
 
       $currentName =
@@ -598,8 +642,19 @@ function Get-DcaPdmVariableValue {
       $closeFileMethod =
       $variableReader.GetType().GetMethods() |
         Where-Object {
-        $_.Name -eq "CloseFile"
+
+        if ($_.Name -ine "CloseFile") {
+          return $false
+        }
+
+        $closeParameterCount =
+        $_.GetParameters().Count
+
+        $closeParameterCount -in @(0, 1)
       } |
+        Sort-Object {
+        $_.GetParameters().Count
+      } -Descending |
         Select-Object -First 1
 
       if ($null -ne $closeFileMethod) {
@@ -609,7 +664,10 @@ function Get-DcaPdmVariableValue {
           $closeParameters =
           $closeFileMethod.GetParameters()
 
-          if ($closeParameters.Count -eq 1) {
+          if (
+            $closeParameters.Count -eq 1 -and
+            $closeParameters[0].ParameterType -eq [bool]
+          ) {
 
             $null =
             $closeFileMethod.Invoke(
@@ -632,6 +690,25 @@ function Get-DcaPdmVariableValue {
 
           # Uma falha ao fechar o enumerador nao deve interromper
           # o processamento do documento.
+          if ($Details) {
+
+            $closeException =
+            $_.Exception
+
+            while (
+              $null -ne $closeException.InnerException
+            ) {
+
+              $closeException =
+              $closeException.InnerException
+            }
+
+            Write-Host (
+              "  Nao foi possivel fechar o cartao de " +
+              "'$($Entry.Name)': " +
+              $closeException.Message
+            ) -ForegroundColor DarkGray
+          }
         }
       }
     }

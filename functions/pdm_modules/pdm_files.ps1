@@ -15,16 +15,18 @@
 # A pesquisa pelo Vault possui prioridade. A pesquisa em disco
 # permanece disponivel como alternativa.
 # ============================================================
+
+
+# ============================================================
+# PESQUISA DE PDFS PELO INDICE DO VAULT
+# ============================================================
 function Search-DcaVaultPdfEntries {
 
-  # ============================================================
-  # 1. PREPARAR A PESQUISA NO INDICE DO VAULT
-  # ============================================================
+  # Pesquisa PDFs no indice do Vault.
   #
-  # Converte os curingas utilizados pelo script para o formato
-  # aceito pela API do PDM e cria o objeto responsavel pela busca.
-  # Pesquisa PDFs no indice do Vault. Quando uma pasta inicial
-  # for informada, limita a consulta a essa parte do Vault.
+  # Quando StartFolderPath estiver preenchido, a pesquisa sera
+  # iniciada nessa pasta. Dependendo da versao da EdmLib, a API
+  # pode incluir resultados localizados em subpastas.
   param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNull()]
@@ -37,184 +39,261 @@ function Search-DcaVaultPdfEntries {
     [string]$StartFolderPath
   )
 
-  # A API do PDM utiliza os curingas SQL "%" e "_", enquanto a
-  # entrada do script aceita os curingas "*" e "?".
-  #
-  # Quando nenhum curinga estiver presente, o termo sera tratado
-  # como uma pesquisa parcial.
-  $likePattern =
-  $SearchText.Replace(
-    "*",
-    "%"
-  ).Replace(
-  "?",
-  "_"
-)
+  # ============================================================
+  # 1. NORMALIZAR O TEXTO DA PESQUISA
+  # ============================================================
 
-if ($likePattern -notmatch "[%_]") {
-
-  $likePattern =
-  "%$likePattern%"
-}
-
-# Cria o objeto de pesquisa utilizado para consultar o indice
-# mantido pelo Vault.
-$search =
-$Vault.CreateSearch()
-
-if ($null -eq $search) {
-
-  throw (
-    "A API do PDM nao retornou um objeto de pesquisa."
-  )
-}
-
-# Define o nome pesquisado e desabilita a inclusao de versoes
-# historicas nos resultados.
-$search.FileName =
-$likePattern
-
-$search.FindHistoricStates =
-$false
-
-# ============================================================
-# 2. LIMITAR A PESQUISA A UMA PASTA
-# ============================================================
-#
-# Quando uma pasta inicial for informada, a consulta sera
-# limitada a essa parte do Vault.
-#
-# Sem esse filtro, a API pesquisa a partir da raiz do Vault.
-if (
-  -not [string]::IsNullOrWhiteSpace(
-    $StartFolderPath
-  )
-) {
-
-  $startFolder =
-  $Vault.GetFolderFromPath(
-    $StartFolderPath
-  )
-
-  if ($null -eq $startFolder) {
-
-    throw (
-      "A pasta nao foi encontrada pela API do PDM: " +
-      "'$StartFolderPath'."
-    )
-  }
-
-  $search.StartFolderID =
-  [int]$startFolder.ID
-}
-
-# ============================================================
-# 3. COLETAR OS RESULTADOS DA PESQUISA
-# ============================================================
-#
-# Percorre os resultados retornados pela API e mantem somente
-# arquivos com extensao PDF.
-$entries =
-[System.Collections.Generic.List[object]]::new()
-
-# A API retorna o primeiro resultado separadamente. Os demais
-# resultados sao obtidos durante a repeticao abaixo.
-$currentResult =
-$search.GetFirstResult()
-
-while ($null -ne $currentResult) {
-
-  $resultName =
-  [string]$currentResult.Name
+  $searchTextClean =
+  $SearchText.Trim()
 
   if (
-    -not [string]::IsNullOrWhiteSpace(
-      $resultName
-    ) -and
-    $resultName.EndsWith(
-      ".pdf",
-      [System.StringComparison]::OrdinalIgnoreCase
+    [string]::IsNullOrWhiteSpace(
+      $searchTextClean
     )
   ) {
 
-    $baseName =
-    [System.IO.Path]::GetFileNameWithoutExtension(
-      $resultName
-    )
-
-    # Padroniza o resultado da API no mesmo formato utilizado
-    # pelos arquivos encontrados diretamente no disco.
-    $entries.Add(
-      [PSCustomObject]@{
-        Name = $resultName
-        BaseName = ([string]$baseName).Trim()
-        FullName = [string]$currentResult.Path
-        FromVault = $true
-      }
+    throw (
+      "O texto da pesquisa no Vault ficou vazio."
     )
   }
 
+  # A API do PDM utiliza os curingas SQL:
+  #
+  #   % = zero ou mais caracteres;
+  #   _ = exatamente um caractere.
+  #
+  # O fluxo do DCAtoPLM utiliza:
+  #
+  #   * = zero ou mais caracteres;
+  #   ? = exatamente um caractere.
+  $likePattern =
+  $searchTextClean.Replace(
+    "*",
+    "%"
+  ).Replace(
+    "?",
+    "_"
+  )
+
+  # Quando nenhum curinga for informado, realiza uma pesquisa
+  # parcial pelo texto recebido.
+  if ($likePattern -notmatch "[%_]") {
+
+    $likePattern =
+    "%$likePattern%"
+  }
+
+  # ============================================================
+  # 2. CRIAR O OBJETO DE PESQUISA
+  # ============================================================
+
+  $search =
+  $Vault.CreateSearch()
+
+  if ($null -eq $search) {
+
+    throw (
+      "A API do PDM nao retornou um objeto de pesquisa."
+    )
+  }
+
+  $search.FileName =
+  $likePattern
+
+  # Impede que versoes historicas dos arquivos sejam retornadas.
+  $search.FindHistoricStates =
+  $false
+
+  # ============================================================
+  # 3. LIMITAR A PESQUISA A UMA PASTA
+  # ============================================================
+
+  $startFolderPathClean =
+  ([string]$StartFolderPath).Trim()
+
+  if (
+    -not [string]::IsNullOrWhiteSpace(
+      $startFolderPathClean
+    )
+  ) {
+
+    $startFolder =
+    $Vault.GetFolderFromPath(
+      $startFolderPathClean
+    )
+
+    if ($null -eq $startFolder) {
+
+      throw (
+        "A pasta nao foi encontrada pela API do PDM: " +
+        "'$startFolderPathClean'."
+      )
+    }
+
+    $search.StartFolderID =
+    [int]$startFolder.ID
+  }
+
+  # ============================================================
+  # 4. COLETAR OS RESULTADOS
+  # ============================================================
+
+  $entries =
+  [System.Collections.Generic.List[object]]::new()
+
   $currentResult =
-  $search.GetNextResult()
+  $search.GetFirstResult()
+
+  while ($null -ne $currentResult) {
+
+    $resultName =
+    ([string]$currentResult.Name).Trim()
+
+    $resultFullName =
+    ([string]$currentResult.Path).Trim()
+
+    $isPdf =
+    (
+      -not [string]::IsNullOrWhiteSpace(
+        $resultName
+      ) -and
+      $resultName.EndsWith(
+        ".pdf",
+        [System.StringComparison]::OrdinalIgnoreCase
+      )
+    )
+
+    if (
+      $isPdf -and
+      -not [string]::IsNullOrWhiteSpace(
+        $resultFullName
+      )
+    ) {
+
+      $baseName =
+      [System.IO.Path]::GetFileNameWithoutExtension(
+        $resultName
+      )
+
+      $entries.Add(
+        [PSCustomObject]@{
+          Name = $resultName
+          BaseName = ([string]$baseName).Trim()
+          FullName = $resultFullName
+          FromVault = $true
+        }
+      )
+    }
+    elseif (
+      $isPdf -and
+      $Details
+    ) {
+
+      Write-Host (
+        "  Resultado do Vault ignorado por nao possuir caminho: " +
+        "'$resultName'."
+      ) -ForegroundColor DarkGray
+    }
+
+    $currentResult =
+    $search.GetNextResult()
+  }
+
+  # ============================================================
+  # 5. RETORNAR OS PDFS ENCONTRADOS
+  # ============================================================
+
+  return $entries.ToArray()
 }
 
-# Retorna um array vazio quando nenhum PDF for encontrado.
-# Isso permite que o chamador diferencie uma pesquisa sem
-# resultados de uma falha na API.
-return $entries.ToArray()
-}
 
+# ============================================================
+# PESQUISA DE PDFS NO SISTEMA DE ARQUIVOS
+# ============================================================
 function Get-DcaDiskPdfEntries {
 
-  # ============================================================
-  # 1. VALIDAR A PASTA DE PESQUISA LOCAL
-  # ============================================================
+  # Pesquisa recursivamente os PDFs existentes no sistema de
+  # arquivos.
   #
-  # Confirma se a pasta existe antes de percorrer os arquivos
-  # presentes no cache ou no sistema de arquivos.
-  # Alternativa utilizada quando a API do PDM esta indisponivel.
-  # Retorna somente os PDFs existentes no cache ou no disco local.
+  # Esta funcao e utilizada quando a API do PDM estiver
+  # indisponivel ou quando o chamador escolher o modo local.
   param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$FolderPath
   )
 
+  # ============================================================
+  # 1. NORMALIZAR E VALIDAR A PASTA
+  # ============================================================
+
+  $folderPathClean =
+  $FolderPath.Trim()
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $folderPathClean
+    )
+  ) {
+
+    throw (
+      "O caminho da pesquisa local ficou vazio."
+    )
+  }
+
   if (-not (
       Test-Path `
-        -LiteralPath $FolderPath `
+        -LiteralPath $folderPathClean `
         -PathType Container
     )) {
 
     throw (
       "A pasta de pesquisa local nao foi encontrada: " +
-      "'$FolderPath'."
+      "'$folderPathClean'."
     )
   }
 
   # ============================================================
-  # 2. COLETAR OS PDFs DISPONIVEIS NO DISCO
+  # 2. COLETAR OS PDFS DISPONIVEIS NO DISCO
   # ============================================================
-  #
-  # Pesquisa recursivamente os arquivos PDF existentes na pasta
-  # atual e em todas as suas subpastas.
+
   $entries =
   [System.Collections.Generic.List[object]]::new()
 
-  # Erros de acesso individuais sao ignorados para permitir que
-  # a pesquisa continue nas demais pastas disponiveis.
+  # A pesquisa e recursiva porque esta funcao tambem e utilizada
+  # pela pesquisa geral por codigo.
+  #
+  # A leitura somente da pasta atual e realizada pelo modulo
+  # especifico de navegacao por pastas.
   $pdfFiles =
   @(
     Get-ChildItem `
-      -LiteralPath $FolderPath `
+      -LiteralPath $folderPathClean `
       -Filter "*.pdf" `
       -File `
       -Recurse `
       -Force `
-      -ErrorAction SilentlyContinue
+      -ErrorAction SilentlyContinue |
+      Sort-Object FullName
   )
 
   foreach ($pdfFile in $pdfFiles) {
+
+    if ($null -eq $pdfFile) {
+      continue
+    }
+
+    $pdfFullName =
+    ([string]$pdfFile.FullName).Trim()
+
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $pdfFullName
+      )
+    ) {
+
+      continue
+    }
 
     $baseName =
     [System.IO.Path]::GetFileNameWithoutExtension(
@@ -222,89 +301,241 @@ function Get-DcaDiskPdfEntries {
     )
 
     # Mantem a mesma estrutura utilizada pelos resultados da API.
-    # FromVault indica que o arquivo ja foi localizado no disco.
     $entries.Add(
       [PSCustomObject]@{
-        Name = $pdfFile.Name
+        Name = [string]$pdfFile.Name
         BaseName = ([string]$baseName).Trim()
-        FullName = $pdfFile.FullName
+        FullName = $pdfFullName
         FromVault = $false
       }
     )
   }
 
+  # ============================================================
+  # 3. RETORNAR OS PDFS ENCONTRADOS
+  # ============================================================
+
   return $entries.ToArray()
 }
+
+
+# ============================================================
+# DISPONIBILIZACAO LOCAL DO PDF
+# ============================================================
 function Confirm-DcaLocalPdf {
 
-  # ============================================================
-  # 1. VERIFICAR SE O PDF JA ESTA DISPONIVEL
-  # ============================================================
+  # Garante que o PDF esteja disponivel localmente.
   #
-  # Retorna imediatamente o caminho recebido quando o arquivo
-  # ja estiver presente no cache ou no sistema de arquivos.
-  # Garante que o PDF esteja disponivel localmente. Quando o
-  # resultado veio do Vault e ainda nao esta no cache, solicita
-  # uma copia local antes da importacao no Teamcenter.
+  # Quando o arquivo ja existir no cache ou no disco, retorna seu
+  # caminho imediatamente.
+  #
+  # Quando o resultado veio do Vault e ainda nao estiver
+  # disponivel localmente, solicita uma copia ao PDM.
   param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNull()]
     $Entry
   )
 
-  if (Test-Path -LiteralPath $Entry.FullName -PathType Leaf) {
-    return $Entry.FullName
+  # ============================================================
+  # 1. VALIDAR A ENTRADA
+  # ============================================================
+
+  $entryPath =
+  ([string]$Entry.FullName).Trim()
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $entryPath
+    )
+  ) {
+
+    throw (
+      "A entrada do PDF nao possui um caminho completo."
+    )
   }
 
-  # O download somente pode ser solicitado quando a entrada veio
-  # do Vault e existe uma conexao ativa com o PDM.
-  $vault = $script:DcaVault
+  if (
+    [System.IO.Path]::GetExtension(
+      $entryPath
+    ) -ine ".pdf"
+  ) {
 
-  if (-not $Entry.FromVault -or $null -eq $vault) {
-    throw "PDF nao encontrado no disco: '$($Entry.FullName)'."
+    throw (
+      "O arquivo informado nao possui extensao PDF: " +
+      "'$entryPath'."
+    )
   }
 
   # ============================================================
-  # 2. SOLICITAR UMA COPIA LOCAL AO VAULT
+  # 2. RETORNAR O ARQUIVO JA DISPONIVEL
   # ============================================================
-  #
-  # Localiza o objeto do arquivo e sua pasta no Vault antes de
-  # solicitar que a versao correspondente seja copiada ao cache.
-  Write-Info "Baixando o PDF do vault..."
 
-  $parentFolder = $null
+  if (
+    Test-Path `
+      -LiteralPath $entryPath `
+      -PathType Leaf
+  ) {
 
-  # A API preenche parentFolder por referencia ao localizar o
-  # arquivo correspondente ao caminho completo.
-  $pdmFile = $vault.GetFileFromPath($Entry.FullName, [ref]$parentFolder)
+    $localFile =
+    Get-Item `
+      -LiteralPath $entryPath `
+      -ErrorAction Stop
+
+    if ($localFile.Length -le 0) {
+
+      throw (
+        "O PDF encontrado no disco esta vazio: " +
+        "'$entryPath'."
+      )
+    }
+
+    return $localFile.FullName
+  }
+
+  # ============================================================
+  # 3. VALIDAR A ORIGEM DO ARQUIVO
+  # ============================================================
+
+  $vault =
+  $script:DcaVault
+
+  $entryFromVault =
+  $false
+
+  if ($Entry.PSObject.Properties["FromVault"]) {
+
+    $entryFromVault =
+    [bool]$Entry.FromVault
+  }
+
+  if (
+    -not $entryFromVault -or
+    $null -eq $vault
+  ) {
+
+    throw (
+      "PDF nao encontrado no disco: '$entryPath'."
+    )
+  }
+
+  # ============================================================
+  # 4. LOCALIZAR O ARQUIVO NO VAULT
+  # ============================================================
+
+  Write-Info (
+    "Baixando o PDF do vault..."
+  )
+
+  $parentFolder =
+  $null
+
+  $pdmFile =
+  $vault.GetFileFromPath(
+    $entryPath,
+    [ref]$parentFolder
+  )
 
   if ($null -eq $pdmFile) {
-    throw "Nao foi possivel obter o arquivo no vault."
+
+    throw (
+      "Nao foi possivel obter o arquivo no vault: " +
+      "'$entryPath'."
+    )
   }
 
   if ($null -eq $parentFolder) {
-    throw "Nao foi possivel obter a pasta do arquivo no vault."
+
+    throw (
+      "Nao foi possivel obter a pasta do arquivo no vault: " +
+      "'$entryPath'."
+    )
   }
+
+  # ============================================================
+  # 5. SOLICITAR UMA COPIA LOCAL
+  # ============================================================
 
   # A versao zero permite que a API determine a versao adequada.
-  # O identificador da pasta informa em qual cache local a copia
-  # deve ser disponibilizada.
-  $fileVersion = 0
-  $folderId = $parentFolder.ID
+  $fileVersion =
+  0
 
-  $pdmFile.GetFileCopy(0, [ref]$fileVersion, [ref]$folderId, 0, "")
+  # O ID informa em qual pasta da view local o arquivo deve ser
+  escarta qualquer retorno auxiliar do metodo COM para impedir
+  # que ele seja enviado acidentalmente ao pipeline da funcao.
+  $null =
+  $pdmFile.GetFileCopy(
+    0,
+    [ref]$fileVersion,
+    [ref]$folderId,
+    0,
+    ""
+  )
 
   # ============================================================
-  # 3. VALIDAR O ARQUIVO DISPONIBILIZADO
+  # 6. VALIDAR O ARQUIVO DISPONIBILIZADO
   # ============================================================
-  #
-  # Depois da solicitacao da copia, consulta o caminho do cache
-  # e confirma que o PDF realmente foi criado no disco.
-  $localCachePath = $pdmFile.GetLocalPath($parentFolder.ID)
 
-  if (-not (Test-Path -LiteralPath $localCachePath -PathType Leaf)) {
-    throw "O arquivo nao foi encontrado no cache local do PDM: '$localCachePath'."
+  $localCachePath =
+  [string]$pdmFile.GetLocalPath(
+    $parentFolder.ID
+  )
+
+  $localCachePath =
+  $localCachePath.Trim()
+
+  if (
+    :IsNullOrWhiteSpace(
+      $localCachePath
+    )
+  ) {
+
+    throw (
+      "O Vault nao retornou o caminho do cache local para " +
+      "'$entryPath'."
+    )
   }
 
-  return $localCachePath
+  if (-not (
+      Test-Path `
+        -LiteralPath $localCachePath `
+        -PathType Leaf
+    )) {
+
+    throw (
+      "O arquivo nao foi encontrado no cache local do PDM: " +
+      "'$localCachePath'."
+    )
+  }
+
+  if (
+    [System.IO.Path]::GetExtension(
+      $localCachePath
+    ) -ine ".pdf"
+  ) {
+
+    throw (
+      "O arquivo retornado pelo cache do PDM nao e um PDF: " +
+      "'$localCachePath'."
+    )
+  }
+
+  $localCacheFile =
+  Get-Item `
+    -LiteralPath $localCachePath `
+    -ErrorAction Stop
+
+  if ($localCacheFile.Length -le 0) {
+
+    throw (
+      "O PDF disponibilizado no cache do PDM esta vazio: " +
+      "'$localCachePath'."
+    )
+  }
+
+  # ============================================================
+  # 7. RETORNAR O CAMINHO LOCAL VALIDADO
+  # ============================================================
+
+  return $localCacheFile.FullName
 }
