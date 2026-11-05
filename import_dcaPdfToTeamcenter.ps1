@@ -1759,9 +1759,11 @@ function Invoke-DcaMain {
         "  Codigo: $($processDocument.ItemCode)"
       ) -ForegroundColor White
 
-      Write-Host (
-        "    Operacao: $($processDocument.RequestedMode)"
-      ) -ForegroundColor DarkGray
+      if ($Details) {
+        Write-Host (
+          "    Operacao: $($processDocument.RequestedMode)"
+        ) -ForegroundColor DarkGray
+      }
 
       Write-Host (
         "    Aprovador PDM: '$approverDisplay'"
@@ -1834,6 +1836,37 @@ function Invoke-DcaMain {
     $documentStartedAt =
     Get-Date
 
+    # Tempos das principais etapas do documento atual.
+    $destinationStartedAt =
+    $null
+
+    $pdfPreparationStartedAt =
+    $null
+
+    $datasetLookupStartedAt =
+    $null
+
+    $pdfImportStartedAt =
+    $null
+
+    $workflowStartedAt =
+    $null
+
+    $destinationDuration =
+    $null
+
+    $pdfPreparationDuration =
+    $null
+
+    $datasetLookupDuration =
+    $null
+
+    $pdfImportDuration =
+    $null
+
+    $workflowDuration =
+    $null
+
     # Estado individual do documento atual.
     #
     # Os indicadores abaixo permitem diferenciar:
@@ -1879,6 +1912,9 @@ function Invoke-DcaMain {
 
     # DatasetOnly e RecoverExisting reutilizam um destino existente.
     # CreateItem cria um novo Item e sua primeira revisao.
+    $destinationStartedAt =
+    Get-Date
+
     try {
 
       $teamcenterItem =
@@ -2103,9 +2139,16 @@ function Invoke-DcaMain {
         )
       }
 
+      $destinationDuration =
+      (Get-Date) -
+      $destinationStartedAt
+
       # ==================================================
       # C. Garantir que o PDF esteja no cache local
       # ==================================================
+      $pdfPreparationStartedAt =
+      Get-Date
+
       $localPdfOutputs =
       @(
         Confirm-DcaLocalPdf `
@@ -2196,8 +2239,8 @@ function Invoke-DcaMain {
       @(
         $temporaryPdfOutputs |
           Where-Object {
-            $_ -is [string]
-          } |
+          $_ -is [string]
+        } |
           ForEach-Object {
 
           $candidatePath =
@@ -2306,6 +2349,11 @@ function Invoke-DcaMain {
           $temporaryPdfPath
         )
       }
+
+      $pdfPreparationDuration =
+      (Get-Date) -
+      $pdfPreparationStartedAt
+
       # ==================================================
       # E. Importar o PDF na revisao
       # ==================================================
@@ -2355,6 +2403,9 @@ function Invoke-DcaMain {
 
       if ($shouldCheckExistingDataset) {
 
+        $datasetLookupStartedAt =
+        Get-Date
+
         Write-Info (
           "Verificando se o Dataset ja existe na revisao..."
         )
@@ -2364,6 +2415,10 @@ function Invoke-DcaMain {
           -Revision $teamcenterRevision `
           -DatasetName $datasetName `
           -DatasetRevision $document.ClientRevision
+
+        $datasetLookupDuration =
+        (Get-Date) -
+        $datasetLookupStartedAt
 
         if ($null -eq $datasetLookup) {
 
@@ -2490,6 +2545,9 @@ function Invoke-DcaMain {
           ) -ForegroundColor DarkGray
         }
 
+        $pdfImportStartedAt =
+        Get-Date
+
         $pdfImportResult =
         Import-TeamcenterPdf `
           -Revision $teamcenterRevision `
@@ -2497,6 +2555,10 @@ function Invoke-DcaMain {
           -DatasetName $datasetName `
           -DatasetRevision $document.ClientRevision `
           -FilePath $temporaryPdfPath
+
+        $pdfImportDuration =
+        (Get-Date) -
+        $pdfImportStartedAt
 
         if ($Details) {
 
@@ -2511,6 +2573,54 @@ function Invoke-DcaMain {
         # ainda pode ser implementada em uma etapa futura.
         $pdfImported =
         $true
+
+        $postImportDatasetLookup =
+        Test-DcaTeamcenterDatasetExists `
+          -Revision $teamcenterRevision `
+          -DatasetName $datasetName `
+          -DatasetRevision $document.ClientRevision
+
+        if ($null -eq $postImportDatasetLookup) {
+
+          throw (
+            "O ImportarPDF retornou sem excecao, mas a verificacao " +
+            "posterior do Dataset retornou NULL."
+          )
+        }
+
+        if (-not $postImportDatasetLookup.Exists) {
+
+          throw (
+            "O ImportarPDF retornou '$([string]$pdfImportResult)', " +
+            "mas o Dataset '$datasetName' nao foi localizado na " +
+            "revisao depois da importacao."
+          )
+        }
+
+        if ($Details) {
+
+          Write-Host (
+            "  Verificacao posterior da importacao:"
+          ) -ForegroundColor Green
+
+          Write-Host (
+            "    Dataset localizado: True"
+          ) -ForegroundColor DarkGray
+
+          Write-Host (
+            "    Nome:               '$datasetName'"
+          ) -ForegroundColor DarkGray
+
+          Write-Host (
+            "    Relacao:            " +
+            "'$($postImportDatasetLookup.Relation)'"
+          ) -ForegroundColor DarkGray
+
+          Write-Host (
+            "    Tipo tecnico:       " +
+            "'$($postImportDatasetLookup.TypeName)'"
+          ) -ForegroundColor DarkGray
+        }
 
         $pdfImportedThisRun =
         $true
@@ -2623,9 +2733,16 @@ function Invoke-DcaMain {
           "Iniciando workflow de $workflowLabel..."
         )
 
+        $workflowStartedAt =
+        Get-Date
+
         Start-TeamcenterWorkflow `
           -WorkflowTemplate $workflowTemplate `
           -Revision $teamcenterRevision
+
+        $workflowDuration =
+        (Get-Date) -
+        $workflowStartedAt
 
         $workflowStarted =
         $true
@@ -2633,6 +2750,83 @@ function Invoke-DcaMain {
         Write-Success (
           "Workflow de $workflowLabel solicitado."
         )
+      }
+      if ($Details) {
+
+        $elapsedDocumentTime =
+        (Get-Date) -
+        $documentStartedAt
+
+        Write-Host ""
+
+        Write-Host (
+          "  Tempo das principais etapas:"
+        ) -ForegroundColor Cyan
+
+        if ($null -ne $destinationDuration) {
+
+          Write-Host (
+            "    Destino Teamcenter: {0,8:N2} s" -f
+            $destinationDuration.TotalSeconds
+          ) -ForegroundColor DarkGray
+        }
+
+        if ($null -ne $pdfPreparationDuration) {
+
+          Write-Host (
+            "    Preparacao do PDF:  {0,8:N2} s" -f
+            $pdfPreparationDuration.TotalSeconds
+          ) -ForegroundColor DarkGray
+        }
+
+        if ($null -ne $datasetLookupDuration) {
+
+          Write-Host (
+            "    Busca do Dataset:   {0,8:N2} s" -f
+            $datasetLookupDuration.TotalSeconds
+          ) -ForegroundColor DarkGray
+        }
+        elseif (-not $shouldCheckExistingDataset) {
+
+          Write-Host (
+            "    Busca do Dataset:      nao necessaria"
+          ) -ForegroundColor DarkGray
+        }
+
+        if ($null -ne $pdfImportDuration) {
+
+          Write-Host (
+            "    Importacao do PDF:  {0,8:N2} s" -f
+            $pdfImportDuration.TotalSeconds
+          ) -ForegroundColor DarkGray
+        }
+        elseif ($datasetAlreadyExists) {
+
+          Write-Host (
+            "    Importacao do PDF:     Dataset ja existente"
+          ) -ForegroundColor DarkGray
+        }
+
+        if ($null -ne $workflowDuration) {
+
+          Write-Host (
+            "    Workflow:           {0,8:N2} s" -f
+            $workflowDuration.TotalSeconds
+          ) -ForegroundColor DarkGray
+        }
+        else {
+
+          Write-Host (
+            "    Workflow:              nao executado"
+          ) -ForegroundColor DarkGray
+        }
+
+        Write-Host (
+          "    Total do documento:  {0,8:N2} s" -f
+          $elapsedDocumentTime.TotalSeconds
+        ) -ForegroundColor Gray
+
+        Write-Host ""
       }
 
       # ==================================================
@@ -2668,11 +2862,79 @@ function Invoke-DcaMain {
           DocumentFinishedAt = $documentFinishedAt.ToString(
             "yyyy-MM-dd HH:mm:ss"
           )
-          DurationSeconds = [Math]::Round(
+                  DurationSeconds =
+          [Math]::Round(
             $documentDuration.TotalSeconds,
             2
           )
-          SourceFile = [string]$document.SelectedPdf.File.FullName
+
+          DestinationSeconds =
+          if ($null -ne $destinationDuration) {
+
+            [Math]::Round(
+              $destinationDuration.TotalSeconds,
+              2
+            )
+          }
+          else {
+
+            $null
+          }
+
+          PdfPreparationSeconds =
+          if ($null -ne $pdfPreparationDuration) {
+
+            [Math]::Round(
+              $pdfPreparationDuration.TotalSeconds,
+              2
+            )
+          }
+          else {
+
+            $null
+          }
+
+          DatasetLookupSeconds =
+          if ($null -ne $datasetLookupDuration) {
+
+            [Math]::Round(
+              $datasetLookupDuration.TotalSeconds,
+              2
+            )
+          }
+          else {
+
+            $null
+          }
+
+          PdfImportSeconds =
+          if ($null -ne $pdfImportDuration) {
+
+            [Math]::Round(
+              $pdfImportDuration.TotalSeconds,
+              2
+            )
+          }
+          else {
+
+            $null
+          }
+
+          WorkflowSeconds =
+          if ($null -ne $workflowDuration) {
+
+            [Math]::Round(
+              $workflowDuration.TotalSeconds,
+              2
+            )
+          }
+          else {
+
+            $null
+          }
+          
+          SourceFile =
+          [string]$document.SelectedPdf.File.FullName
           ErrorMessage = $null
         }
       )
@@ -2680,6 +2942,61 @@ function Invoke-DcaMain {
     # Uma falha neste documento e registrada no lote, mas nao
     # interrompe o processamento dos documentos seguintes.
     catch {
+
+      $failureTime =
+      Get-Date
+
+      # Finaliza somente a etapa que estava em andamento quando
+      # a falha ocorreu.
+      if (
+        $null -eq $destinationDuration -and
+        $null -ne $destinationStartedAt -and
+        $null -eq $pdfPreparationStartedAt
+      ) {
+
+        $destinationDuration =
+        $failureTime -
+        $destinationStartedAt
+      }
+      elseif (
+        $null -eq $pdfPreparationDuration -and
+        $null -ne $pdfPreparationStartedAt -and
+        $null -eq $datasetLookupStartedAt
+      ) {
+
+        $pdfPreparationDuration =
+        $failureTime -
+        $pdfPreparationStartedAt
+      }
+      elseif (
+        $null -eq $datasetLookupDuration -and
+        $null -ne $datasetLookupStartedAt -and
+        $null -eq $pdfImportStartedAt
+      ) {
+
+        $datasetLookupDuration =
+        $failureTime -
+        $datasetLookupStartedAt
+      }
+      elseif (
+        $null -eq $pdfImportDuration -and
+        $null -ne $pdfImportStartedAt -and
+        $null -eq $workflowStartedAt
+      ) {
+
+        $pdfImportDuration =
+        $failureTime -
+        $pdfImportStartedAt
+      }
+      elseif (
+        $null -eq $workflowDuration -and
+        $null -ne $workflowStartedAt
+      ) {
+
+        $workflowDuration =
+        $failureTime -
+        $workflowStartedAt
+      }
 
       if ($Details) {
         $errorRecord =
@@ -2736,6 +3053,65 @@ function Invoke-DcaMain {
 
         Write-Host ""
       }
+
+      if ($Details) {
+
+        Write-Host (
+          "  Tempo ate a falha:"
+        ) -ForegroundColor Cyan
+
+        if ($null -ne $destinationDuration) {
+
+          Write-Host (
+            "    Destino Teamcenter: {0,8:N2} s" -f
+            $destinationDuration.TotalSeconds
+          ) -ForegroundColor DarkGray
+        }
+
+        if ($null -ne $pdfPreparationDuration) {
+
+          Write-Host (
+            "    Preparacao do PDF:  {0,8:N2} s" -f
+            $pdfPreparationDuration.TotalSeconds
+          ) -ForegroundColor DarkGray
+        }
+
+        if ($null -ne $datasetLookupDuration) {
+
+          Write-Host (
+            "    Busca do Dataset:   {0,8:N2} s" -f
+            $datasetLookupDuration.TotalSeconds
+          ) -ForegroundColor DarkGray
+        }
+
+        if ($null -ne $pdfImportDuration) {
+
+          Write-Host (
+            "    Importacao do PDF:  {0,8:N2} s" -f
+            $pdfImportDuration.TotalSeconds
+          ) -ForegroundColor DarkGray
+        }
+
+        if ($null -ne $workflowDuration) {
+
+          Write-Host (
+            "    Workflow:           {0,8:N2} s" -f
+            $workflowDuration.TotalSeconds
+          ) -ForegroundColor DarkGray
+        }
+
+        $elapsedUntilFailure =
+        $failureTime -
+        $documentStartedAt
+
+        Write-Host (
+          "    Total ate a falha:   {0,8:N2} s" -f
+          $elapsedUntilFailure.TotalSeconds
+        ) -ForegroundColor Yellow
+
+        Write-Host ""
+      }
+
       $documentFinishedAt =
       Get-Date
 
@@ -2766,10 +3142,77 @@ function Invoke-DcaMain {
           DocumentFinishedAt = $documentFinishedAt.ToString(
             "yyyy-MM-dd HH:mm:ss"
           )
-          DurationSeconds = [Math]::Round(
+               DurationSeconds =
+          [Math]::Round(
             $documentDuration.TotalSeconds,
             2
           )
+
+          DestinationSeconds =
+          if ($null -ne $destinationDuration) {
+
+            [Math]::Round(
+              $destinationDuration.TotalSeconds,
+              2
+            )
+          }
+          else {
+
+            $null
+          }
+
+          PdfPreparationSeconds =
+          if ($null -ne $pdfPreparationDuration) {
+
+            [Math]::Round(
+              $pdfPreparationDuration.TotalSeconds,
+              2
+            )
+          }
+          else {
+
+            $null
+          }
+
+          DatasetLookupSeconds =
+          if ($null -ne $datasetLookupDuration) {
+
+            [Math]::Round(
+              $datasetLookupDuration.TotalSeconds,
+              2
+            )
+          }
+          else {
+
+            $null
+          }
+
+          PdfImportSeconds =
+          if ($null -ne $pdfImportDuration) {
+
+            [Math]::Round(
+              $pdfImportDuration.TotalSeconds,
+              2
+            )
+          }
+          else {
+
+            $null
+          }
+
+          WorkflowSeconds =
+          if ($null -ne $workflowDuration) {
+
+            [Math]::Round(
+              $workflowDuration.TotalSeconds,
+              2
+            )
+          }
+          else {
+
+            $null
+          }
+
           SourceFile = [string]$document.SelectedPdf.File.FullName
           ErrorMessage = $_.Exception.Message
         }
@@ -2784,7 +3227,6 @@ function Invoke-DcaMain {
       continue
     }
   }
-
   # ============================================================
   # 8. RESUMO FINAL
   # ============================================================

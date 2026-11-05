@@ -16,7 +16,6 @@
 # permanece disponivel como alternativa.
 # ============================================================
 
-
 # ============================================================
 # PESQUISA DE PDFS PELO INDICE DO VAULT
 # ============================================================
@@ -71,141 +70,140 @@ function Search-DcaVaultPdfEntries {
     "*",
     "%"
   ).Replace(
-    "?",
-    "_"
+  "?",
+  "_"
+)
+
+# Quando nenhum curinga for informado, realiza uma pesquisa
+# parcial pelo texto recebido.
+if ($likePattern -notmatch "[%_]") {
+
+  $likePattern =
+  "%$likePattern%"
+}
+
+# ============================================================
+# 2. CRIAR O OBJETO DE PESQUISA
+# ============================================================
+
+$search =
+$Vault.CreateSearch()
+
+if ($null -eq $search) {
+
+  throw (
+    "A API do PDM nao retornou um objeto de pesquisa."
+  )
+}
+
+$search.FileName =
+$likePattern
+
+# Impede que versoes historicas dos arquivos sejam retornadas.
+$search.FindHistoricStates =
+$false
+
+# ============================================================
+# 3. LIMITAR A PESQUISA A UMA PASTA
+# ============================================================
+
+$startFolderPathClean =
+([string]$StartFolderPath).Trim()
+
+if (
+  -not [string]::IsNullOrWhiteSpace(
+    $startFolderPathClean
+  )
+) {
+
+  $startFolder =
+  $Vault.GetFolderFromPath(
+    $startFolderPathClean
   )
 
-  # Quando nenhum curinga for informado, realiza uma pesquisa
-  # parcial pelo texto recebido.
-  if ($likePattern -notmatch "[%_]") {
-
-    $likePattern =
-    "%$likePattern%"
-  }
-
-  # ============================================================
-  # 2. CRIAR O OBJETO DE PESQUISA
-  # ============================================================
-
-  $search =
-  $Vault.CreateSearch()
-
-  if ($null -eq $search) {
+  if ($null -eq $startFolder) {
 
     throw (
-      "A API do PDM nao retornou um objeto de pesquisa."
+      "A pasta nao foi encontrada pela API do PDM: " +
+      "'$startFolderPathClean'."
     )
   }
 
-  $search.FileName =
-  $likePattern
+  $search.StartFolderID =
+  [int]$startFolder.ID
+}
 
-  # Impede que versoes historicas dos arquivos sejam retornadas.
-  $search.FindHistoricStates =
-  $false
+# ============================================================
+# 4. COLETAR OS RESULTADOS
+# ============================================================
 
-  # ============================================================
-  # 3. LIMITAR A PESQUISA A UMA PASTA
-  # ============================================================
+$entries =
+[System.Collections.Generic.List[object]]::new()
 
-  $startFolderPathClean =
-  ([string]$StartFolderPath).Trim()
+$currentResult =
+$search.GetFirstResult()
+
+while ($null -ne $currentResult) {
+
+  $resultName =
+  ([string]$currentResult.Name).Trim()
+
+  $resultFullName =
+  ([string]$currentResult.Path).Trim()
+
+  $isPdf =
+  (
+    -not [string]::IsNullOrWhiteSpace(
+      $resultName
+    ) -and
+    $resultName.EndsWith(
+      ".pdf",
+      [System.StringComparison]::OrdinalIgnoreCase
+    )
+  )
 
   if (
+    $isPdf -and
     -not [string]::IsNullOrWhiteSpace(
-      $startFolderPathClean
+      $resultFullName
     )
   ) {
 
-    $startFolder =
-    $Vault.GetFolderFromPath(
-      $startFolderPathClean
+    $baseName =
+    [System.IO.Path]::GetFileNameWithoutExtension(
+      $resultName
     )
 
-    if ($null -eq $startFolder) {
-
-      throw (
-        "A pasta nao foi encontrada pela API do PDM: " +
-        "'$startFolderPathClean'."
-      )
-    }
-
-    $search.StartFolderID =
-    [int]$startFolder.ID
+    $entries.Add(
+      [PSCustomObject]@{
+        Name = $resultName
+        BaseName = ([string]$baseName).Trim()
+        FullName = $resultFullName
+        FromVault = $true
+      }
+    )
   }
+  elseif (
+    $isPdf -and
+    $Details
+  ) {
 
-  # ============================================================
-  # 4. COLETAR OS RESULTADOS
-  # ============================================================
-
-  $entries =
-  [System.Collections.Generic.List[object]]::new()
+    Write-Host (
+      "  Resultado do Vault ignorado por nao possuir caminho: " +
+      "'$resultName'."
+    ) -ForegroundColor DarkGray
+  }
 
   $currentResult =
-  $search.GetFirstResult()
-
-  while ($null -ne $currentResult) {
-
-    $resultName =
-    ([string]$currentResult.Name).Trim()
-
-    $resultFullName =
-    ([string]$currentResult.Path).Trim()
-
-    $isPdf =
-    (
-      -not [string]::IsNullOrWhiteSpace(
-        $resultName
-      ) -and
-      $resultName.EndsWith(
-        ".pdf",
-        [System.StringComparison]::OrdinalIgnoreCase
-      )
-    )
-
-    if (
-      $isPdf -and
-      -not [string]::IsNullOrWhiteSpace(
-        $resultFullName
-      )
-    ) {
-
-      $baseName =
-      [System.IO.Path]::GetFileNameWithoutExtension(
-        $resultName
-      )
-
-      $entries.Add(
-        [PSCustomObject]@{
-          Name = $resultName
-          BaseName = ([string]$baseName).Trim()
-          FullName = $resultFullName
-          FromVault = $true
-        }
-      )
-    }
-    elseif (
-      $isPdf -and
-      $Details
-    ) {
-
-      Write-Host (
-        "  Resultado do Vault ignorado por nao possuir caminho: " +
-        "'$resultName'."
-      ) -ForegroundColor DarkGray
-    }
-
-    $currentResult =
-    $search.GetNextResult()
-  }
-
-  # ============================================================
-  # 5. RETORNAR OS PDFS ENCONTRADOS
-  # ============================================================
-
-  return $entries.ToArray()
+  $search.GetNextResult()
 }
 
+# ============================================================
+# 5. RETORNAR OS PDFS ENCONTRADOS
+# ============================================================
+
+return $entries.ToArray()
+}
 
 # ============================================================
 # PESQUISA DE PDFS NO SISTEMA DE ARQUIVOS
@@ -318,7 +316,6 @@ function Get-DcaDiskPdfEntries {
   return $entries.ToArray()
 }
 
-
 # ============================================================
 # DISPONIBILIZACAO LOCAL DO PDF
 # ============================================================
@@ -427,7 +424,7 @@ function Confirm-DcaLocalPdf {
     "Baixando o PDF do vault..."
   )
 
-  $parentFolder =
+  [object]$parentFolder =
   $null
 
   $pdmFile =
@@ -456,21 +453,74 @@ function Confirm-DcaLocalPdf {
   # 5. SOLICITAR UMA COPIA LOCAL
   # ============================================================
 
-  # A versao zero permite que a API determine a versao adequada.
-  $fileVersion =
+  [int]$fileVersion =
   0
 
-  # O ID informa em qual pasta da view local o arquivo deve ser
-  escarta qualquer retorno auxiliar do metodo COM para impedir
-  # que ele seja enviado acidentalmente ao pipeline da funcao.
-  $null =
-  $pdmFile.GetFileCopy(
-    0,
-    [ref]$fileVersion,
-    [ref]$folderId,
-    0,
-    ""
-  )
+  [int]$folderId =
+  [int]$parentFolder.ID
+
+  try {
+
+    if ($Details) {
+
+      Write-Host (
+        "  Preparando download pelo PDM:"
+      ) -ForegroundColor Cyan
+
+      Write-Host (
+        "    Arquivo:     '$entryPath'"
+      ) -ForegroundColor DarkGray
+
+      Write-Host (
+        "    Pasta ID:    '$folderId'"
+      ) -ForegroundColor DarkGray
+
+      Write-Host (
+        "    Versao:      '$fileVersion'"
+      ) -ForegroundColor DarkGray
+
+      Write-Host (
+        "    Tipo arquivo: " +
+        $pdmFile.GetType().FullName
+      ) -ForegroundColor DarkGray
+
+      Write-Host (
+        "    Tipo pasta:   " +
+        $parentFolder.GetType().FullName
+      ) -ForegroundColor DarkGray
+    }
+
+    $null =
+    $pdmFile.GetFileCopy(
+      0,
+      [ref]$fileVersion,
+      [ref]$folderId,
+      0,
+      ""
+    )
+  }
+  catch {
+
+    $realException =
+    $_.Exception
+
+    while (
+      $null -ne $realException.InnerException
+    ) {
+
+      $realException =
+      $realException.InnerException
+    }
+
+    throw (
+      "Nao foi possivel disponibilizar o PDF no cache local. " +
+      "Arquivo: '$entryPath'. " +
+      "FileVersion: '$fileVersion'. " +
+      "FolderID: '$folderId'. " +
+      "Detalhe: " +
+      $realException.Message
+    )
+  }
 
   # ============================================================
   # 6. VALIDAR O ARQUIVO DISPONIBILIZADO
@@ -485,7 +535,7 @@ function Confirm-DcaLocalPdf {
   $localCachePath.Trim()
 
   if (
-    :IsNullOrWhiteSpace(
+    [string]::IsNullOrWhiteSpace(
       $localCachePath
     )
   ) {

@@ -844,6 +844,29 @@ function New-DcaTeamcenterItem {
     # Mensagens de duplicidade recebem uma mensagem simplificada
     # para indicar claramente que o codigo ja existe.
     if ($errorMessage -match $duplicatePattern) {
+      if ($Details) {
+
+        Write-Host (
+          "  Verificacao de duplicidade:"
+        ) -ForegroundColor Yellow
+
+        Write-Host (
+          "    Codigo:          '$candidateCode'"
+        ) -ForegroundColor DarkGray
+
+        Write-Host (
+          "    Item existente:  True"
+        ) -ForegroundColor DarkGray
+
+        Write-Host (
+          "    Modo solicitado: CreateItem"
+        ) -ForegroundColor DarkGray
+
+        Write-Host (
+          "    Acao sugerida:   executar com -RecoverExisting"
+        ) -ForegroundColor DarkGray
+      }
+
       throw "O item '$candidateCode' ja existe no Teamcenter."
     }
 

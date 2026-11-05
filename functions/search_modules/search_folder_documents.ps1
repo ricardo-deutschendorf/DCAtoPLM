@@ -41,7 +41,19 @@ function Get-DcaDocumentsFromFolderPath {
     [ValidateNotNull()]
     $FolderOption,
 
-    $Vault
+    $Vault,
+
+    # Oculta diagnosticos individuais de estado e cartao durante
+    # a leitura de pastas com muitos documentos.
+    [switch]$SuppressItemDetails
+  )
+
+  # Preserva o modo Details geral, mas permite ocultar as mensagens
+  # emitidas para cada PDF durante a leitura de uma pasta.
+  $showItemDetails =
+  (
+    $Details -and
+    -not $SuppressItemDetails
   )
 
   $folderFullName =
@@ -213,6 +225,12 @@ function Get-DcaDocumentsFromFolderPath {
 
   $documents =
   [System.Collections.Generic.List[object]]::new()
+
+  # As funcoes chamadas abaixo consultam a variavel Details do
+  # escopo chamador. Uma variavel local permite silenciar apenas
+  # esta leitura, sem alterar o modo Details do script principal.
+  $Details =
+  $showItemDetails
 
   foreach ($pdfEntry in $pdfEntries) {
 

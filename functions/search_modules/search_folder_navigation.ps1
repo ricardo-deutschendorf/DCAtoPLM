@@ -88,7 +88,8 @@ function Select-DcaDocumentsWithFolderNavigation {
     @(
       Get-DcaDocumentsFromFolderPath `
         -FolderOption $currentFolder `
-        -Vault $vault
+        -Vault $vault `
+        -SuppressItemDetails
     )
 
     # ============================================================
@@ -196,6 +197,24 @@ function Select-DcaDocumentsWithFolderNavigation {
       #
       # Os documentos sao identificados pelo prefixo D e aparecem
       # depois das subpastas.
+
+      $showDocumentLines =
+      (
+        $Details -and
+        $documents.Count -le 20
+      )
+
+      if (
+        $Details -and
+        -not $showDocumentLines
+      ) {
+
+        Write-Host (
+          "  Detalhes individuais ocultados para acelerar a " +
+          "listagem de $($documents.Count) documentos."
+        ) -ForegroundColor DarkGray
+      }
+
       for (
         $documentIndex = 0
         $documentIndex -lt $documents.Count
@@ -345,7 +364,7 @@ function Select-DcaDocumentsWithFolderNavigation {
 
         # No modo Details, apresenta o titulo e o nome fisico
         # do PDF alem das informacoes resumidas da tabela.
-        if ($Details) {
+        if ($showDocumentLines) {
 
           $documentTitle =
           [string]$document.DocumentTitle

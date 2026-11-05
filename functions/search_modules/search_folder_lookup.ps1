@@ -381,7 +381,8 @@ function Select-DcaPdfsByFolder {
     @(
       Get-DcaDocumentsFromFolderPath `
         -FolderOption $matchingFolder `
-        -Vault $vault
+        -Vault $vault `
+        -SuppressItemDetails
     )
 
     # Pastas sem PDFs diretamente dentro delas nao sao adicionadas
