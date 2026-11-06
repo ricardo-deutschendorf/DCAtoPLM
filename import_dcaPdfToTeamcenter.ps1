@@ -153,6 +153,23 @@ $ErrorActionPreference =
 $script:DcaVault = $null
 $script:DcaVaultTried = $false
 
+# Tempos acumulados das pesquisas de pasta realizadas durante
+# a execucao atual.
+$script:DcaFolderSearchTotalSeconds =
+0.0
+
+$script:DcaFolderPdmReadTotalSeconds =
+0.0
+
+$script:DcaFolderTotalSeconds =
+0.0
+
+$script:DcaFolderLoadCount =
+0
+
+$script:DcaFolderDocumentCount =
+0
+
 $script:TeamcenterItemLookupCache =
 [System.Collections.Generic.Dictionary[string, object]]::new(
   [System.StringComparer]::OrdinalIgnoreCase
@@ -1822,6 +1839,12 @@ function Invoke-DcaMain {
   $batchResults =
   [System.Collections.Generic.List[object]]::new()
 
+  # Registra o inicio efetivo do processamento dos documentos.
+  # Esse tempo nao inclui pesquisa, selecao, preparacao do plano
+  # nem o tempo aguardando a confirmacao do usuario.
+  $batchProcessingStartedAt =
+  Get-Date
+
   for (
     $index = 0
     $index -lt $preparedDocuments.Count
@@ -2862,7 +2885,7 @@ function Invoke-DcaMain {
           DocumentFinishedAt = $documentFinishedAt.ToString(
             "yyyy-MM-dd HH:mm:ss"
           )
-                  DurationSeconds =
+          DurationSeconds =
           [Math]::Round(
             $documentDuration.TotalSeconds,
             2
@@ -2932,7 +2955,7 @@ function Invoke-DcaMain {
 
             $null
           }
-          
+
           SourceFile =
           [string]$document.SelectedPdf.File.FullName
           ErrorMessage = $null
@@ -3142,7 +3165,7 @@ function Invoke-DcaMain {
           DocumentFinishedAt = $documentFinishedAt.ToString(
             "yyyy-MM-dd HH:mm:ss"
           )
-               DurationSeconds =
+          DurationSeconds =
           [Math]::Round(
             $documentDuration.TotalSeconds,
             2
@@ -3393,8 +3416,342 @@ function Invoke-DcaMain {
 
   Write-Host (
     "  Total:      $($batchResults.Count)"
-
   ) -ForegroundColor Gray
+
+  # ============================================================
+  # RESUMO DOS TEMPOS DA EXECUCAO
+  # ============================================================
+  #
+  # O resumo e exibido somente no modo Details. Os tempos das
+  # etapas representam a soma dos valores registrados em cada
+  # documento do lote.
+  if ($Details) {
+
+    $batchProcessingFinishedAt =
+    Get-Date
+
+    $batchProcessingDuration =
+    $batchProcessingFinishedAt -
+    $batchProcessingStartedAt
+
+    $executionDuration =
+    $null
+
+    if (
+      $null -ne $script:DcaExecutionStartedAt
+    ) {
+
+      $executionDuration =
+      $batchProcessingFinishedAt -
+      $script:DcaExecutionStartedAt
+    }
+
+    $destinationTotalSeconds =
+    @(
+      $batchResults |
+        Where-Object {
+        $null -ne $_.DestinationSeconds
+      } |
+        Measure-Object `
+        -Property DestinationSeconds `
+        -Sum
+    )[0].Sum
+
+    $pdfPreparationTotalSeconds =
+    @(
+      $batchResults |
+        Where-Object {
+        $null -ne $_.PdfPreparationSeconds
+      } |
+        Measure-Object `
+        -Property PdfPreparationSeconds `
+        -Sum
+    )[0].Sum
+
+    $datasetLookupTotalSeconds =
+    @(
+      $batchResults |
+        Where-Object {
+        $null -ne $_.DatasetLookupSeconds
+      } |
+        Measure-Object `
+        -Property DatasetLookupSeconds `
+        -Sum
+    )[0].Sum
+
+    $pdfImportTotalSeconds =
+    @(
+      $batchResults |
+        Where-Object {
+        $null -ne $_.PdfImportSeconds
+      } |
+        Measure-Object `
+        -Property PdfImportSeconds `
+        -Sum
+    )[0].Sum
+
+    $workflowTotalSeconds =
+    @(
+      $batchResults |
+        Where-Object {
+        $null -ne $_.WorkflowSeconds
+      } |
+        Measure-Object `
+        -Property WorkflowSeconds `
+        -Sum
+    )[0].Sum
+
+    $documentTotalSeconds =
+    @(
+      $batchResults |
+        Where-Object {
+        $null -ne $_.DurationSeconds
+      } |
+        Measure-Object `
+        -Property DurationSeconds `
+        -Sum
+    )[0].Sum
+
+    # Measure-Object pode retornar NULL quando nenhuma etapa tiver
+    # sido executada. Os valores sao convertidos para zero para
+    # manter a apresentacao consistente.
+    if ($null -eq $destinationTotalSeconds) {
+      $destinationTotalSeconds = 0
+    }
+
+    if ($null -eq $pdfPreparationTotalSeconds) {
+      $pdfPreparationTotalSeconds = 0
+    }
+
+    if ($null -eq $datasetLookupTotalSeconds) {
+      $datasetLookupTotalSeconds = 0
+    }
+
+    if ($null -eq $pdfImportTotalSeconds) {
+      $pdfImportTotalSeconds = 0
+    }
+
+    if ($null -eq $workflowTotalSeconds) {
+      $workflowTotalSeconds = 0
+    }
+
+    if ($null -eq $documentTotalSeconds) {
+      $documentTotalSeconds = 0
+    }
+
+    $measuredStagesTotalSeconds =
+    (
+      [double]$destinationTotalSeconds +
+      [double]$pdfPreparationTotalSeconds +
+      [double]$datasetLookupTotalSeconds +
+      [double]$pdfImportTotalSeconds +
+      [double]$workflowTotalSeconds
+    )
+
+    $otherDocumentSeconds =
+    [double]$documentTotalSeconds -
+    $measuredStagesTotalSeconds
+
+    # Pequenas diferencas negativas podem ocorrer por causa do
+    # arredondamento individual dos tempos.
+    if ($otherDocumentSeconds -lt 0) {
+
+      $otherDocumentSeconds =
+      0
+    }
+
+    $unaccountedExecutionSeconds =
+    $batchProcessingDuration.TotalSeconds -
+    $documentTotalSeconds
+
+    if ($unaccountedExecutionSeconds -lt 0) {
+
+      $unaccountedExecutionSeconds =
+      0
+    }
+
+    $averageDocumentSeconds =
+    0
+
+    if ($batchResults.Count -gt 0) {
+
+      $averageDocumentSeconds =
+      $documentTotalSeconds /
+      $batchResults.Count
+    }
+
+    Write-Host ""
+
+    Write-Host (
+      "  Resumo total do tempo:"
+    ) -ForegroundColor Cyan
+
+    # ==========================================================
+    # TEMPOS ACUMULADOS DAS PESQUISAS DE PASTA
+    # ==========================================================
+
+    if ($script:DcaFolderLoadCount -gt 0) {
+
+      if ($script:DcaFolderSearchTotalSeconds -gt 0.01) {
+
+        Write-Host (
+          "    Pesquisa dos PDFs em pasta: {0,9:N2} s" -f
+          $script:DcaFolderSearchTotalSeconds
+        ) -ForegroundColor DarkGray
+      }
+
+      if ($script:DcaFolderPdmReadTotalSeconds -gt 0.01) {
+
+        Write-Host (
+          "    Leitura dos dados do PDM:   {0,9:N2} s" -f
+          $script:DcaFolderPdmReadTotalSeconds
+        ) -ForegroundColor DarkGray
+      }
+
+      if ($script:DcaFolderTotalSeconds -gt 0.01) {
+
+        Write-Host (
+          "    Total das pesquisas pasta: {0,9:N2} s" -f
+          $script:DcaFolderTotalSeconds
+        ) -ForegroundColor Yellow
+      }
+
+      Write-Host (
+        "    Pastas carregadas:          {0,9}" -f
+        $script:DcaFolderLoadCount
+      ) -ForegroundColor DarkGray
+
+      Write-Host (
+        "    Documentos lidos nas pastas:{0,9}" -f
+        $script:DcaFolderDocumentCount
+      ) -ForegroundColor DarkGray
+
+      if (
+        $script:DcaFolderDocumentCount -gt 0 -and
+        $script:DcaFolderPdmReadTotalSeconds -gt 0.01
+      ) {
+
+        $folderAverageMilliseconds =
+        (
+          $script:DcaFolderPdmReadTotalSeconds *
+          1000
+        ) /
+        $script:DcaFolderDocumentCount
+
+        Write-Host (
+          "    Media PDM por documento:   {0,9:N0} ms" -f
+          $folderAverageMilliseconds
+        ) -ForegroundColor DarkGray
+      }
+
+      Write-Host ""
+    }
+
+    # Exibe somente tempos superiores a zero.
+
+    # Exibe somente tempos superiores a zero.
+    if ($destinationTotalSeconds -gt 0.01) {
+
+      Write-Host (
+        "    Destino Teamcenter:       {0,10:N2} s" -f
+        $destinationTotalSeconds
+      ) -ForegroundColor DarkGray
+    }
+
+    if ($pdfPreparationTotalSeconds -gt 0.1) {
+
+      Write-Host (
+        "    Preparacao dos PDFs:      {0,10:N2} s" -f
+        $pdfPreparationTotalSeconds
+      ) -ForegroundColor DarkGray
+    }
+
+    if ($datasetLookupTotalSeconds -gt 0.1) {
+
+      Write-Host (
+        "    Busca de Datasets:        {0,10:N2} s" -f
+        $datasetLookupTotalSeconds
+      ) -ForegroundColor DarkGray
+    }
+
+    if ($pdfImportTotalSeconds -gt 0.1) {
+
+      Write-Host (
+        "    Importacao dos PDFs:      {0,10:N2} s" -f
+        $pdfImportTotalSeconds
+      ) -ForegroundColor DarkGray
+    }
+
+    if ($workflowTotalSeconds -gt 0.01) {
+
+      Write-Host (
+        "    Workflows:                {0,10:N2} s" -f
+        $workflowTotalSeconds
+      ) -ForegroundColor DarkGray
+    }
+
+    if ($measuredStagesTotalSeconds -gt 0.01) {
+
+      Write-Host (
+        "    Etapas medidas:           {0,10:N2} s" -f
+        $measuredStagesTotalSeconds
+      ) -ForegroundColor Gray
+    }
+
+    if ($otherDocumentSeconds -gt 0.01) {
+
+      Write-Host (
+        "    Outras operacoes:         {0,10:N2} s" -f
+        $otherDocumentSeconds
+      ) -ForegroundColor DarkGray
+    }
+
+    if ($documentTotalSeconds -gt 0.01) {
+
+      Write-Host (
+        "    Total dos documentos:     {0,10:N2} s" -f
+        $documentTotalSeconds
+      ) -ForegroundColor Gray
+    }
+
+    if (
+      $batchResults.Count -gt 0 -and
+      $averageDocumentSeconds -gt 0
+    ) {
+
+      Write-Host (
+        "    Media por documento:      {0,10:N2} s" -f
+        $averageDocumentSeconds
+      ) -ForegroundColor DarkGray
+    }
+
+    if ($unaccountedExecutionSeconds -gt 0.01) {
+
+      Write-Host (
+        "    Intervalos do lote:       {0,10:N2} s" -f
+        $unaccountedExecutionSeconds
+      ) -ForegroundColor DarkGray
+    }
+
+    if ($batchProcessingDuration.TotalSeconds -gt 0) {
+
+      Write-Host (
+        "    Processamento do lote:    {0,10:N2} s" -f
+        $batchProcessingDuration.TotalSeconds
+      ) -ForegroundColor Yellow
+    }
+
+    if (
+      $null -ne $executionDuration -and
+      $executionDuration.TotalSeconds -gt 0
+    ) {
+
+      Write-Host (
+        "    Execucao completa:        {0,10:N2} s" -f
+        $executionDuration.TotalSeconds
+      ) -ForegroundColor White
+    }
+  }
 
   # ============================================================
   # 9. EXPORTAR O RELATORIO CSV

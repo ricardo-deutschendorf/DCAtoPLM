@@ -56,6 +56,17 @@ function Get-DcaDocumentsFromFolderPath {
     -not $SuppressItemDetails
   )
 
+  # Preserva a informacao de que o script foi iniciado com
+  # -Details. Esse valor continua verdadeiro mesmo quando os
+  # diagnosticos individuais dos documentos forem suprimidos.
+  $showFolderTiming =
+  [bool]$Details
+
+  # Mede todo o processamento da pasta, incluindo pesquisa dos
+  # PDFs, leitura dos dados no PDM e montagem dos documentos.
+  $folderTotalTimer =
+  [System.Diagnostics.Stopwatch]::StartNew()
+
   $folderFullName =
   ([string]$FolderOption.FullName).Trim()
 
@@ -102,6 +113,12 @@ function Get-DcaDocumentsFromFolderPath {
   #
   # A mesma colecao recebe os resultados do Vault ou do sistema
   # de arquivos, mantendo o restante do processamento unificado.
+  #
+  # Mede somente a localização dos PDFs pelo índice do Vault ou
+  # pelo sistema de arquivos.
+  $folderSearchTimer =
+  [System.Diagnostics.Stopwatch]::StartNew()
+
   $pdfEntries =
   @()
 
@@ -216,12 +233,19 @@ function Get-DcaDocumentsFromFolderPath {
     )
   }
 
+  $folderSearchTimer.Stop()
+
   # ============================================================
   # 4. PREPARAR OS DOCUMENTOS ENCONTRADOS
   # ============================================================
   #
   # Cada PDF sera interpretado e transformado em um objeto que
   # podera ser utilizado diretamente pelo fluxo principal.
+
+  # Mede a interpretação dos nomes, leitura do estado e leitura
+  # dos campos de revisão e descrição no cartão do PDM.
+  $pdmItemsTimer =
+  [System.Diagnostics.Stopwatch]::StartNew()
 
   $documents =
   [System.Collections.Generic.List[object]]::new()
@@ -323,6 +347,10 @@ function Get-DcaDocumentsFromFolderPath {
     )
   }
 
+  $pdmItemsTimer.Stop()
+
+  $folderTotalTimer.Stop()
+
   # ============================================================
   # 6. RETORNAR OS DOCUMENTOS PREPARADOS
   # ============================================================
@@ -339,6 +367,69 @@ function Get-DcaDocumentsFromFolderPath {
       "'$folderFullName'."
     )
   }
+
+  $script:DcaLastFolderTiming =
+  [PSCustomObject]@{
+    FolderPath =
+    $folderFullName
+
+    SearchSeconds =
+    [Math]::Round(
+      $folderSearchTimer.Elapsed.TotalSeconds,
+      2
+    )
+
+
+    
+    PdmReadSeconds =
+    [Math]::Round(
+      $pdmItemsTimer.Elapsed.TotalSeconds,
+      2
+    )
+
+    TotalSeconds =
+    [Math]::Round(
+      $folderTotalTimer.Elapsed.TotalSeconds,
+      2
+    )
+
+    
+    DocumentCount =
+    $documents.Count
+
+    AverageMilliseconds =
+    if ($documents.Count -gt 0) {
+
+      [Math]::Round(
+        (
+          $pdmItemsTimer.Elapsed.TotalMilliseconds /
+          $documents.Count
+        ),
+        0
+      )
+    }
+    else {
+
+      0
+    }
+  }
+
+  # Acumula os tempos de todas as pastas abertas durante a
+  # execucao. Isso permite apresentar um resumo final mesmo
+  # quando o usuario navegar por mais de uma pasta.
+  $script:DcaFolderSearchTotalSeconds +=
+  [double]$script:DcaLastFolderTiming.SearchSeconds
+
+  $script:DcaFolderPdmReadTotalSeconds +=
+  [double]$script:DcaLastFolderTiming.PdmReadSeconds
+
+  $script:DcaFolderTotalSeconds +=
+  [double]$script:DcaLastFolderTiming.TotalSeconds
+
+  $script:DcaFolderLoadCount++
+
+  $script:DcaFolderDocumentCount +=
+  [int]$script:DcaLastFolderTiming.DocumentCount
 
   return $documents.ToArray()
 }

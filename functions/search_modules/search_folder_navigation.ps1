@@ -84,6 +84,10 @@ function Select-DcaDocumentsWithFolderNavigation {
     # Get-DcaDocumentsFromFolderPath retorna somente os PDFs
     # diretamente dentro da pasta atual. As subpastas permanecem
     # disponíveis para navegacao separadamente.
+
+    $script:DcaLastFolderTiming =
+    $null
+
     $documents =
     @(
       Get-DcaDocumentsFromFolderPath `
@@ -113,6 +117,49 @@ function Select-DcaDocumentsWithFolderNavigation {
       $documents.Count
     ) -ForegroundColor Gray
 
+    if (
+      $Details -and
+      $null -ne $script:DcaLastFolderTiming
+    ) {
+
+      $folderTiming =
+      $script:DcaLastFolderTiming
+
+      Write-Host ""
+
+      Write-Host (
+        "  Tempo da pesquisa da pasta:"
+      ) -ForegroundColor Cyan
+
+      Write-Host (
+        "    Pesquisa dos PDFs:          {0,8:N2} s" -f
+        $folderTiming.SearchSeconds
+      ) -ForegroundColor DarkGray
+
+      Write-Host (
+        "    Leitura dos dados do PDM:  {0,8:N2} s" -f
+        $folderTiming.PdmReadSeconds
+      ) -ForegroundColor DarkGray
+
+      Write-Host (
+        "    Total da pasta:            {0,8:N2} s" -f
+        $folderTiming.TotalSeconds
+      ) -ForegroundColor Gray
+
+      Write-Host (
+        "    Documentos preparados:     {0,8}" -f
+        $folderTiming.DocumentCount
+      ) -ForegroundColor DarkGray
+
+      if ($folderTiming.DocumentCount -gt 0) {
+
+        Write-Host (
+          "    Media por documento PDM:  {0,8:N0} ms" -f
+          $folderTiming.AverageMilliseconds
+        ) -ForegroundColor DarkGray
+      }
+    }
+
     Write-Host (
       "  " + ("-" * 72)
     ) -ForegroundColor DarkGray
@@ -123,6 +170,29 @@ function Select-DcaDocumentsWithFolderNavigation {
       $childFolders.Count -gt 0 -or
       $documents.Count -gt 0
     ) {
+
+      $showDocumentLines =
+      (
+        $Details -and
+        $documents.Count -le 20
+      )
+
+      if (
+        $Details -and
+        -not $showDocumentLines
+      ) {
+
+        Write-Host (
+          "  Detalhes adicionais ocultados para acelerar a " +
+          "listagem de $($documents.Count) documentos."
+        ) -ForegroundColor DarkGray
+
+        Write-Host ""
+      }
+
+      Write-Host (
+        "  Itens encontrados:"
+      ) -ForegroundColor Cyan
 
       Write-Host (
         "  Itens encontrados:"
@@ -203,17 +273,6 @@ function Select-DcaDocumentsWithFolderNavigation {
         $Details -and
         $documents.Count -le 20
       )
-
-      if (
-        $Details -and
-        -not $showDocumentLines
-      ) {
-
-        Write-Host (
-          "  Detalhes individuais ocultados para acelerar a " +
-          "listagem de $($documents.Count) documentos."
-        ) -ForegroundColor DarkGray
-      }
 
       for (
         $documentIndex = 0

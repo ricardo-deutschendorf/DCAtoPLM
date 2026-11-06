@@ -141,8 +141,9 @@ function Select-DcaPdfsByFolder {
   # 5. LOCALIZAR AS PASTAS CORRESPONDENTES
   # ============================================================
   #
-  # A busca e recursiva, mas cada pasta encontrada permanece
-  # como uma opcao independente.
+  # A busca e recursiva. Somente pastas cujo nome ou caminho
+  # relativo correspondam exatamente ao texto pesquisado sao
+  # consideradas.
   $availableFolders =
   @(
     Get-ChildItem `
@@ -158,13 +159,17 @@ function Select-DcaPdfsByFolder {
 
   foreach ($availableFolder in $availableFolders) {
 
+    if ($null -eq $availableFolder) {
+      continue
+    }
+
     $folderFullPath =
     [System.IO.Path]::GetFullPath(
       $availableFolder.FullName
     ).TrimEnd("\")
 
-    # Ignora caminhos que, depois da normalizacao, nao estejam
-    # realmente abaixo da raiz Documentacao.
+    # Ignora caminhos que nao estejam realmente abaixo da raiz
+    # de Documentacao.
     if (-not $folderFullPath.StartsWith(
         $documentationRootPath + "\",
         [System.StringComparison]::OrdinalIgnoreCase
@@ -178,19 +183,18 @@ function Select-DcaPdfsByFolder {
       $documentationRootPath.Length
     ).TrimStart("\")
 
-    # A correspondencia exige o nome exato da pasta ou o caminho
-    # relativo completo informado pelo usuario.
     $folderMatches =
-    $availableFolder.Name -ieq $folderPattern -or
-    $relativePath -ieq $folderPattern
+    (
+      $availableFolder.Name -ieq $folderPattern -or
+      $relativePath -ieq $folderPattern
+    )
 
     if (-not $folderMatches) {
       continue
     }
 
-    # Identifica a categoria pelo primeiro nivel abaixo da pasta
-    # Documentacao. Pastas fora das categorias conhecidas nao
-    # podem ser transformadas em documentos DCA.
+    # O primeiro nivel abaixo de Documentacao define a categoria
+    # DCA utilizada na preparacao e na importacao dos documentos.
     $matchedCategory =
     $null
 
@@ -216,14 +220,9 @@ function Select-DcaPdfsByFolder {
 
     if ($null -eq $matchedCategory) {
 
-      if ($Details) {
-
-        Write-Warn (
-          "Pasta encontrada, mas sem tipo DCA configurado: " +
-          "'$relativePath'."
-        )
-      }
-
+      # A pesquisa por nome encontrou a pasta, mas a pasta nao
+      # pertence a uma categoria que possa gerar documentos DCA.
+      # Ignora silenciosamente sem exibir aviso.
       continue
     }
 
@@ -238,12 +237,12 @@ function Select-DcaPdfsByFolder {
       }
     )
   }
-  
+
   if ($matchingFolders.Count -eq 0) {
 
     throw (
-      "Nenhuma pasta DCA foi encontrada com o nome " +
-      "'$folderSearchText' dentro de Documentacao."
+      "Nenhuma pasta importavel foi encontrada com o nome " +
+      "'$folderSearchText' dentro das categorias DCA reconhecidas."
     )
   }
 
@@ -376,6 +375,28 @@ function Select-DcaPdfsByFolder {
   [System.Collections.Generic.List[object]]::new()
 
   foreach ($matchingFolder in $matchingFolders) {
+
+    if ($ListFolderItems) {
+
+      $folderOptions.Add(
+        [PSCustomObject]@{
+          Number = 0
+          Name = $matchingFolder.Name
+          RelativePath = $matchingFolder.RelativePath
+          FullName = $matchingFolder.FullName
+          CategoryFolder = $matchingFolder.CategoryFolder
+          DocumentType = $matchingFolder.DocumentType
+          DisplayName = $matchingFolder.DisplayName
+          Documents = @()
+          Total = 0
+          ApprovedCount = 0
+          ObsoleteCount = 0
+          OtherCount = 0
+        }
+      )
+
+      continue
+    }
 
     $folderDocuments =
     @(
@@ -631,7 +652,7 @@ function Select-DcaPdfsByFolder {
     $selectionIsValid =
     $true
 
-       if (
+    if (
       $ListFolderItems -and
       (
         $selectionText -ieq "T" -or
