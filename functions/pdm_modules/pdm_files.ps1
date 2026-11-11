@@ -21,7 +21,8 @@
 # ============================================================
 function Search-DcaVaultPdfEntries {
 
-  # Pesquisa PDFs no indice do Vault.
+  # Pesquisa PDFs no indice do Vault e desenhos SLDDRW localizados
+  # especificamente dentro de pastas chamadas Folhas NDT.
   #
   # Quando StartFolderPath estiver preenchido, a pesquisa sera
   # iniciada nessa pasta. Dependendo da versao da EdmLib, a API
@@ -151,19 +152,51 @@ while ($null -ne $currentResult) {
   $resultFullName =
   ([string]$currentResult.Path).Trim()
 
+  $resultExtension =
+  [System.IO.Path]::GetExtension(
+    $resultName
+  )
+
   $isPdf =
+  $resultExtension -ieq ".pdf"
+
+  $isSolidWorksDrawing =
+  $resultExtension -ieq ".slddrw"
+
+  $isInsideNdtFolder =
+  $false
+
+  if (-not (
+      [string]::IsNullOrWhiteSpace(
+        $resultFullName
+      )
+    )) {
+
+    $resultPathParts =
+    @(
+      $resultFullName -split '[\\/]'
+    )
+
+    $isInsideNdtFolder =
+    @(
+      $resultPathParts |
+        Where-Object {
+        ([string]$_).Trim() -ieq "Folhas NDT"
+      }
+    ).Count -gt 0
+  }
+
+  $isAllowedResult =
   (
-    -not [string]::IsNullOrWhiteSpace(
-      $resultName
-    ) -and
-    $resultName.EndsWith(
-      ".pdf",
-      [System.StringComparison]::OrdinalIgnoreCase
+    $isPdf -or
+    (
+      $isSolidWorksDrawing -and
+      $isInsideNdtFolder
     )
   )
 
   if (
-    $isPdf -and
+    $isAllowedResult -and
     -not [string]::IsNullOrWhiteSpace(
       $resultFullName
     )
@@ -174,17 +207,37 @@ while ($null -ne $currentResult) {
       $resultName
     )
 
+    $entryDocumentType =
+    if ($isSolidWorksDrawing) {
+      "NDT"
+    }
+    else {
+      $null
+    }
+
+    $entryDisplayName =
+    if ($isSolidWorksDrawing) {
+      "GD5_DCA_NDT"
+    }
+    else {
+      $null
+    }
+
     $entries.Add(
       [PSCustomObject]@{
         Name = $resultName
         BaseName = ([string]$baseName).Trim()
         FullName = $resultFullName
+        Extension = $resultExtension
+        DocumentType = $entryDocumentType
+        TypeDisplayName = $entryDisplayName
+        IsNdt = [bool]$isSolidWorksDrawing
         FromVault = $true
       }
     )
   }
   elseif (
-    $isPdf -and
+    $isAllowedResult -and
     $Details
   ) {
 
@@ -453,51 +506,339 @@ function Confirm-DcaLocalPdf {
   # 5. SOLICITAR UMA COPIA LOCAL
   # ============================================================
 
-  [int]$fileVersion =
-  0
+  [object]$fileVersion =
+  [int]0
 
-  [int]$folderId =
+  [object]$folderId =
   [int]$parentFolder.ID
 
+  if ($Details) {
+
+    Write-Host (
+      "  Preparando download pelo PDM:"
+    ) -ForegroundColor Cyan
+
+    Write-Host (
+      "    Arquivo:     '$entryPath'"
+    ) -ForegroundColor DarkGray
+
+    Write-Host (
+      "    Pasta ID:    '$folderId'"
+    ) -ForegroundColor DarkGray
+
+    Write-Host (
+      "    Versao:      '$fileVersion'"
+    ) -ForegroundColor DarkGray
+
+    Write-Host (
+      "    Tipo arquivo: " +
+      $pdmFile.GetType().FullName
+    ) -ForegroundColor DarkGray
+
+    Write-Host (
+      "    Tipo pasta:   " +
+      $parentFolder.GetType().FullName
+    ) -ForegroundColor DarkGray
+  }
+
   try {
+
+    # ==========================================================
+    # LOCALIZAR DINAMICAMENTE A INTERFACE IEDMFILE5
+    # ==========================================================
+    #
+    # O namespace da biblioteca de interoperabilidade pode variar
+    # entre instalacoes do SOLIDWORKS PDM. Por isso, a interface
+    # e procurada pelo nome entre os assemblies ja carregados.
+
+    $edmFile5Type =
+    [System.AppDomain]::CurrentDomain.GetAssemblies() |
+      ForEach-Object {
+
+      try {
+
+        $_.GetTypes()
+      }
+      catch {
+
+        @()
+      }
+    } |
+      Where-Object {
+      $_.IsInterface -and
+      $_.Name -eq "IEdmFile5"
+    } |
+      Select-Object -First 1
+
+    # Se a biblioteca ainda nao estiver carregada, tenta carregar
+    # explicitamente o caminho configurado no .env.
+    if (
+      $null -eq $edmFile5Type -and
+      -not [string]::IsNullOrWhiteSpace(
+        [string]$env:DCA_PDM_LIB
+      ) -and
+      (
+        Test-Path `
+          -LiteralPath $env:DCA_PDM_LIB `
+          -PathType Leaf
+      )
+    ) {
+
+      $pdmInteropAssembly =
+      [System.Reflection.Assembly]::LoadFrom(
+        $env:DCA_PDM_LIB
+      )
+
+      if ($null -ne $pdmInteropAssembly) {
+
+        $edmFile5Type =
+        $pdmInteropAssembly.GetTypes() |
+          Where-Object {
+          $_.IsInterface -and
+          $_.Name -eq "IEdmFile5"
+        } |
+          Select-Object -First 1
+      }
+    }
+
+    if ($null -eq $edmFile5Type) {
+
+      $loadedAssemblyNames =
+      @(
+        [System.AppDomain]::CurrentDomain.GetAssemblies() |
+          ForEach-Object {
+          $_.GetName().Name
+        } |
+          Sort-Object -Unique
+      )
+
+      throw (
+        "A interface IEdmFile5 nao foi encontrada nas " +
+        "bibliotecas carregadas. DCA_PDM_LIB: " +
+        "'$([string]$env:DCA_PDM_LIB)'. " +
+        "Assemblies carregados: " +
+        ($loadedAssemblyNames -join ", ")
+      )
+    }
 
     if ($Details) {
 
       Write-Host (
-        "  Preparando download pelo PDM:"
+        "  Interface IEdmFile5 localizada:"
       ) -ForegroundColor Cyan
 
       Write-Host (
-        "    Arquivo:     '$entryPath'"
+        "    Nome completo: " +
+        $edmFile5Type.FullName
       ) -ForegroundColor DarkGray
 
       Write-Host (
-        "    Pasta ID:    '$folderId'"
-      ) -ForegroundColor DarkGray
-
-      Write-Host (
-        "    Versao:      '$fileVersion'"
-      ) -ForegroundColor DarkGray
-
-      Write-Host (
-        "    Tipo arquivo: " +
-        $pdmFile.GetType().FullName
-      ) -ForegroundColor DarkGray
-
-      Write-Host (
-        "    Tipo pasta:   " +
-        $parentFolder.GetType().FullName
+        "    Assembly:      " +
+        $edmFile5Type.Assembly.GetName().Name
       ) -ForegroundColor DarkGray
     }
 
-    $null =
-    $pdmFile.GetFileCopy(
-      0,
-      [ref]$fileVersion,
-      [ref]$folderId,
-      0,
-      ""
-    )
+       # ==========================================================
+    # LOCALIZAR GETFILECOPY NA INTERFACE IEDMFILE5
+    # ==========================================================
+    #
+    # Nao utiliza Marshal.CreateWrapperOfType porque IEdmFile5
+    # e uma interface COM, e nao uma coclass derivada de
+    # System.__ComObject.
+    #
+    # A chamada e realizada pelo MethodInfo da interface, usando
+    # diretamente o objeto COM retornado pelo Vault.
+
+    $getFileCopyMethod =
+    $edmFile5Type.GetMethods() |
+      Where-Object {
+        $_.Name -eq "GetFileCopy" -and
+        $_.GetParameters().Count -eq 5
+      } |
+      Select-Object -First 1
+
+    if ($null -eq $getFileCopyMethod) {
+
+      throw (
+        "O metodo GetFileCopy com 5 parametros nao foi " +
+        "encontrado em '$($edmFile5Type.FullName)'."
+      )
+    }
+
+    $getFileCopyParameters =
+    $getFileCopyMethod.GetParameters()
+
+    if ($Details) {
+
+      Write-Host (
+        "  Assinatura de GetFileCopy:"
+      ) -ForegroundColor Cyan
+
+      for (
+        $parameterIndex = 0
+        $parameterIndex -lt $getFileCopyParameters.Count
+        $parameterIndex++
+      ) {
+
+        $currentParameter =
+        $getFileCopyParameters[$parameterIndex]
+
+        Write-Host (
+          "    [{0}] {1} {2} | ByRef: {3}" -f
+          $parameterIndex,
+          $currentParameter.ParameterType.FullName,
+          $currentParameter.Name,
+          $currentParameter.ParameterType.IsByRef
+        ) -ForegroundColor DarkGray
+      }
+    }
+
+    # ==========================================================
+    # PREPARAR OS ARGUMENTOS DA CHAMADA
+    # ==========================================================
+    #
+    # Os valores localizados nas posicoes 1 e 2 sao atualizados
+    # pelo MethodInfo.Invoke quando os parametros forem ByRef.
+
+    [object]$versionArgument =
+    [int]0
+
+    [object]$folderArgument =
+    [int]$parentFolder.ID
+
+    $getFileCopyArguments =
+    [object[]]::new(5)
+
+    $getFileCopyArguments[0] =
+    [int]0
+
+    $getFileCopyArguments[1] =
+    $versionArgument
+
+    $getFileCopyArguments[2] =
+    $folderArgument
+
+    $getFileCopyArguments[3] =
+    [int]0
+
+    $getFileCopyArguments[4] =
+    [string]""
+
+    if ($Details) {
+
+      Write-Host (
+        "  Executando GetFileCopy por reflexao:"
+      ) -ForegroundColor Cyan
+
+      Write-Host (
+        "    Versao solicitada: '$versionArgument'"
+      ) -ForegroundColor DarkGray
+
+      Write-Host (
+        "    Pasta solicitada:  '$folderArgument'"
+      ) -ForegroundColor DarkGray
+    }
+
+    $unknownPointer =
+    [System.IntPtr]::Zero
+
+    $typedPdmFile =
+    $null
+
+    try {
+
+      # Obtem o ponteiro IUnknown do objeto COM retornado pelo
+      # Vault e cria uma referencia tipada como IEdmFile5.
+      $unknownPointer =
+      [System.Runtime.InteropServices.Marshal]::GetIUnknownForObject(
+        $pdmFile
+      )
+
+      if ($unknownPointer -eq [System.IntPtr]::Zero) {
+
+        throw (
+          "GetIUnknownForObject retornou um ponteiro vazio para " +
+          "'$entryPath'."
+        )
+      }
+
+      $typedPdmFile =
+      [System.Runtime.InteropServices.Marshal]::GetTypedObjectForIUnknown(
+        $unknownPointer,
+        $edmFile5Type
+      )
+
+      if ($null -eq $typedPdmFile) {
+
+        throw (
+          "GetTypedObjectForIUnknown nao retornou uma referencia " +
+          "IEdmFile5 para '$entryPath'."
+        )
+      }
+
+      if ($Details) {
+
+        Write-Host (
+          "  Referencia COM tipada criada:"
+        ) -ForegroundColor Cyan
+
+        Write-Host (
+          "    Interface: '$($edmFile5Type.FullName)'"
+        ) -ForegroundColor DarkGray
+
+        Write-Host (
+          "    Tipo RCW:  '$($typedPdmFile.GetType().FullName)'"
+        ) -ForegroundColor DarkGray
+      }
+
+      $null =
+      $getFileCopyMethod.Invoke(
+        $typedPdmFile,
+        $getFileCopyArguments
+      )
+    }
+    finally {
+
+      # Libera somente a referencia adicional obtida acima.
+      # Nao utiliza FinalReleaseComObject porque $pdmFile ainda
+      # pertence ao fluxo atual e sera usado por GetLocalPath.
+      if ($unknownPointer -ne [System.IntPtr]::Zero) {
+
+        $null =
+        [System.Runtime.InteropServices.Marshal]::Release(
+          $unknownPointer
+        )
+      }
+    }
+
+    # Os elementos do array recebem os valores atualizados para
+    # parametros ref/out depois da invocacao por reflexao.
+    $versionArgument =
+    $getFileCopyArguments[1]
+
+    $folderArgument =
+    $getFileCopyArguments[2]
+
+    $fileVersion =
+    $versionArgument
+
+    $folderId =
+    $folderArgument
+
+    if ($Details) {
+
+      Write-Host (
+        "  Solicitacao de copia enviada ao PDM."
+      ) -ForegroundColor Green
+
+      Write-Host (
+        "    Versao retornada: '$fileVersion'"
+      ) -ForegroundColor DarkGray
+
+      Write-Host (
+        "    Pasta retornada:  '$folderId'"
+      ) -ForegroundColor DarkGray
+    }
   }
   catch {
 
@@ -526,10 +867,92 @@ function Confirm-DcaLocalPdf {
   # 6. VALIDAR O ARQUIVO DISPONIBILIZADO
   # ============================================================
 
-  $localCachePath =
-  [string]$pdmFile.GetLocalPath(
-    $parentFolder.ID
-  )
+  # GetLocalPath tambem pertence a IEdmFile5 e pode nao aparecer
+  # diretamente no System.__ComObject retornado pelo Vault.
+  $getLocalPathMethod =
+  $edmFile5Type.GetMethods() |
+    Where-Object {
+      $_.Name -eq "GetLocalPath" -and
+      $_.GetParameters().Count -eq 1
+    } |
+    Select-Object -First 1
+
+  if ($null -eq $getLocalPathMethod) {
+
+    throw (
+      "O metodo GetLocalPath com 1 parametro nao foi encontrado " +
+      "em '$($edmFile5Type.FullName)'."
+    )
+  }
+
+  if ($null -eq $typedPdmFile) {
+
+    throw (
+      "A referencia COM tipada ficou NULL antes de GetLocalPath."
+    )
+  }
+
+  $getLocalPathArguments =
+  [object[]]::new(1)
+
+  $getLocalPathArguments[0] =
+  [int]$parentFolder.ID
+
+  if ($Details) {
+
+    Write-Host (
+      "  Executando GetLocalPath por reflexao:"
+    ) -ForegroundColor Cyan
+
+    Write-Host (
+      "    Interface: '$($edmFile5Type.FullName)'"
+    ) -ForegroundColor DarkGray
+
+    Write-Host (
+      "    Pasta ID:  '$($parentFolder.ID)'"
+    ) -ForegroundColor DarkGray
+  }
+
+  try {
+
+    $localCachePath =
+    [string]$getLocalPathMethod.Invoke(
+      $typedPdmFile,
+      $getLocalPathArguments
+    )
+  }
+  catch {
+
+    $realException =
+    $_.Exception
+
+    while (
+      $null -ne $realException.InnerException
+    ) {
+
+      $realException =
+      $realException.InnerException
+    }
+
+    throw (
+      "Nao foi possivel obter o caminho local do PDF. " +
+      "Arquivo: '$entryPath'. " +
+      "FolderID: '$($parentFolder.ID)'. " +
+      "Detalhe: " +
+      $realException.Message
+    )
+  }
+
+  if ($Details) {
+
+    Write-Host (
+      "  Caminho retornado por GetLocalPath:"
+    ) -ForegroundColor Green
+
+    Write-Host (
+      "    '$localCachePath'"
+    ) -ForegroundColor DarkGray
+  }
 
   $localCachePath =
   $localCachePath.Trim()
@@ -588,4 +1011,5 @@ function Confirm-DcaLocalPdf {
   # ============================================================
 
   return $localCacheFile.FullName
+
 }

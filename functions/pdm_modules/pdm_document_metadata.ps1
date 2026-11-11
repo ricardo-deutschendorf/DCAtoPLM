@@ -24,7 +24,8 @@ function Get-DcaCardRevisionVariableNames {
       "Original",
       "Processo",
       "NormaExterna",
-      "DatasetOnly"
+      "DatasetOnly",
+      "NDT"
     )]
     [string]$DocumentType
   )
@@ -43,7 +44,10 @@ function Get-DcaCardRevisionVariableNames {
     $configuredValue =
     [string]$env:DCA_PDM_VAR_ORIGINAL_REVISION
   }
-  elseif ($DocumentType -eq "Processo") {
+  elseif (
+    $DocumentType -eq "Processo" -or
+    $DocumentType -eq "NDT"
+  ) {
 
     $configuredValue =
     [string]$env:DCA_PDM_VAR_PROCESS_REVISION
@@ -210,7 +214,10 @@ function Update-DcaMatchDescriptionFromCard {
   $descriptionVariableName =
   $null
 
-  if ($Match.DocumentType -eq "Processo") {
+  if (
+    $Match.DocumentType -eq "Processo" -or
+    $Match.DocumentType -eq "NDT"
+  ) {
 
     $descriptionVariableName =
     [string]$env:DCA_PDM_VAR_PROCESS_DESCRIPTION
@@ -471,6 +478,10 @@ function Update-DcaMatchRevisionFromCard {
       }
 
       "Processo" {
+        "DCA_PDM_VAR_PROCESS_REVISION"
+      }
+
+      "NDT" {
         "DCA_PDM_VAR_PROCESS_REVISION"
       }
 

@@ -473,10 +473,24 @@ function ConvertFrom-PdfFileName {
       "Original",
       "Processo",
       "NormaExterna",
-      "DatasetOnly"
+      "DatasetOnly",
+      "NDT"
     )]
     [string]$DocumentType
   )
+
+  if ($Details) {
+
+    Write-Host (
+      "  ConvertFrom-PdfFileName carregado de: {0}" -f
+      $MyInvocation.MyCommand.ScriptBlock.File
+    ) -ForegroundColor DarkGray
+
+    Write-Host (
+      "  DocumentType recebido: '{0}'" -f
+      $DocumentType
+    ) -ForegroundColor DarkGray
+  }
 
   # ============================================================
   # 1. PREPARAR O NOME DO ARQUIVO
@@ -499,6 +513,7 @@ function ConvertFrom-PdfFileName {
 
   $sourceCodeText = $name
   $clientRevision = $null
+  $ndtSheetType = $null
 
   # ============================================================
   # 2. EXTRAIR O VALOR ENTRE COLCHETES
@@ -517,6 +532,18 @@ function ConvertFrom-PdfFileName {
 
     $possibleRevision =
     $Matches["BracketValue"].Trim().ToUpperInvariant()
+
+    if (
+      $DocumentType -eq "NDT" -and
+      $possibleRevision -match '^(MPI|FPI)$'
+    ) {
+
+      $sourceCodeText =
+      $possibleCode
+
+      $ndtSheetType =
+      $possibleRevision
+    }
 
     # Cada tipo de documento possui uma regra propria para validar
     # o formato da revisao encontrada entre colchetes.
@@ -561,11 +588,23 @@ function ConvertFrom-PdfFileName {
       $clientRevision =
       $possibleRevision
     }
+    elseif (
+      $DocumentType -eq "NDT" -and
+      -not [string]::IsNullOrWhiteSpace(
+        $ndtSheetType
+      )
+    ) {
+
+      # MPI ou FPI identifica o tipo da Folha NDT.
+      # A revisao tecnica sera obtida separadamente pelo cartao.
+      $sourceCodeText =
+      $possibleCode
+
+      $clientRevision =
+      $null
+    }
     else {
 
-      # O texto entre colchetes nao corresponde a uma revisao
-      # valida. Mantem o nome completo para evitar remover uma
-      # parte que possa pertencer ao codigo ou ao titulo.
       $sourceCodeText =
       $name
 
@@ -621,6 +660,7 @@ function ConvertFrom-PdfFileName {
     ClientRevision = $clientRevision
     DocumentTitle = $documentTitle
     CodeParsed = $codeParsed
+    NdtSheetType = ([string]$ndtSheetType).Trim().ToUpperInvariant()
   }
 }
 

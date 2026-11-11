@@ -72,7 +72,8 @@ function Get-DcaTypeConfiguration {
     [ValidateSet(
       "Original",
       "Processo",
-      "NormaExterna"
+      "NormaExterna",
+      "NDT"
     )]
     [string]$DocumentType,
 
@@ -151,6 +152,13 @@ function Get-DcaTypeConfiguration {
       ClientProperty = $env:DCA_TC_PROCESS_STANDARD_CLIENT_PROPERTY
       ClientValue = $env:DCA_TC_PROCESS_STANDARD_CLIENT_VALUE
     }
+
+    NDT = @{
+      ItemType = $env:DCA_TC_PROCESS_NDT_ITEM_TYPE
+      RevisionType = $env:DCA_TC_PROCESS_NDT_REVISION_TYPE
+      ClientProperty = $env:DCA_TC_PROCESS_NDT_CLIENT_PROPERTY
+      ClientValue = $env:DCA_TC_PROCESS_NDT_CLIENT_VALUE
+    }
   }
 
   # ============================================================
@@ -177,6 +185,13 @@ function Get-DcaTypeConfiguration {
       RevisionType = $env:DCA_TC_TEST_STANDARD_REVISION_TYPE
       ClientProperty = $env:DCA_TC_TEST_STANDARD_CLIENT_PROPERTY
       ClientValue = $env:DCA_TC_TEST_STANDARD_CLIENT_VALUE
+    }
+
+    NDT = @{
+      ItemType = $env:DCA_TC_TEST_NDT_ITEM_TYPE
+      RevisionType = $env:DCA_TC_TEST_NDT_REVISION_TYPE
+      ClientProperty = $env:DCA_TC_TEST_NDT_CLIENT_PROPERTY
+      ClientValue = $env:DCA_TC_TEST_NDT_CLIENT_VALUE
     }
   }
 
@@ -424,8 +439,84 @@ function Get-DcaTypeConfiguration {
   }
 
   # ============================================================
-  # 9. CONFIGURAR A NORMA EXTERNA
+  # 9. CONFIGURAR A FOLHA NDT
   # ============================================================
+  #
+  # O NDT utiliza tipos proprios de Item e revisao.
+  #
+  # Nesta primeira configuracao, a revisao lida no cartao do PDM
+  # e enviada diretamente como item_revision_id. Nenhuma
+  # propriedade de revisao de Processo, como gd5revcliente ou
+  # gd5revinterna, e adicionada ao tipo DCA NDT Revision.
+  if ($DocumentType -eq "NDT") {
+
+    $ndtRevision =
+    ([string]$ClientRevision).Trim().ToUpperInvariant()
+
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $ndtRevision
+      )
+    ) {
+
+      throw (
+        "A revisao da Folha NDT ficou vazia. " +
+        "Confirme o valor da variavel Revision no cartao do PDM."
+      )
+    }
+
+    if ($ndtRevision.Length -gt 32) {
+
+      throw (
+        "A revisao da Folha NDT possui mais de 32 caracteres: " +
+        "'$ndtRevision'."
+      )
+    }
+
+    if (
+      $ndtRevision -notmatch
+      '^[A-Z0-9.-]+$'
+    ) {
+
+      throw (
+        "A revisao da Folha NDT possui caracteres invalidos: " +
+        "'$ndtRevision'. Sao aceitos letras, numeros, ponto e hifen."
+      )
+    }
+
+    if ($Details) {
+
+      Write-Host (
+        "  Configuracao da Folha NDT:"
+      ) -ForegroundColor Cyan
+
+      Write-Host (
+        "    Tipo do Item:    '$itemType'"
+      ) -ForegroundColor DarkGray
+
+      Write-Host (
+        "    Tipo da Revisao: '$revisionType'"
+      ) -ForegroundColor DarkGray
+
+      Write-Host (
+        "    Revision ID:     '$ndtRevision'"
+      ) -ForegroundColor Cyan
+    }
+
+    return [PSCustomObject]@{
+      Environment = $TeamcenterEnvironment
+      ItemType = $itemType
+      RevisionType = $revisionType
+      ClientProperty = $clientProperty
+      ClientValue = $clientValue
+      TeamcenterRevisionId = $ndtRevision
+      DocumentRevision = $ndtRevision
+      RevisionProperties = @{}
+    }
+  }
+
+  # ============================================================
+  # 10. CONFIGURAR A NORMA EXTERNA
   #
   # A revisao documental permanece separada do item_revision_id.
   # O tipo de revisao da Norma Externa exige um identificador

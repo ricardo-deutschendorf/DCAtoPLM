@@ -160,7 +160,7 @@ function Show-DcaImportPlan {
 
     if (
       $document.DocumentType -ne "DatasetOnly" -and
-      $pdmState -ieq "Aprovado"
+      $pdmState -in @("Aprovado", "Verificado")
     ) {
 
       $workflowLabel =

@@ -228,9 +228,10 @@ $functionFiles =
   # Logs da execucao e relatorio CSV do lote.
   "functions\reporting_functions.ps1",
 
-  # PDM: conexao, arquivos, nomes e cartoes de dados.
+  # PDM: conexao, arquivos, NDT, nomes e cartoes de dados.
   "functions\pdm_modules\pdm_connection.ps1",
   "functions\pdm_modules\pdm_files.ps1",
+  "functions\pdm_modules\pdm_ndt_files.ps1",
   "functions\pdm_modules\pdm_filename_parser.ps1",
   "functions\pdm_modules\pdm_card_reader.ps1",
   "functions\pdm_modules\pdm_document_metadata.ps1",
@@ -323,6 +324,7 @@ $requiredFunctions =
   "Search-DcaVaultPdfEntries",
   "Get-DcaDiskPdfEntries",
   "Confirm-DcaLocalPdf",
+  "Find-DcaNdtPdfEntry",
   "Get-DcaPdmVariableValue",
   "Update-DcaMatchRevisionFromCard",
   "Update-DcaMatchDescriptionFromCard",
@@ -349,6 +351,7 @@ $requiredFunctions =
   "Get-TeamcenterSettings",
   "Connect-Teamcenter",
   "Get-TeamcenterMethod",
+  "Show-TeamcenterImporterFileMethods",
   "Get-TeamcenterConnection",
   "Import-TeamcenterQueryAssemblies",
   "Get-TeamcenterRevision",
@@ -369,6 +372,7 @@ $requiredFunctions =
   "Show-DcaTeamcenterRevisionDatasets",
   "Test-DcaTeamcenterDatasetExists",
   "Import-TeamcenterPdf",
+  "Import-DcaNdtDrawing",
   "New-DcaTeamcenterItem",
   "Start-TeamcenterWorkflow"
 )
@@ -1180,6 +1184,136 @@ function Invoke-DcaMain {
     $clientRevision =
     $clientRevision.Trim().ToUpperInvariant()
 
+    # ==========================================================
+    # LOCALIZAR O PDF CORRESPONDENTE DA FOLHA NDT
+    # ==========================================================
+    #
+    # Para NDT, o resultado selecionado inicialmente e o desenho
+    # SLDDRW localizado em Folhas NDT.
+    #
+    # O Dataset deve utilizar o PDF correspondente localizado na
+    # pasta paralela Folhas NDT PDF.
+
+    $ndtDrawingEntry =
+    $null
+
+    $ndtPdfEntry =
+    $null
+
+    $ndtSheetType =
+    $null
+
+    if ($documentType -eq "NDT") {
+
+      $ndtDrawingEntry =
+      $selectedPdf.File
+
+      if (
+        $selectedPdf.PSObject.Properties["NdtSheetType"]
+      ) {
+
+        $ndtSheetType =
+        ([string]$selectedPdf.NdtSheetType).Trim().ToUpperInvariant()
+      }
+
+      # Compatibilidade com resultados que ainda nao possuam a
+      # propriedade NdtSheetType. Nesse caso, le MPI ou FPI
+      # diretamente do nome do desenho.
+      if (
+        [string]::IsNullOrWhiteSpace(
+          $ndtSheetType
+        )
+      ) {
+
+        $ndtDrawingBaseName =
+        ([string]$ndtDrawingEntry.BaseName).Trim()
+
+        if (
+          $ndtDrawingBaseName -match
+          '(?i)\[(?<NdtType>MPI|FPI)\]'
+        ) {
+
+          $ndtSheetType =
+          ([string]$Matches["NdtType"]).Trim().ToUpperInvariant()
+        }
+      }
+
+      if (
+        [string]::IsNullOrWhiteSpace(
+          $ndtSheetType
+        )
+      ) {
+
+        throw (
+          "Nao foi possivel identificar MPI ou FPI no desenho " +
+          "NDT '$($ndtDrawingEntry.Name)'."
+        )
+      }
+
+      $ndtPdfEntry =
+      Find-DcaNdtPdfEntry `
+        -DrawingEntry $ndtDrawingEntry `
+        -ItemCode $itemCodeFromFile `
+        -NdtSheetType $ndtSheetType `
+        -ClientRevision $clientRevision
+
+      if ($null -eq $ndtPdfEntry) {
+
+        throw (
+          "A pesquisa do PDF correspondente retornou NULL para " +
+          "'$itemCodeFromFile [$ndtSheetType]'."
+        )
+      }
+
+      # A partir deste ponto, File deve representar o PDF que sera
+      # disponibilizado no cache e importado como Dataset.
+      #
+      # O desenho continua preservado separadamente.
+      $selectedPdf.File =
+      $ndtPdfEntry
+
+      Add-Member `
+        -InputObject $selectedPdf `
+        -NotePropertyName "NdtDrawingFile" `
+        -NotePropertyValue $ndtDrawingEntry `
+        -Force
+
+      Add-Member `
+        -InputObject $selectedPdf `
+        -NotePropertyName "NdtPdfFile" `
+        -NotePropertyValue $ndtPdfEntry `
+        -Force
+
+      Add-Member `
+        -InputObject $selectedPdf `
+        -NotePropertyName "NdtSheetType" `
+        -NotePropertyValue $ndtSheetType `
+        -Force
+
+      if ($Details) {
+
+        Write-Host (
+          "  Arquivos associados ao DCA NDT:"
+        ) -ForegroundColor Cyan
+
+        Write-Host (
+          "    Desenho: '$($ndtDrawingEntry.FullName)'"
+        ) -ForegroundColor DarkGray
+
+        Write-Host (
+          "    PDF:     '$($ndtPdfEntry.FullName)'"
+        ) -ForegroundColor DarkGray
+
+        Write-Host (
+          "    Folha:   '$ndtSheetType'"
+        ) -ForegroundColor DarkGray
+
+        Write-Host (
+          "    Revisao: '$clientRevision'"
+        ) -ForegroundColor DarkGray
+      }
+    }
+
     # A descricao obtida do cartao de dados tem prioridade sobre o
     # parametro -ItemName. Quando nenhuma descricao estiver disponivel,
     # o fluxo solicita um nome ou utiliza o codigo em importacoes por pasta.
@@ -1245,6 +1379,9 @@ function Invoke-DcaMain {
     $preparedDocuments.Add(
       [PSCustomObject]@{
         SelectedPdf = $selectedPdf
+        NdtDrawingFile = $ndtDrawingEntry
+        NdtPdfFile = $ndtPdfEntry
+        NdtSheetType = [string]$ndtSheetType
         ItemCode = $itemCodeFromFile
         ItemName = $itemNameText.Trim()
         ClientRevision = $clientRevision
@@ -1312,7 +1449,7 @@ function Invoke-DcaMain {
     $preparedDocuments |
       Where-Object {
       $_.DocumentType -ne "DatasetOnly" -and
-      $_.PdmState -ieq "Aprovado"
+      $_.PdmState -in @("Aprovado", "Verificado")
     }
   ).Count
 
@@ -1330,8 +1467,7 @@ function Invoke-DcaMain {
     $preparedDocuments |
       Where-Object {
       $_.DocumentType -ne "DatasetOnly" -and
-      $_.PdmState -ine "Aprovado" -and
-      $_.PdmState -ine "Obsoleto"
+      $_.PdmState -notin @("Aprovado", "Verificado", "Obsoleto")
     }
   ).Count
 
@@ -1390,6 +1526,19 @@ function Invoke-DcaMain {
     ) -ForegroundColor DarkGray
   }
   if ($Preview) {
+
+    if (
+      $Details -and
+      @(
+        $preparedDocuments |
+          Where-Object {
+          $_.DocumentType -eq "NDT"
+        }
+      ).Count -gt 0
+    ) {
+
+      Show-TeamcenterImporterFileMethods
+    }
 
     Show-DcaImportPlan -Documents $preparedDocuments.ToArray()
 
@@ -1673,6 +1822,32 @@ function Invoke-DcaMain {
       "ATENCAO: o processamento sera realizado no " +
       "Teamcenter de PROCESSO."
     )
+  }
+
+  $ndtDocumentsForImporterDiagnostic =
+  @(
+    $preparedDocuments |
+      Where-Object {
+      ([string]$_.DocumentType).Trim() -ieq "NDT"
+    }
+  )
+
+  if (
+    $Details -and
+    $ndtDocumentsForImporterDiagnostic.Count -gt 0
+  ) {
+
+    Write-Host ""
+    Write-Host (
+      "  Diagnostico do importador para arquivos NDT:"
+    ) -ForegroundColor Cyan
+
+    Write-Host (
+      "  Documentos NDT encontrados: " +
+      $ndtDocumentsForImporterDiagnostic.Count
+    ) -ForegroundColor DarkGray
+
+    Show-TeamcenterImporterFileMethods
   }
 
   Show-DcaImportPlan -Documents $preparedDocuments.ToArray()
@@ -2653,6 +2828,27 @@ function Invoke-DcaMain {
       }
 
       # ==================================================
+      # E.3. Importar o SLDDRW da folha NDT
+      # ==================================================
+      # Executa depois do PDF e antes do workflow. Uma falha aqui
+      # interrompe o documento, e o workflow nao e iniciado.
+      if (
+        $document.DocumentType -eq "NDT" -and
+        -not $datasetAlreadyExists
+      ) {
+
+        $null =
+        Import-DcaNdtDrawing `
+          -Revision $teamcenterRevision `
+          -DatasetName $datasetName `
+          -DatasetRevision $document.ClientRevision `
+          -DrawingEntry $document.NdtDrawingFile `
+          -TemporaryFolder (Split-Path -Path $temporaryPdfPath -Parent)
+
+        Write-Success "Desenho NDT importado como Dataset."
+      }
+
+      # ==================================================
       # F. Iniciar o workflow quando aplicavel
       # ==================================================
       $pdmState =
@@ -2691,7 +2887,7 @@ function Invoke-DcaMain {
       if (
         $document.DocumentType -ne "DatasetOnly" -and
         -not $datasetAlreadyExists -and
-        $pdmState -ieq "Aprovado"
+        $pdmState -in @("Aprovado", "Verificado")
       ) {
 
         $workflowTemplate =

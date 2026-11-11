@@ -2,14 +2,14 @@
 # LEITURA DOS DOCUMENTOS DE UMA PASTA
 # ============================================================
 #
-# Este arquivo carrega os PDFs existentes diretamente dentro
-# de uma pasta selecionada.
+# Este arquivo carrega os documentos diretamente dentro de uma
+# pasta selecionada.
 #
 # Fontes utilizadas:
 #   1. indice do Vault, quando a API do PDM estiver disponivel;
 #   2. sistema de arquivos, quando a API estiver indisponivel.
 #
-# Para cada PDF, o fluxo:
+# Para cada documento, o fluxo:
 #   1. interpreta o nome fisico do arquivo;
 #   2. identifica codigo, revisao e titulo;
 #   3. consulta o estado atual no PDM;
@@ -17,14 +17,15 @@
 #   5. complementa a descricao pelo cartao de dados;
 #   6. prepara o objeto utilizado pelo lote de importacao.
 #
-# Somente os PDFs diretamente dentro da pasta sao carregados.
+# Somente os arquivos suportados diretamente dentro da pasta sao
+# carregados: PDFs nas categorias comuns e desenhos SLDDRW em NDT.
 # As subpastas sao tratadas pelo modulo de navegacao.
 #
 # Nenhum arquivo e alterado ou importado por esta funcao.
 # ============================================================
 function Get-DcaDocumentsFromFolderPath {
 
-  # Carrega os PDFs diretamente dentro da pasta informada e
+  # Carrega os documentos diretamente dentro da pasta informada e
   # transforma cada resultado em um documento preparado.
   #
   # FolderOption informa:
@@ -49,7 +50,7 @@ function Get-DcaDocumentsFromFolderPath {
   )
 
   # Preserva o modo Details geral, mas permite ocultar as mensagens
-  # emitidas para cada PDF durante a leitura de uma pasta.
+  # emitidas para cada documento durante a leitura de uma pasta.
   $showItemDetails =
   (
     $Details -and
@@ -63,7 +64,7 @@ function Get-DcaDocumentsFromFolderPath {
   [bool]$Details
 
   # Mede todo o processamento da pasta, incluindo pesquisa dos
-  # PDFs, leitura dos dados no PDM e montagem dos documentos.
+  # arquivos, leitura dos dados no PDM e montagem dos documentos.
   $folderTotalTimer =
   [System.Diagnostics.Stopwatch]::StartNew()
 
@@ -108,24 +109,32 @@ function Get-DcaDocumentsFromFolderPath {
   }
 
   # ============================================================
-  # 1. PREPARAR A COLECAO DE PDFS
+  # 1. PREPARAR A COLECAO DE ARQUIVOS
   # ============================================================
   #
-  # A mesma colecao recebe os resultados do Vault ou do sistema
-  # de arquivos, mantendo o restante do processamento unificado.
+  # Categorias comuns usam PDFs. NDT usa os desenhos SLDDRW, dos
+  # quais o fluxo principal localiza o PDF correspondente.
   #
-  # Mede somente a localização dos PDFs pelo índice do Vault ou
-  # pelo sistema de arquivos.
+  # Mede somente a localização dos arquivos pelo índice do Vault
+  # ou pelo sistema de arquivos.
   $folderSearchTimer =
   [System.Diagnostics.Stopwatch]::StartNew()
 
-  $pdfEntries =
+  $documentEntries =
   @()
 
   $useDiskSearch =
   $null -eq $Vault
+  $expectedExtension =
+  if ($documentType -ieq "NDT") {
+    ".slddrw"
+  }
+  else {
+    ".pdf"
+  }
+
   # ============================================================
-  # 2. PESQUISAR OS PDFS PELO VAULT
+  # 2. PESQUISAR OS ARQUIVOS PELO VAULT
   # ============================================================
   #
   # A pesquisa pode retornar arquivos localizados em subpastas.
@@ -142,35 +151,44 @@ function Get-DcaDocumentsFromFolderPath {
           -StartFolderPath $folderFullName
       )
 
-      $pdfEntries =
+      $documentEntries =
       @(
         $searchResults |
           Where-Object {
 
-          $pdfPath =
+          $documentPath =
           ([string]$_.FullName).Trim()
 
           if (
             [string]::IsNullOrWhiteSpace(
-              $pdfPath
+              $documentPath
             )
           ) {
 
             return $false
           }
 
-          $pdfDirectory =
+          if (
+            [System.IO.Path]::GetExtension(
+              $documentPath
+            ) -ine $expectedExtension
+          ) {
+
+            return $false
+          }
+
+          $documentDirectory =
           [System.IO.Path]::GetDirectoryName(
-            $pdfPath
+            $documentPath
           )
 
-          $pdfDirectory -ieq
+          $documentDirectory -ieq
           $folderFullName
         } |
           Sort-Object FullName
       )
 
-      if ($pdfEntries.Count -eq 0) {
+      if ($documentEntries.Count -eq 0) {
 
         $useDiskSearch =
         $true
@@ -178,7 +196,8 @@ function Get-DcaDocumentsFromFolderPath {
         if ($Details) {
 
           Write-Info (
-            "O Vault nao retornou PDFs diretamente em " +
+            "O Vault nao retornou arquivos " +
+            "'*$expectedExtension' diretamente em " +
             "'$folderFullName'. A pasta local sera consultada."
           )
         }
@@ -190,20 +209,20 @@ function Get-DcaDocumentsFromFolderPath {
       $true
 
       Write-Warn (
-        "Nao foi possivel consultar os PDFs pelo Vault: " +
+        "Nao foi possivel consultar os arquivos pelo Vault: " +
         $_.Exception.Message +
         " A pasta local sera consultada."
       )
     }
   }
   # ============================================================
-  # 3. PESQUISAR OS PDFS NO SISTEMA DE ARQUIVOS
+  # 3. PESQUISAR OS ARQUIVOS NO SISTEMA DE ARQUIVOS
   # ============================================================
   #
   # Esta alternativa e utilizada quando a API do Vault nao
   # estiver disponivel.
   #
-  # A pesquisa nao utiliza Recurse, portanto somente os PDFs
+  # A pesquisa nao utiliza Recurse, portanto somente os arquivos
   # diretamente dentro da pasta atual sao retornados.
   if ($useDiskSearch) {
 
@@ -211,7 +230,7 @@ function Get-DcaDocumentsFromFolderPath {
     @(
       Get-ChildItem `
         -LiteralPath $folderFullName `
-        -Filter "*.pdf" `
+        -Filter "*$expectedExtension" `
         -File `
         -Force `
         -ErrorAction SilentlyContinue
@@ -219,7 +238,7 @@ function Get-DcaDocumentsFromFolderPath {
 
     # Converte os arquivos locais para a mesma estrutura utilizada
     # pelos resultados retornados pela API do Vault.
-    $pdfEntries =
+    $documentEntries =
     @(
       foreach ($diskFile in $diskFiles) {
 
@@ -239,7 +258,7 @@ function Get-DcaDocumentsFromFolderPath {
   # 4. PREPARAR OS DOCUMENTOS ENCONTRADOS
   # ============================================================
   #
-  # Cada PDF sera interpretado e transformado em um objeto que
+  # Cada arquivo sera interpretado e transformado em um objeto que
   # podera ser utilizado diretamente pelo fluxo principal.
 
   # Mede a interpretação dos nomes, leitura do estado e leitura
@@ -256,31 +275,31 @@ function Get-DcaDocumentsFromFolderPath {
   $Details =
   $showItemDetails
 
-  foreach ($pdfEntry in $pdfEntries) {
+  foreach ($documentEntry in $documentEntries) {
 
-    if ($null -eq $pdfEntry) {
+    if ($null -eq $documentEntry) {
       continue
     }
 
-    $pdfBaseName =
-    ([string]$pdfEntry.BaseName).Trim()
+    $documentBaseName =
+    ([string]$documentEntry.BaseName).Trim()
 
-    $pdfFullName =
-    ([string]$pdfEntry.FullName).Trim()
+    $documentFullName =
+    ([string]$documentEntry.FullName).Trim()
 
     if (
       [string]::IsNullOrWhiteSpace(
-        $pdfBaseName
+        $documentBaseName
       ) -or
       [string]::IsNullOrWhiteSpace(
-        $pdfFullName
+        $documentFullName
       )
     ) {
 
       if ($Details) {
 
         Write-Warn (
-          "Uma entrada de PDF foi ignorada porque nao possui " +
+          "Uma entrada de arquivo foi ignorada porque nao possui " +
           "nome base ou caminho completo."
         )
       }
@@ -296,20 +315,20 @@ function Get-DcaDocumentsFromFolderPath {
     #   4. indicador de codigo reconhecido.
     $parsedName =
     ConvertFrom-PdfFileName `
-      -BaseName $pdfBaseName `
+      -BaseName $documentBaseName `
       -DocumentType $documentType
 
     # Consulta o estado atual do arquivo no workflow do PDM.
     # Sem uma conexao com o Vault, o estado permanece vazio.
     $pdmState =
     Get-DcaPdmFileState `
-      -Entry $pdfEntry
+      -Entry $documentEntry
 
     # Reune os dados do arquivo, da pasta e do PDM em uma unica
     # estrutura utilizada durante a preparacao do lote.
     $document =
     [PSCustomObject]@{
-      File = $pdfEntry
+      File = $documentEntry
       SourceCode = $parsedName.SourceCode
       ClientRevision = [string]$parsedName.ClientRevision
       DocumentTitle = $parsedName.DocumentTitle
@@ -363,7 +382,8 @@ function Get-DcaDocumentsFromFolderPath {
   ) {
 
     Write-Info (
-      "Nenhum PDF foi encontrado diretamente na pasta " +
+      "Nenhum arquivo '*$expectedExtension' foi encontrado " +
+      "diretamente na pasta " +
       "'$folderFullName'."
     )
   }

@@ -11,10 +11,11 @@ Importa documentos PDF de um vault DCA local do SolidWorks PDM para o Siemens
 Teamcenter.
 
 O DCAtoPLM pesquisa o vault de documentação configurado, interpreta os metadados
-do documento a partir do cartão de dados do PDM e do nome do PDF, cria o Item e a
-revisão correspondentes (ou localiza uma revisão existente, no caso de
-`DatasetOnly`), importa o PDF como Dataset e, quando aplicável, inicia um workflow
-do Teamcenter conforme o estado atual no PDM.
+do documento a partir do cartão de dados do PDM e do nome do arquivo, cria o Item e
+a revisão correspondentes (ou localiza uma revisão existente, no caso de
+`DatasetOnly`), importa os arquivos como Datasets e, quando aplicável, inicia um
+workflow do Teamcenter conforme o estado atual no PDM. Para NDT, importa o PDF e
+o desenho SLDDRW correspondente.
 
 A aplicação permite pesquisas individuais por código, várias pesquisas em uma
 mesma execução, seleção múltipla de resultados e importação completa de pastas.
@@ -43,6 +44,7 @@ mesma execução, seleção múltipla de resultados e importação completa de p
 - Detecção da categoria do documento a partir do caminho de origem.
 - Leitura dos cartões de dados do PDM (revisão e descrição).
 - Extração de código, título e revisão a partir do nome do PDF.
+- Associação do desenho NDT MPI/FPI ao PDF correspondente e importação de ambos.
 - Criação de Items e revisões no Teamcenter.
 - Importação de PDF como Dataset em revisão existente (`DatasetOnly`).
 - Leitura do estado atual do workflow no PDM.
@@ -62,6 +64,7 @@ mesma execução, seleção múltipla de resultados e importação completa de p
 | --- | --- | --- |
 | `Desenhos Originais` | `Original` | Desenhos originais DCA |
 | `FP - Ficha de Processo (PDF)` | `Processo` | Documentos de processo DCA |
+| `FP - Ficha de Processo (PDF) / Folhas NDT` | `NDT` | Folhas de ensaio MPI/FPI |
 | `Normas Externas` | `NormaExterna` | Normas externas DCA |
 | `FP - XXRE Dimensional` | `DatasetOnly` | PDFs dimensionais importados em Items já existentes |
 
@@ -82,6 +85,20 @@ Esta categoria usa um fluxo diferente das demais. O fluxo `DatasetOnly`:
 O destino (Item e revisão) é validado antes da confirmação do lote. Veja a seção
 [Fluxos do Teamcenter](#fluxos-do-teamcenter).
 
+### Categoria `Folhas NDT` (`NDT`)
+
+As folhas NDT ficam dentro de `FP - Ficha de Processo (PDF)`. O DCAtoPLM usa o
+desenho `.SLDDRW` encontrado em `Folhas NDT` para localizar, na pasta paralela
+`Folhas NDT PDF`, o PDF com o mesmo código, tipo de folha (`MPI` ou `FPI`) e
+revisão.
+
+O fluxo cria o Item e a revisão NDT configurados para o ambiente, importa o PDF
+como Dataset e, em seguida, importa o desenho `.SLDDRW` como outro Dataset. A
+configuração do Teamcenter para o tipo, ferramenta e referência do Dataset de
+desenho é feita por `DCA_TC_NDT_DRAWING_DATASET_TYPE`,
+`DCA_TC_NDT_DRAWING_TOOL` e `DCA_TC_NDT_DRAWING_REFERENCE`.
+Os três valores são obrigatórios para importar o desenho.
+
 ---
 
 ## Estados de workflow suportados
@@ -91,12 +108,13 @@ podem disparar workflows do Teamcenter:
 
 | Estado no PDM | Ação no Teamcenter |
 | --- | --- |
-| `Aprovado` | Inicia o workflow configurado em `DCA_TC_APPROVED_WORKFLOW` |
+| `Aprovado` ou `Verificado` | Inicia o workflow configurado em `DCA_TC_APPROVED_WORKFLOW` |
 | `Obsoleto` | Inicia o workflow configurado em `DCA_TC_OBSOLETE_WORKFLOW` |
-| Qualquer outro estado | Importa o Item e o PDF sem iniciar workflow |
+| Qualquer outro estado | Importa os Datasets sem iniciar workflow |
 
-O workflow só é solicitado depois que as etapas de criação do Item e importação do
-PDF terminam sem exceção. Documentos `DatasetOnly` nunca solicitam workflow.
+O workflow só é solicitado depois que as etapas de criação do Item e importação
+dos Datasets terminam sem exceção. Para NDT, os Datasets são o PDF e o desenho
+SLDDRW. Documentos `DatasetOnly` nunca solicitam workflow.
 
 > [!NOTE]
 > Chamar o assembly de integração sem exceção confirma apenas que o método de
@@ -127,6 +145,7 @@ DCAtoPLM/
 | `import_dcaPdfToTeamcenter.ps1` | Script principal: carregamento e validação dos módulos, parâmetros, prompts, orquestração do lote e códigos de saída |
 | `functions/output_functions.ps1` | Funções de saída no console, incluindo mensagens, destaques e atraso entre linhas |
 | `functions/pdm_modules` | Acesso ao SolidWorks PDM: autenticação, download de arquivos, estado do workflow e leitura dos cartões de dados |
+| `functions/pdm_modules/pdm_ndt_files.ps1` | Localiza o PDF correspondente ao desenho de uma Folha NDT |
 | `functions/import_plan_modules` | Interpretação dos documentos, preparação do lote e montagem do plano de importação |
 | `functions/search_modules` | Pesquisa por código e por pasta, seleção de resultados e remoção de duplicidades |
 | `functions/teamcenter_modules` | Conexão com o Teamcenter, criação de Items, localização de revisões, importação de Datasets e solicitação de workflows |
@@ -180,6 +199,9 @@ C:\VAULT_ROOT\
     │
     ├── FP - Ficha de Processo (PDF)\
     │   ├── CLIENTE_A\
+    │   │   ├── documentos de processo\
+    │   │   ├── Folhas NDT\
+    │   │   └── Folhas NDT PDF\
     │   ├── CLIENTE_B\
     │   └── instruções\
     │
@@ -201,6 +223,7 @@ A categoria determina o tipo de documento:
 ```text
 Desenhos Originais            -> Original
 FP - Ficha de Processo (PDF)  -> Processo
+FP - Ficha de Processo (PDF) / Folhas NDT -> NDT
 Normas Externas               -> NormaExterna
 FP - XXRE Dimensional         -> DatasetOnly
 ```
@@ -293,6 +316,14 @@ DCA_TC_PROCESS_USER=<USUARIO_TEAMCENTER_PROCESSO>
 DCA_TC_PROCESS_PASSWORD=<SENHA_TEAMCENTER_PROCESSO>
 
 # ============================================================
+# Dataset do desenho NDT
+# ============================================================
+
+DCA_TC_NDT_DRAWING_DATASET_TYPE=<TIPO_DATASET_DESENHO>
+DCA_TC_NDT_DRAWING_TOOL=<FERRAMENTA_DATASET>
+DCA_TC_NDT_DRAWING_REFERENCE=<REFERENCIA_NAMED>
+
+# ============================================================
 # Templates de workflow do Teamcenter
 # ============================================================
 
@@ -318,6 +349,11 @@ DCA_TC_TEST_STANDARD_REVISION_TYPE=<TIPO_REVISAO_NORMA>
 DCA_TC_TEST_STANDARD_CLIENT_PROPERTY=<PROPRIEDADE_CLIENTE>
 DCA_TC_TEST_STANDARD_CLIENT_VALUE=<VALOR_CLIENTE>
 
+DCA_TC_TEST_NDT_ITEM_TYPE=<TIPO_ITEM_NDT>
+DCA_TC_TEST_NDT_REVISION_TYPE=<TIPO_REVISAO_NDT>
+DCA_TC_TEST_NDT_CLIENT_PROPERTY=<PROPRIEDADE_CLIENTE>
+DCA_TC_TEST_NDT_CLIENT_VALUE=<VALOR_CLIENTE>
+
 # ============================================================
 # Objetos de negócio - ambiente de processo (produção)
 # ============================================================
@@ -336,6 +372,11 @@ DCA_TC_PROCESS_STANDARD_ITEM_TYPE=<TIPO_ITEM_NORMA>
 DCA_TC_PROCESS_STANDARD_REVISION_TYPE=<TIPO_REVISAO_NORMA>
 DCA_TC_PROCESS_STANDARD_CLIENT_PROPERTY=<PROPRIEDADE_CLIENTE>
 DCA_TC_PROCESS_STANDARD_CLIENT_VALUE=<VALOR_CLIENTE>
+
+DCA_TC_PROCESS_NDT_ITEM_TYPE=<TIPO_ITEM_NDT>
+DCA_TC_PROCESS_NDT_REVISION_TYPE=<TIPO_REVISAO_NDT>
+DCA_TC_PROCESS_NDT_CLIENT_PROPERTY=<PROPRIEDADE_CLIENTE>
+DCA_TC_PROCESS_NDT_CLIENT_VALUE=<VALOR_CLIENTE>
 ```
 
 ### Alterações necessárias antes do uso
@@ -353,6 +394,8 @@ revise:
 | Variáveis dos cartões de dados do PDM | `DCA_PDM_VAR_*` e `DCA_PDM_DISCOVER_CARD_VARIABLES` |
 | Assembly de integração do Teamcenter | `DCA_IMPORTER_PATH` |
 | Ambiente do Teamcenter | `DCA_TC_ENV` |
+| Tipos de Item e revisão NDT | `DCA_TC_TEST_NDT_*` e `DCA_TC_PROCESS_NDT_*` |
+| Dataset do desenho NDT | `DCA_TC_NDT_DRAWING_DATASET_TYPE`, `DCA_TC_NDT_DRAWING_TOOL` e `DCA_TC_NDT_DRAWING_REFERENCE` |
 | Conexão do Teamcenter de teste | Variáveis `DCA_TC_TEST_*` |
 | Conexão do Teamcenter de processo | Variáveis `DCA_TC_PROCESS_*` |
 | Objetos de negócio | Variáveis de Item e revisão de cada ambiente |
@@ -535,7 +578,7 @@ e descrição. Os nomes das variáveis são configurados no `.env`.
 | Variável | Uso |
 | --- | --- |
 | `DCA_PDM_VAR_ORIGINAL_REVISION` | Revisão de Desenhos Originais |
-| `DCA_PDM_VAR_PROCESS_REVISION` | Revisão de documentos de Processo |
+| `DCA_PDM_VAR_PROCESS_REVISION` | Revisão de documentos de Processo e NDT |
 | `DCA_PDM_VAR_STANDARD_REVISION` | Revisão de Normas Externas |
 | `DCA_PDM_VAR_DATASET_REVISION` | Revisão de destino para `DatasetOnly` |
 
@@ -544,7 +587,7 @@ e descrição. Os nomes das variáveis são configurados no `.env`.
 | Variável | Uso |
 | --- | --- |
 | `DCA_PDM_VAR_ORIGINAL_DESCRIPTION` | Descrição de Desenhos Originais |
-| `DCA_PDM_VAR_PROCESS_DESCRIPTION` | Descrição de documentos de Processo |
+| `DCA_PDM_VAR_PROCESS_DESCRIPTION` | Descrição de documentos de Processo e NDT |
 | `DCA_PDM_VAR_STANDARD_DESCRIPTION` | Descrição de Normas Externas |
 
 ### Descoberta de variáveis
@@ -614,6 +657,7 @@ Aplicável a:
 
 - `Original`
 - `Processo`
+- `NDT`
 - `NormaExterna`
 
 Etapas principais:
@@ -697,7 +741,8 @@ O comportamento exato depende do assembly `Importar GD.exe` instalado.
 
 ## Workflows do Teamcenter
 
-Após a importação bem-sucedida do PDF, o DCAtoPLM pode chamar:
+Após a importação bem-sucedida dos Datasets (PDF e, para NDT, desenho), o
+DCAtoPLM pode chamar:
 
 ```text
 Start_Workflow(
@@ -709,19 +754,17 @@ Start_Workflow(
 O workflow escolhido depende do estado no PDM:
 
 ```text
-Aprovado -> DCA_TC_APPROVED_WORKFLOW
+Aprovado ou Verificado -> DCA_TC_APPROVED_WORKFLOW
 Obsoleto -> DCA_TC_OBSOLETE_WORKFLOW
 ```
 
 Documentos em estados como:
 
 ```text
-Verificado
 Em verificação
 ```
 
-são importados sem workflow automático, a menos que uma regra adicional seja
-implementada.
+são importados sem workflow automático.
 
 O template precisa existir no Teamcenter e suportar o tipo de revisão submetida.
 

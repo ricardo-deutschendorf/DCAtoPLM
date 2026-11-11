@@ -1198,3 +1198,211 @@ function Import-TeamcenterPdf {
 
   return $importResultText
 }
+# ============================================================
+# IMPORTACAO DO DESENHO SLDDRW DA FOLHA NDT
+# ============================================================
+# Importa o SLDDRW como Dataset (tipo, ferramenta e referencia
+# vindos do .env) na revisao da folha NDT, usando ImportarOffice.
+function Import-DcaNdtDrawing {
+  param(
+    [Parameter(Mandatory = $true)]
+    $Revision,
+
+    [Parameter(Mandatory = $true)]
+    [string]$DatasetName,
+
+    [Parameter(Mandatory = $true)]
+    [string]$DatasetRevision,
+
+    [Parameter(Mandatory = $true)]
+    $DrawingEntry,
+
+    [Parameter(Mandatory = $true)]
+    [string]$TemporaryFolder
+  )
+
+  # 1. Configuracao obrigatoria do .env
+  $datasetType = ([string]$env:DCA_TC_NDT_DRAWING_DATASET_TYPE).Trim()
+  $toolUsed = ([string]$env:DCA_TC_NDT_DRAWING_TOOL).Trim()
+  $reference = ([string]$env:DCA_TC_NDT_DRAWING_REFERENCE).Trim()
+
+  foreach ($pair in @(
+      @("DCA_TC_NDT_DRAWING_DATASET_TYPE", $datasetType),
+      @("DCA_TC_NDT_DRAWING_TOOL", $toolUsed),
+      @("DCA_TC_NDT_DRAWING_REFERENCE", $reference)
+    )) {
+
+    if ([string]::IsNullOrWhiteSpace([string]$pair[1])) {
+      throw "$($pair[0]) nao esta configurado no .env."
+    }
+  }
+
+  # 2. Garantir o SLDDRW localmente (download do Vault se preciso)
+  $drawingSourcePath = ([string]$DrawingEntry.FullName).Trim()
+  $drawingPath = $null
+
+  if (Test-Path -LiteralPath $drawingSourcePath -PathType Leaf) {
+    $drawingPath = $drawingSourcePath
+  }
+  else {
+
+    Write-Info "Baixando o desenho NDT do Vault..."
+
+    $vault = Get-DcaVault
+
+    if ($null -eq $vault) {
+      throw "Nao foi possivel obter a conexao com o Vault para baixar o desenho NDT."
+    }
+
+    $parentFolder = $null
+
+    $pdmFile = $vault.GetFileFromPath(
+      $drawingSourcePath,
+      [ref]$parentFolder
+    )
+
+    if ($null -eq $pdmFile) {
+      throw "O desenho NDT nao foi encontrado no Vault: '$drawingSourcePath'."
+    }
+
+    if ($null -eq $parentFolder) {
+      throw "A pasta do desenho NDT nao foi encontrada no Vault."
+    }
+
+    $fileVersion = 0
+    $folderId = $parentFolder.ID
+
+    # Versao 0 baixa a versao mais recente do arquivo.
+    $pdmFile.GetFileCopy(
+      0,
+      [ref]$fileVersion,
+      [ref]$folderId,
+      0,
+      ""
+    )
+
+    $drawingPath = [string]$pdmFile.GetLocalPath($parentFolder.ID)
+
+    if ($Details) {
+      Write-Info "Desenho baixado na versao ${fileVersion}: $drawingPath"
+    }
+  }
+
+  if (
+    [string]::IsNullOrWhiteSpace($drawingPath) -or
+    -not (Test-Path -LiteralPath $drawingPath -PathType Leaf)
+  ) {
+    throw "O desenho NDT nao ficou disponivel localmente: '$drawingSourcePath'."
+  }
+
+  # 3. Copia local com nome simples (sem espaco nem colchetes)
+  $drawingExtension = [System.IO.Path]::GetExtension($drawingPath)
+  $temporaryDrawingPath = Join-Path `
+    -Path $TemporaryFolder `
+    -ChildPath ($DatasetName + $drawingExtension)
+
+  Copy-Item -LiteralPath $drawingPath -Destination $temporaryDrawingPath -Force
+
+  $temporaryDrawingFile = Get-Item -LiteralPath $temporaryDrawingPath -ErrorAction Stop
+
+  if ($temporaryDrawingFile.Length -le 0) {
+    throw "A copia local do desenho NDT esta vazia: '$temporaryDrawingPath'."
+  }
+
+  # 4. Localizar ImportarGD.Controller.Functions.ImportarOffice
+  $functionsType =
+  [System.AppDomain]::CurrentDomain.GetAssemblies() |
+    ForEach-Object {
+    try { $_.GetTypes() } catch { @() }
+  } |
+    Where-Object { $_.FullName -eq "ImportarGD.Controller.Functions" } |
+    Select-Object -First 1
+
+  if ($null -eq $functionsType) {
+    throw "O tipo ImportarGD.Controller.Functions nao foi encontrado."
+  }
+
+  $importMethod =
+  $functionsType.GetMethods(
+    [System.Reflection.BindingFlags]::Public -bor
+    [System.Reflection.BindingFlags]::Static
+  ) |
+    Where-Object {
+    $_.Name -eq "ImportarOffice" -and
+    $_.GetParameters().Count -eq 7
+  } |
+    Select-Object -First 1
+
+  if ($null -eq $importMethod) {
+    throw "A sobrecarga ImportarOffice com 7 parametros nao foi encontrada."
+  }
+
+  $revisionObject = $Revision.PSObject.BaseObject
+  if ($null -eq $revisionObject) { $revisionObject = $Revision }
+
+  Write-Info "Importando o desenho NDT como Dataset '$datasetType'..."
+
+  if ($Details) {
+    Write-Host "  Dados enviados ao ImportarOffice:" -ForegroundColor Cyan
+    Write-Host "    Dataset ID:       '$DatasetName'" -ForegroundColor DarkGray
+    Write-Host "    Dataset Revision: '$DatasetRevision'" -ForegroundColor DarkGray
+    Write-Host "    Arquivo:          '$temporaryDrawingPath'" -ForegroundColor DarkGray
+    Write-Host "    Dataset Type:     '$datasetType'" -ForegroundColor DarkGray
+    Write-Host "    ToolUsed:         '$toolUsed'" -ForegroundColor DarkGray
+    Write-Host "    Reference:        '$reference'" -ForegroundColor DarkGray
+  }
+
+  # 5. Executar
+  # Cada argumento e convertido explicitamente e atribuido por
+  # posicao, para a reflexao nao receber wrappers PSObject.
+  $invokeArguments = [object[]]::new(7)
+  $invokeArguments[0] = [string]$DatasetName
+  $invokeArguments[1] = [string]$DatasetRevision
+  $invokeArguments[2] = [string]$temporaryDrawingFile.FullName
+  $invokeArguments[3] = $revisionObject
+  $invokeArguments[4] = [string]$datasetType
+  $invokeArguments[5] = [string]$toolUsed
+  $invokeArguments[6] = [string]$reference
+
+  try {
+    $importResult = $importMethod.Invoke(
+      $null,
+      $invokeArguments
+    )
+  }
+  catch {
+    $realException = $_.Exception
+    while ($null -ne $realException.InnerException) {
+      $realException = $realException.InnerException
+    }
+    throw "Falha no ImportarOffice para '$DatasetName': $($realException.Message)"
+  }
+
+  # O ImportarOffice pode exibir erro em janela e retornar normalmente.
+  # Confirma que um Dataset diferente do PDF foi anexado a revisao.
+  $relatedAfterImport = @(
+    Show-DcaTeamcenterRevisionDatasets -Revision $revisionObject
+  )
+
+  $drawingDatasets = @(
+    $relatedAfterImport |
+      Where-Object {
+      [string]$_.BusinessType -notmatch '(?i)^PDF$' -and
+      [string]$_.TypeName -notmatch '(?i)\.PDF$'
+    }
+  )
+
+  $importResultText = ([string]$importResult).Trim()
+
+  Write-Host "  Retorno do ImportarOffice: '$importResultText'"
+
+  # Sucesso real: "Sim" + espacos + "Dataset criado no Teamcenter".
+  if ($importResultText -notmatch '(?i)^sim\b') {
+    throw (
+      "O ImportarOffice nao criou o Dataset de '$DatasetName'. " +
+      "Retorno: '$importResultText'."
+    )
+  }
+
+  return $importResultText
+}

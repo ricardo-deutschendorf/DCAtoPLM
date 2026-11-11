@@ -9,7 +9,8 @@
 #   1. Desenhos Originais;
 #   2. Ficha de Processo;
 #   3. Normas Externas;
-#   4. XXRE Dimensional.
+#   4. XXRE Dimensional;
+#   5. Folhas NDT.
 #
 # O fluxo:
 #   1. valida a raiz informada;
@@ -135,6 +136,13 @@ function Select-DcaPdfsByFolder {
       DocumentType = "DatasetOnly"
       DisplayName = "XXRE Dimensional - somente Dataset"
     }
+
+    [PSCustomObject]@{
+      FolderName = "Folhas NDT"
+      DocumentType = "NDT"
+      DisplayName = "GD5_DCA_NDT"
+      IsNestedCategory = $true
+    }
   )
 
   # ============================================================
@@ -193,28 +201,82 @@ function Select-DcaPdfsByFolder {
       continue
     }
 
-    # O primeiro nivel abaixo de Documentacao define a categoria
-    # DCA utilizada na preparacao e na importacao dos documentos.
+    # ==========================================================
+    # IDENTIFICAR A CATEGORIA DO DOCUMENTO
+    # ==========================================================
+    #
+    # Folhas NDT constitui uma categoria especial aninhada dentro
+    # de FP - Ficha de Processo (PDF).
+    #
+    # A verificacao de NDT deve ocorrer antes de DCA Processo,
+    # pois o caminho completo tambem comeca pela pasta de processo.
     $matchedCategory =
     $null
 
-    foreach ($categoryDefinition in $categoryDefinitions) {
+    $relativePathParts =
+    @(
+      $relativePath -split '[\\/]'
+    )
 
-      $categoryPrefix =
-      $categoryDefinition.FolderName + "\"
+    $isNdtFolder =
+    @(
+      $relativePathParts |
+        Where-Object {
+        ([string]$_).Trim() -ieq "Folhas NDT"
+      }
+    ).Count -gt 0
 
-      if (
-        $relativePath -ieq $categoryDefinition.FolderName -or
-        $relativePath.StartsWith(
-          $categoryPrefix,
-          [System.StringComparison]::OrdinalIgnoreCase
-        )
-      ) {
+    $isInsideProcessPdf =
+    (
+      $relativePath -ieq "FP - Ficha de Processo (PDF)" -or
+      $relativePath.StartsWith(
+        "FP - Ficha de Processo (PDF)\",
+        [System.StringComparison]::OrdinalIgnoreCase
+      )
+    )
 
-        $matchedCategory =
-        $categoryDefinition
+    if (
+      $isNdtFolder -and
+      $isInsideProcessPdf
+    ) {
 
-        break
+      $matchedCategory =
+      $categoryDefinitions |
+        Where-Object {
+        $_.DocumentType -ieq "NDT"
+      } |
+        Select-Object -First 1
+    }
+    else {
+
+      foreach ($categoryDefinition in $categoryDefinitions) {
+
+        if (
+          $categoryDefinition.PSObject.Properties.Name -contains
+          "IsNestedCategory"
+        ) {
+
+          if ($categoryDefinition.IsNestedCategory) {
+            continue
+          }
+        }
+
+        $categoryPrefix =
+        $categoryDefinition.FolderName + "\"
+
+        if (
+          $relativePath -ieq $categoryDefinition.FolderName -or
+          $relativePath.StartsWith(
+            $categoryPrefix,
+            [System.StringComparison]::OrdinalIgnoreCase
+          )
+        ) {
+
+          $matchedCategory =
+          $categoryDefinition
+
+          break
+        }
       }
     }
 
@@ -231,9 +293,22 @@ function Select-DcaPdfsByFolder {
         Name = $availableFolder.Name
         RelativePath = $relativePath
         FullName = $folderFullPath
-        CategoryFolder = $matchedCategory.FolderName
-        DocumentType = $matchedCategory.DocumentType
-        DisplayName = $matchedCategory.DisplayName
+        CategoryFolder =
+        if ($matchedCategory.DocumentType -ieq "NDT") {
+          "FP - Ficha de Processo (PDF)"
+        }
+        else {
+          $matchedCategory.FolderName
+        }
+
+        DocumentCategory =
+        $matchedCategory.FolderName
+
+        DocumentType =
+        $matchedCategory.DocumentType
+
+        DisplayName =
+        $matchedCategory.DisplayName
       }
     )
   }
@@ -385,6 +460,7 @@ function Select-DcaPdfsByFolder {
           RelativePath = $matchingFolder.RelativePath
           FullName = $matchingFolder.FullName
           CategoryFolder = $matchingFolder.CategoryFolder
+          DocumentCategory = $matchingFolder.DocumentCategory
           DocumentType = $matchingFolder.DocumentType
           DisplayName = $matchingFolder.DisplayName
           Documents = @()
@@ -447,6 +523,7 @@ function Select-DcaPdfsByFolder {
         RelativePath = $matchingFolder.RelativePath
         FullName = $matchingFolder.FullName
         CategoryFolder = $matchingFolder.CategoryFolder
+        DocumentCategory = $matchingFolder.DocumentCategory
         DocumentType = $matchingFolder.DocumentType
         DisplayName = $matchingFolder.DisplayName
         Documents = @($folderDocuments)

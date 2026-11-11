@@ -45,8 +45,6 @@ function Select-DcaPdfByCode {
     throw (
       "Vault DCA nao encontrado em '$FolderPath'."
     )
-  } {
-    throw "Vault DCA nao encontrado em '$FolderPath'."
   }
 
   $searchText =
@@ -103,8 +101,6 @@ function Select-DcaPdfByCode {
     $_.Name -like "Documenta*"
   } |
     Select-Object -First 1
-  Where-Object { $_.Name -like "Documenta*" } |
-    Select-Object -First 1
 
   if ($null -eq $documentationFolder) {
 
@@ -137,6 +133,13 @@ function Select-DcaPdfByCode {
       FolderName = "FP - Ficha de Processo (PDF)"
       DocumentType = "Processo"
       DisplayName = "DCA Processo"
+    },
+    [PSCustomObject]@{
+      FolderName = "FP - Ficha de Processo"
+      DocumentType = "NDT"
+      DisplayName = "GD5_DCA_NDT"
+      RequiredPathSegment = "Folhas NDT"
+      AllowedExtension = ".slddrw"
     },
     [PSCustomObject]@{
       FolderName = "Normas Externas"
@@ -183,11 +186,37 @@ function Select-DcaPdfByCode {
       continue
     }
 
+    $requiredPathSegment =
+    $null
+
+    if (
+      $categoryDefinition.PSObject.Properties.Name -contains
+      "RequiredPathSegment"
+    ) {
+
+      $requiredPathSegment =
+      [string]$categoryDefinition.RequiredPathSegment
+    }
+
+    $allowedExtension =
+    $null
+
+    if (
+      $categoryDefinition.PSObject.Properties.Name -contains
+      "AllowedExtension"
+    ) {
+
+      $allowedExtension =
+      [string]$categoryDefinition.AllowedExtension
+    }
+
     $searchFolders.Add(
       [PSCustomObject]@{
         DirectoryPath = $categoryFolder.FullName
         DocumentType = $categoryDefinition.DocumentType
         DisplayName = $categoryDefinition.DisplayName
+        RequiredPathSegment = $requiredPathSegment
+        AllowedExtension = $allowedExtension
       }
     )
   }
@@ -294,13 +323,69 @@ function Select-DcaPdfByCode {
           $entryFullName =
           [string]$_.FullName
 
-          -not [string]::IsNullOrWhiteSpace(
-            $entryFullName
-          ) -and
-          $entryFullName.StartsWith(
-            $categoryPrefix,
-            [System.StringComparison]::OrdinalIgnoreCase
-          )
+          if (
+            [string]::IsNullOrWhiteSpace(
+              $entryFullName
+            )
+          ) {
+            return $false
+          }
+
+          if (-not $entryFullName.StartsWith(
+              $categoryPrefix,
+              [System.StringComparison]::OrdinalIgnoreCase
+            )) {
+            return $false
+          }
+
+          $requiredPathSegment =
+          ([string]$searchFolder.RequiredPathSegment).Trim()
+
+          if (-not (
+              [string]::IsNullOrWhiteSpace(
+                $requiredPathSegment
+              )
+            )) {
+
+            $entryPathParts =
+            @(
+              $entryFullName -split '[\\/]'
+            )
+
+            $containsRequiredSegment =
+            @(
+              $entryPathParts |
+                Where-Object {
+                ([string]$_).Trim() -ieq
+                $requiredPathSegment
+              }
+            ).Count -gt 0
+
+            if (-not $containsRequiredSegment) {
+              return $false
+            }
+          }
+
+          $allowedExtension =
+          ([string]$searchFolder.AllowedExtension).Trim()
+
+          if (-not (
+              [string]::IsNullOrWhiteSpace(
+                $allowedExtension
+              )
+            )) {
+
+            $entryExtension =
+            [System.IO.Path]::GetExtension(
+              $entryFullName
+            )
+
+            if ($entryExtension -ine $allowedExtension) {
+              return $false
+            }
+          }
+
+          return $true
         } |
           Sort-Object FullName
       )
@@ -310,24 +395,135 @@ function Select-DcaPdfByCode {
 
       Write-Info ("Consultando {0}..." -f $searchFolder.DisplayName)
 
-      $pdfEntries = @(
-        Get-DcaDiskPdfEntries -FolderPath $searchFolder.DirectoryPath |
-          Sort-Object FullName
-      )
+      if ($searchFolder.DocumentType -ieq "NDT") {
+
+        $ndtDrawingFiles =
+        @(
+          Get-ChildItem `
+            -LiteralPath $searchFolder.DirectoryPath `
+            -Filter "*.slddrw" `
+            -File `
+            -Recurse `
+            -Force `
+            -ErrorAction SilentlyContinue |
+            Where-Object {
+
+            $ndtPathParts =
+            @(
+              $_.FullName -split '[\\/]'
+            )
+
+            @(
+              $ndtPathParts |
+                Where-Object {
+                ([string]$_).Trim() -ieq "Folhas NDT"
+              }
+            ).Count -gt 0
+          } |
+            Sort-Object FullName
+        )
+
+        $pdfEntries =
+        @(
+          foreach ($ndtDrawingFile in $ndtDrawingFiles) {
+
+            [PSCustomObject]@{
+              Name = [string]$ndtDrawingFile.Name
+              BaseName =
+              [System.IO.Path]::GetFileNameWithoutExtension(
+                $ndtDrawingFile.Name
+              )
+              FullName = [string]$ndtDrawingFile.FullName
+              Extension = ".slddrw"
+              DocumentType = "NDT"
+              TypeDisplayName = "GD5_DCA_NDT"
+              IsNdt = $true
+              FromVault = $false
+            }
+          }
+        )
+      }
+      else {
+
+        $pdfEntries =
+        @(
+          Get-DcaDiskPdfEntries `
+            -FolderPath $searchFolder.DirectoryPath |
+            Sort-Object FullName
+        )
+      }
     }
 
     if ($pdfEntries.Count -eq 0 -and $null -eq $apiEntries) {
       Write-Warn (
-        "Nenhum PDF em disco e a API do PDM nao foi usada. " +
+        "Nenhum documento em disco e a API do PDM nao foi usada. " +
         "O conteudo pode existir so no servidor do PDM."
       )
     }
 
     foreach ($pdfEntry in $pdfEntries) {
 
-      $parsedName = ConvertFrom-PdfFileName `
+      # ========================================================
+      # IDENTIFICAR FOLHAS NDT PELO CAMINHO
+      # ========================================================
+      #
+      # Folhas NDT fica dentro da arvore de Ficha de Processo.
+      # Por isso, o caminho do PDF precisa ser verificado antes
+      # de interpretar o nome e montar o resultado da pesquisa.
+
+      $entryFullName =
+      [string]$pdfEntry.FullName
+
+      $entryDocumentType =
+      [string]$searchFolder.DocumentType
+
+      $entryDisplayName =
+      [string]$searchFolder.DisplayName
+
+      $isNdtDocument =
+      $false
+
+      if (-not (
+          [string]::IsNullOrWhiteSpace(
+            $entryFullName
+          )
+        )) {
+
+        $entryPathParts =
+        @(
+          $entryFullName -split '[\\/]'
+        )
+
+        $isNdtDocument =
+        @(
+          $entryPathParts |
+            Where-Object {
+            ([string]$_).Trim() -ieq "Folhas NDT"
+          }
+        ).Count -gt 0
+      }
+
+      if ($isNdtDocument) {
+
+        $entryDocumentType =
+        "NDT"
+
+        $entryDisplayName =
+        "GD5_DCA_NDT"
+
+        if ($Details) {
+
+          Write-Host (
+            "  Folha NDT identificada pelo caminho: " +
+            $entryFullName
+          ) -ForegroundColor DarkGray
+        }
+      }
+
+      $parsedName =
+      ConvertFrom-PdfFileName `
         -BaseName $pdfEntry.BaseName `
-        -DocumentType $searchFolder.DocumentType
+        -DocumentType $entryDocumentType
 
       $isMatch = Test-DcaCodeMatch `
         -BaseName $pdfEntry.BaseName `
@@ -363,12 +559,17 @@ function Select-DcaPdfByCode {
       $matchingFiles.Add(
         [PSCustomObject]@{
           File = $pdfEntry
+          FileExtension =
+          [System.IO.Path]::GetExtension(
+            [string]$pdfEntry.FullName
+          )
           SourceCode = $parsedName.SourceCode
           ClientRevision = $clientRevision
           DocumentTitle = $parsedName.DocumentTitle
-          DocumentType = $searchFolder.DocumentType
-          TypeDisplayName = $searchFolder.DisplayName
+          DocumentType = $entryDocumentType
+          TypeDisplayName = $entryDisplayName
           CodeParsed = $parsedName.CodeParsed
+          NdtSheetType = [string]$parsedName.NdtSheetType
           FolderImport = $false
           PdmState = $pdmState
           TeamcenterItem = $null
@@ -392,7 +593,7 @@ function Select-DcaPdfByCode {
   [int]$matchCount = $matchingFiles.Count
 
   if ($matchCount -eq 0) {
-    throw "Nenhum PDF foi encontrado para a pesquisa '$searchPattern'."
+    throw "Nenhum documento foi encontrado para a pesquisa '$searchPattern'."
   }
 
   $script:SearchResultDelayMilliseconds = 30
@@ -505,9 +706,22 @@ function Select-DcaPdfByCode {
     if ($Details) {
 
       Write-SearchResultLine (
-        "       PDF:     {0}" -f
+        "       Arquivo: {0}" -f
         $currentMatch.File.Name
       ) -Color DarkGray
+
+      if (
+        $currentMatch.DocumentType -ieq "NDT" -and
+        -not [string]::IsNullOrWhiteSpace(
+          [string]$currentMatch.NdtSheetType
+        )
+      ) {
+
+        Write-SearchResultLine (
+          "       Folha:   {0}" -f
+          $currentMatch.NdtSheetType
+        ) -Color DarkGray
+      }
 
       Write-SearchResultLine (
         "       Local:   {0}" -f
@@ -522,7 +736,7 @@ function Select-DcaPdfByCode {
   if ($matchCount -eq 1) {
 
     Write-Success (
-      "O unico PDF encontrado foi selecionado automaticamente."
+      "O unico documento encontrado foi selecionado automaticamente."
     )
 
     return $matchingFiles[0]
@@ -838,7 +1052,7 @@ function Select-DcaPdfByCode {
       $selectedFiles.Add($selectedFile)
 
       Write-Success (
-        "PDF selecionado [$selectedNumber]: " +
+        "Documento selecionado [$selectedNumber]: " +
         $selectedFile.File.Name
       )
 

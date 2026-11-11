@@ -203,6 +203,12 @@ function New-DcaTeamcenterItem {
   # ============================================================
   $candidateCode = $sourceCodeClean
 
+  # Folhas NDT recebem o sufixo -NDT para nao conflitar com o
+  # item de Processo que usa o mesmo codigo base.
+  if ($DocumentType -eq "NDT" -and $candidateCode -notmatch '-NDT$') {
+    $candidateCode = "$candidateCode-NDT"
+  }
+
   # Todas as revisoes recebem item_revision_id, object_name e
   # object_desc.
   #
@@ -867,7 +873,7 @@ function New-DcaTeamcenterItem {
         ) -ForegroundColor DarkGray
       }
 
-      throw "O item '$candidateCode' ja existe no Teamcenter."
+      throw "O item '$candidateCode' ja existe no Teamcenter. Mensagem original do servidor: $errorMessage"
     }
 
     throw "Falha ao executar CreateObjects para '$candidateCode': $errorMessage"
@@ -890,7 +896,7 @@ function New-DcaTeamcenterItem {
     $joinedErrors = $serviceErrors -join " | "
 
     if ($joinedErrors -match $duplicatePattern) {
-      throw "O item '$candidateCode' ja existe no Teamcenter."
+      throw "O item '$candidateCode' ja existe no Teamcenter. Mensagem original do servidor: $joinedErrors"
     }
 
     throw "O Teamcenter rejeitou a criacao: $joinedErrors"

@@ -25,24 +25,336 @@
 # ============================================================
 function Confirm-TeamcenterImporter {
 
-  # Valida o caminho do executavel Importar GD configurado no .env.
+  # Valida o executavel Importar GD configurado no .env.
   #
-  # O executavel contem os assemblies utilizados para criar a
-  # sessao e acessar as funcoes auxiliares do Teamcenter.
-  # Recupera o caminho configurado no escopo do processo atual.
-  $importerExecutablePath = $env:DCA_IMPORTER_PATH
+  # Se o executavel nao existir no destino local, copia
+  # automaticamente todos os arquivos da origem de rede.
 
-  if ([string]::IsNullOrWhiteSpace($importerExecutablePath)) {
-    throw ("DCA_IMPORTER_PATH deve ser configurado no arquivo .env.")
+  # ============================================================
+  # 1. LER AS CONFIGURACOES DO IMPORTAR GD
+  # ============================================================
+
+  $importerExecutablePath =
+  ([string]$env:DCA_IMPORTER_PATH).Trim()
+
+  $importerSourcePath =
+  ([string]$env:DCA_IMPORTER_SOURCE).Trim()
+
+  $importerDestinationPath =
+  ([string]$env:DCA_IMPORTER_DESTINATION).Trim()
+
+  if ($Details) {
+
+    Write-Host (
+      "  DCA_IMPORTER_SOURCE: '{0}'" -f
+      $importerSourcePath
+    ) -ForegroundColor DarkGray
+
+    Write-Host (
+      "  DCA_IMPORTER_DESTINATION: '{0}'" -f
+      $importerDestinationPath
+    ) -ForegroundColor DarkGray
+
+    Write-Host (
+      "  DCA_IMPORTER_PATH: '{0}'" -f
+      $importerExecutablePath
+    ) -ForegroundColor DarkGray
   }
 
-  if (-not (Test-Path -LiteralPath $importerExecutablePath -PathType Leaf)) {
-    throw "Importar GD nao encontrado em '$importerExecutablePath'."
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $importerExecutablePath
+    )
+  ) {
+
+    throw (
+      "DCA_IMPORTER_PATH deve ser configurado no arquivo .env."
+    )
   }
 
-  # Retorna somente depois de confirmar que o caminho aponta
-  # para um arquivo existente.
-  return $importerExecutablePath
+  # ============================================================
+  # 2. RETORNAR SE O EXECUTAVEL JA EXISTIR
+  # ============================================================
+
+  if (
+    Test-Path `
+      -LiteralPath $importerExecutablePath `
+      -PathType Leaf
+  ) {
+
+    if ($Details) {
+
+      Write-Host (
+        "  Importar GD disponivel: " +
+        $importerExecutablePath
+      ) -ForegroundColor DarkGray
+    }
+
+    return $importerExecutablePath
+  }
+
+  # ============================================================
+  # 3. VALIDAR AS CONFIGURACOES DA COPIA AUTOMATICA
+  # ============================================================
+
+  Write-Warn (
+    (
+      "Importar GD nao encontrado em '{0}'. " +
+      "Iniciando copia automatica."
+    ) -f $importerExecutablePath
+  )
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $importerSourcePath
+    )
+  ) {
+
+    throw (
+      "O Importar GD nao existe no destino e " +
+      "DCA_IMPORTER_SOURCE nao foi configurado no .env."
+    )
+  }
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $importerDestinationPath
+    )
+  ) {
+
+    throw (
+      "O Importar GD nao existe no destino e " +
+      "DCA_IMPORTER_DESTINATION nao foi configurado no .env."
+    )
+  }
+
+  # ============================================================
+  # 4. VALIDAR A ORIGEM DE REDE
+  # ============================================================
+
+  if (-not (
+      Test-Path `
+        -LiteralPath $importerSourcePath `
+        -PathType Container
+    )) {
+
+    throw (
+      "A origem do Importar GD nao foi encontrada ou nao esta " +
+      "acessivel: '{0}'. Verifique a conexao com a rede." -f
+      $importerSourcePath
+    )
+  }
+
+  $sourceExecutablePath =
+  Join-Path `
+    -Path $importerSourcePath `
+    -ChildPath "Importar GD.exe"
+
+  if (-not (
+      Test-Path `
+        -LiteralPath $sourceExecutablePath `
+        -PathType Leaf
+    )) {
+
+    throw (
+      "A origem do Importar GD foi encontrada, mas nao contem " +
+      "o executavel esperado: '{0}'." -f
+      $sourceExecutablePath
+    )
+  }
+
+  # ============================================================
+  # 5. VALIDAR A COERENCIA DO DESTINO
+  # ============================================================
+
+  $configuredExecutableFolder =
+  [System.IO.Path]::GetDirectoryName(
+    $importerExecutablePath
+  )
+
+  if (
+    [string]::IsNullOrWhiteSpace(
+      $configuredExecutableFolder
+    )
+  ) {
+
+    throw (
+      "Nao foi possivel identificar a pasta de destino a partir " +
+      "de DCA_IMPORTER_PATH: '$importerExecutablePath'."
+    )
+  }
+
+  $normalizedConfiguredFolder =
+  [System.IO.Path]::GetFullPath(
+    $configuredExecutableFolder
+  ).TrimEnd(
+  [char[]]@(
+    '\',
+    '/'
+  )
+)
+
+$normalizedDestinationFolder =
+[System.IO.Path]::GetFullPath(
+  $importerDestinationPath
+).TrimEnd(
+[char[]]@(
+  '\',
+  '/'
+)
+)
+
+if (
+  $normalizedConfiguredFolder -ine
+  $normalizedDestinationFolder
+) {
+
+  throw (
+    "DCA_IMPORTER_PATH e DCA_IMPORTER_DESTINATION apontam " +
+    "para pastas diferentes. Caminho do executavel: '{0}'. " +
+    "Destino configurado: '{1}'." -f
+    $configuredExecutableFolder,
+    $importerDestinationPath
+  )
+}
+
+# ============================================================
+# 6. PREPARAR O DESTINO LOCAL
+# ============================================================
+
+try {
+
+  if (
+    Test-Path `
+      -LiteralPath $importerDestinationPath
+  ) {
+
+    Write-Host (
+      "  Removendo copia local incompleta do Importar GD..."
+    ) -ForegroundColor DarkGray
+
+    Remove-Item `
+      -LiteralPath $importerDestinationPath `
+      -Recurse `
+      -Force `
+      -ErrorAction Stop
+  }
+
+  New-Item `
+    -ItemType Directory `
+    -Path $importerDestinationPath `
+    -Force `
+    -ErrorAction Stop |
+    Out-Null
+}
+catch {
+
+  $realException =
+  $_.Exception
+
+  while (
+    $null -ne $realException.InnerException
+  ) {
+
+    $realException =
+    $realException.InnerException
+  }
+
+  throw (
+    "Nao foi possivel preparar o destino local do " +
+    "Importar GD em '{0}': {1}" -f
+    $importerDestinationPath,
+    $realException.Message
+  )
+}
+
+# ============================================================
+# 7. COPIAR O IMPORTAR GD
+# ============================================================
+
+Write-Host (
+  "  Copiando Importar GD da rede..."
+) -ForegroundColor Cyan
+
+if ($Details) {
+
+  Write-Host (
+    "  Origem:  $importerSourcePath"
+  ) -ForegroundColor DarkGray
+
+  Write-Host (
+    "  Destino: $importerDestinationPath"
+  ) -ForegroundColor DarkGray
+}
+
+try {
+
+  Get-ChildItem `
+    -LiteralPath $importerSourcePath `
+    -Force `
+    -ErrorAction Stop |
+    Copy-Item `
+    -Destination $importerDestinationPath `
+    -Recurse `
+    -Force `
+    -ErrorAction Stop
+}
+catch {
+
+  $realException =
+  $_.Exception
+
+  while (
+    $null -ne $realException.InnerException
+  ) {
+
+    $realException =
+    $realException.InnerException
+  }
+
+  throw (
+    "Falha ao copiar o Importar GD de '{0}' para '{1}': {2}" -f
+    $importerSourcePath,
+    $importerDestinationPath,
+    $realException.Message
+  )
+}
+
+# ============================================================
+# 8. DESBLOQUEAR OS ARQUIVOS COPIADOS
+# ============================================================
+
+Get-ChildItem `
+  -LiteralPath $importerDestinationPath `
+  -File `
+  -Recurse `
+  -ErrorAction SilentlyContinue |
+  Unblock-File `
+  -ErrorAction SilentlyContinue
+
+# ============================================================
+# 9. CONFIRMAR A COPIA
+# ============================================================
+
+if (-not (
+    Test-Path `
+      -LiteralPath $importerExecutablePath `
+      -PathType Leaf
+  )) {
+
+  throw (
+    "A copia do Importar GD foi concluida, mas o executavel " +
+    "nao foi encontrado no destino esperado: '{0}'." -f
+    $importerExecutablePath
+  )
+}
+
+Write-Success (
+  "Importar GD copiado com sucesso: {0}" -f
+  $importerExecutablePath
+)
+
+return $importerExecutablePath
 }
 
 # ============================================================
@@ -507,6 +819,100 @@ function Connect-Teamcenter {
   # 8. RETORNAR A SESSAO AUTENTICADA
   # ============================================================
   return $script:TeamcenterSession
+}
+
+# ============================================================
+# DIAGNOSTICO DOS METODOS DE IMPORTACAO DO IMPORTAR GD
+# ============================================================
+function Show-TeamcenterImporterFileMethods {
+
+  if ($null -eq $script:TeamcenterFunctions) {
+
+    throw (
+      "As funcoes do Importar GD nao foram carregadas. " +
+      "Execute Connect-Teamcenter primeiro."
+    )
+  }
+
+  Write-Host ""
+  Write-Host (
+    "  Metodos do Importar GD relacionados a arquivos:"
+  ) -ForegroundColor Cyan
+
+  Write-Host (
+    "  " + ("-" * 68)
+  ) -ForegroundColor DarkGray
+
+  $candidateMethods =
+  @(
+    $script:TeamcenterFunctions.GetMethods() |
+      Where-Object {
+        $_.Name -match
+        '(?i)(import|dataset|solid|sld|arquivo|file|document)'
+      } |
+      Sort-Object Name, {
+        $_.GetParameters().Count
+      }
+  )
+
+  if ($candidateMethods.Count -eq 0) {
+
+    Write-Warn (
+      "Nenhum metodo relacionado a arquivos foi encontrado " +
+      "no Importar GD."
+    )
+
+    return
+  }
+
+  foreach ($candidateMethod in $candidateMethods) {
+
+    Write-Host (
+      "  Metodo: {0}" -f
+      $candidateMethod.Name
+    ) -ForegroundColor White
+
+    Write-Host (
+      "    Estatico: {0}" -f
+      $candidateMethod.IsStatic
+    ) -ForegroundColor DarkGray
+
+    Write-Host (
+      "    Retorno: {0}" -f
+      $candidateMethod.ReturnType.FullName
+    ) -ForegroundColor DarkGray
+
+    $methodParameters =
+    $candidateMethod.GetParameters()
+
+    if ($methodParameters.Count -eq 0) {
+
+      Write-Host (
+        "    Parametros: nenhum"
+      ) -ForegroundColor DarkGray
+    }
+    else {
+
+      for (
+        $parameterIndex = 0
+        $parameterIndex -lt $methodParameters.Count
+        $parameterIndex++
+      ) {
+
+        $methodParameter =
+        $methodParameters[$parameterIndex]
+
+        Write-Host (
+          "    [{0}] {1} {2}" -f
+          $parameterIndex,
+          $methodParameter.ParameterType.FullName,
+          $methodParameter.Name
+        ) -ForegroundColor Gray
+      }
+    }
+
+    Write-Host ""
+  }
 }
 
 # ============================================================
