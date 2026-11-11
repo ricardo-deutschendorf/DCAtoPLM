@@ -1392,6 +1392,10 @@ function Import-DcaNdtDrawing {
     }
   )
 
+  if ($drawingDatasets.Count -eq 0) {
+    throw "O ImportarOffice nao anexou um Dataset de desenho para '$DatasetName'."
+  }
+
   $importResultText = ([string]$importResult).Trim()
 
   Write-Host "  Retorno do ImportarOffice: '$importResultText'"

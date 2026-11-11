@@ -31,7 +31,7 @@ param(
 
   [string]$PdmLibraryPath = $env:DCA_PDM_LIB,
 
-  [string]$VaultCredentialPath = $env:DCA_VAULT_CREDENTIAL,
+  [System.IO.FileInfo]$VaultCredentialPath = $env:DCA_VAULT_CREDENTIAL,
 
   [ValidateRange(0, 2000)]
   [int]$OutputDelayMilliseconds = 10,
