@@ -34,5 +34,13 @@ $null
 $script:TeamcenterEnvironment =
 $null
 
+# TeamcenterMethodCache:
+#   Armazena os MethodInfo ja localizados no tipo
+#   ImportarGD.Controller.Functions durante a execucao atual.
+$script:TeamcenterMethodCache =
+[System.Collections.Generic.Dictionary[string, object]]::new(
+  [System.StringComparer]::OrdinalIgnoreCase
+)
+
 $script:TeamcenterQueryAssemblies =
 [System.Collections.Generic.List[object]]::new()

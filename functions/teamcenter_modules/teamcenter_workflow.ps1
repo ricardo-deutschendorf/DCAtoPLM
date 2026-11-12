@@ -106,20 +106,9 @@ function Start-TeamcenterWorkflow {
   #   2. lista de revisoes.
 
   $workflowMethod =
-  $script:TeamcenterFunctions.GetMethods() |
-    Where-Object {
-    $_.Name -eq "Start_Workflow" -and
-    $_.GetParameters().Count -eq 2
-  } |
-    Select-Object -First 1
-
-  if ($null -eq $workflowMethod) {
-
-    throw (
-      "Metodo Start_Workflow com 2 parametros " +
-      "nao encontrado no Importar GD."
-    )
-  }
+  Get-TeamcenterMethod `
+    -MethodName "Start_Workflow" `
+    -ParameterCount 2
 
   # ============================================================
   # 4. CRIAR A LISTA DE REVISOES

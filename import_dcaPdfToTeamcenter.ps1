@@ -1,14 +1,14 @@
 ﻿# ============================================================
-# DCAtoPLM - Importacao de PDFs do PDM para o Teamcenter
+# DCAtoPLM - Importacao de documentos do PDM para o Teamcenter
 # ============================================================
 #
 # Responsabilidades deste script:
 #   1. Carregar e validar a configuracao local.
-#   2. Pesquisar e selecionar PDFs no Vault DCA.
+#   2. Pesquisar e selecionar documentos no Vault DCA.
 #   3. Ler codigo, revisao, descricao, aprovador, data e estado.
 #   4. Preparar e exibir o plano de importacao.
 #   5. Localizar ou criar o destino no Teamcenter.
-#   6. Importar o PDF como Dataset.
+#   6. Importar os arquivos como Datasets.
 #   7. Iniciar o workflow quando aplicavel.
 #   8. Apresentar o resumo final do lote.
 #
@@ -238,6 +238,7 @@ $functionFiles =
 
   # Preparacao do PDF, entrada da pesquisa e plano.
   "functions\import_plan_modules\import_pdf_preparation.ps1",
+  "functions\import_plan_modules\import_ndt_preparation.ps1",
   "functions\import_plan_modules\import_search_input.ps1",
   "functions\import_plan_modules\import_plan_display.ps1",
 
@@ -338,6 +339,7 @@ $requiredFunctions =
 
   # Preparacao e plano.
   "Copy-PdfToTemporaryFolder",
+  "Resolve-DcaNdtSelectedFiles",
   "Get-DcaSearchCodeList",
   "Get-DcaFolderSearchMode",
   "Test-DcaFolderSearch",
@@ -351,7 +353,6 @@ $requiredFunctions =
   "Get-TeamcenterSettings",
   "Connect-Teamcenter",
   "Get-TeamcenterMethod",
-  "Show-TeamcenterImporterFileMethods",
   "Get-TeamcenterConnection",
   "Import-TeamcenterQueryAssemblies",
   "Get-TeamcenterRevision",
@@ -373,6 +374,8 @@ $requiredFunctions =
   "Test-DcaTeamcenterDatasetExists",
   "Import-TeamcenterPdf",
   "Import-DcaNdtDrawing",
+  "Add-DcaNdtDrawingToProcessFolder",
+  "Show-DcaNdtImportLocation",
   "New-DcaTeamcenterItem",
   "Start-TeamcenterWorkflow"
 )
@@ -552,9 +555,11 @@ function Invoke-DcaMain {
         $requestedCodes.Count
       ) -ForegroundColor Gray
     }
+
     # ============================================================
-    # 2. PESQUISAR E SELECIONAR OS PDFs
+    # 2. PESQUISAR E SELECIONAR OS DOCUMENTOS
     # ============================================================
+
     $selectedDocuments =
     [System.Collections.Generic.List[object]]::new()
 
@@ -598,6 +603,19 @@ function Invoke-DcaMain {
           ClientRevision = [string]$retryRow.ClientRevision
           DocumentTitle = [string]$retryRow.ItemName
           DocumentType = [string]$retryRow.DocumentType
+          NdtSheetType =
+          if (
+            [string]$retryRow.DocumentType -eq "NDT" -and
+            [string]$retryRow.SourceFile -match
+            '(?i)\[(?<NdtType>MPI|FPI)\]'
+          ) {
+
+            ([string]$Matches["NdtType"]).ToUpperInvariant()
+          }
+          else {
+
+            ""
+          }
           TypeDisplayName = [string]$retryRow.DocumentType
           CodeParsed = $true
           PdmState = [string]$retryRow.PdmState
@@ -651,7 +669,9 @@ function Invoke-DcaMain {
     }
 
     if (-not $retryMode) {
-      # Impede que o mesmo PDF seja adicionado mais de uma vez quando
+
+      # Impede que o mesmo documento seja adicionado mais de uma vez
+      # quando pesquisas diferentes retornarem o mesmo caminho.
       # diferentes pesquisas retornarem o mesmo caminho.
       $selectedDocumentPaths =
       [System.Collections.Generic.HashSet[string]]::new(
@@ -731,7 +751,7 @@ function Invoke-DcaMain {
               ) -ForegroundColor DarkGray
 
               Write-Host (
-                "  PDFs validos da pesquisa: " +
+                "  Documentos validos da pesquisa: " +
                 $selectedPdfs.Count
               ) -ForegroundColor DarkGray
             }
@@ -739,7 +759,7 @@ function Invoke-DcaMain {
           if ($selectedPdfs.Count -eq 0) {
 
             throw (
-              "Nenhum PDF foi selecionado para a pesquisa " +
+              "Nenhum documento foi selecionado para a pesquisa " +
               "'$currentSearchCode'."
             )
           }
@@ -769,7 +789,7 @@ function Invoke-DcaMain {
             if (-not $selectedDocumentPaths.Add($selectedPath)) {
 
               Write-Warn (
-                "O PDF ja foi adicionado ao lote e sera ignorado: " +
+                "O documento ja foi adicionado ao lote e sera ignorado: " +
                 $selectedPath
               )
 
@@ -942,6 +962,32 @@ function Invoke-DcaMain {
       $null
     }
 
+    $approverEnvName =
+    if ($documentType -eq "NDT") {
+      "DCA_PDM_VAR_NDT_APPROVER"
+    }
+    else {
+      "DCA_PDM_VAR_PROCESS_APPROVER"
+    }
+
+    $approvalDateEnvName =
+    if ($documentType -eq "NDT") {
+      "DCA_PDM_VAR_NDT_APPROVAL_DATE"
+    }
+    else {
+      "DCA_PDM_VAR_PROCESS_APPROVAL_DATE"
+    }
+
+    $approverEnvValue =
+    [string][System.Environment]::GetEnvironmentVariable(
+      $approverEnvName
+    )
+
+    $approvalDateEnvValue =
+    [string][System.Environment]::GetEnvironmentVariable(
+      $approvalDateEnvName
+    )
+
     $approvalDate =
     if (
       $retryMode -and
@@ -956,7 +1002,10 @@ function Invoke-DcaMain {
     }
 
     if (
-      $documentType -eq "Processo" -and
+      $documentType -in @(
+        "Processo",
+        "NDT"
+      ) -and
       -not $retryMode
     ) {
 
@@ -966,9 +1015,7 @@ function Invoke-DcaMain {
 
       $approverVariableNames =
       @(
-        (
-          [string]$env:DCA_PDM_VAR_PROCESS_APPROVER
-        ) -split '[|;]' |
+        $approverEnvValue -split '[|;]' |
           ForEach-Object {
           ([string]$_).Trim()
         } |
@@ -976,14 +1023,15 @@ function Invoke-DcaMain {
           -not [string]::IsNullOrWhiteSpace(
             [string]$_
           )
-        }
+        } |
+          Select-Object -Unique
       )
 
       if ($approverVariableNames.Count -eq 0) {
 
         throw (
-          "DCA_PDM_VAR_PROCESS_APPROVER nao possui nenhum " +
-          "nome de variavel valido no arquivo .env."
+          "$approverEnvName nao possui nenhum nome de " +
+          "variavel valido no arquivo .env."
         )
       }
 
@@ -991,7 +1039,7 @@ function Invoke-DcaMain {
 
         Write-Host (
           "  Campo de aprovador configurado: " +
-          "'$([string]$env:DCA_PDM_VAR_PROCESS_APPROVER)'"
+          "'$approverEnvValue'"
         ) -ForegroundColor DarkGray
 
         Write-Host (
@@ -1009,14 +1057,12 @@ function Invoke-DcaMain {
       ([string]$approver).Trim()
 
       # ========================================================
-      # B. LER A DATA DA APROVACAO
+      # B. LER A DATA DE APROVACAO
       # ========================================================
 
       $approvalDateVariableNames =
       @(
-        (
-          [string]$env:DCA_PDM_VAR_PROCESS_APPROVAL_DATE
-        ) -split '[|;]' |
+        $approvalDateEnvValue -split '[|;]' |
           ForEach-Object {
           ([string]$_).Trim()
         } |
@@ -1024,14 +1070,15 @@ function Invoke-DcaMain {
           -not [string]::IsNullOrWhiteSpace(
             [string]$_
           )
-        }
+        } |
+          Select-Object -Unique
       )
 
       if ($approvalDateVariableNames.Count -eq 0) {
 
         throw (
-          "DCA_PDM_VAR_PROCESS_APPROVAL_DATE nao possui nenhum " +
-          "nome de variavel valido no arquivo .env."
+          "$approvalDateEnvName nao possui nenhum nome de " +
+          "variavel valido no arquivo .env."
         )
       }
 
@@ -1039,7 +1086,7 @@ function Invoke-DcaMain {
 
         Write-Host (
           "  Campo de data configurado: " +
-          "'$([string]$env:DCA_PDM_VAR_PROCESS_APPROVAL_DATE)'"
+          "'$approvalDateEnvValue'"
         ) -ForegroundColor DarkGray
 
         Write-Host (
@@ -1148,16 +1195,24 @@ function Invoke-DcaMain {
       else {
 
         Write-Warn (
-          "Revisao nao encontrada no nome do PDF: " +
+          "Revisao nao encontrada no arquivo ou no cartao: " +
           "'$($selectedPdf.File.Name)'."
         )
 
         $revisionPrompt =
-        if ($documentType -eq "Processo") {
-          "Digite a revisao do Processo"
-        }
-        else {
-          "Digite a revisao do Desenho Original"
+        switch ($documentType) {
+
+          "Processo" {
+            "Digite a revisao do Processo"
+          }
+
+          "NDT" {
+            "Digite a revisao da Folha NDT"
+          }
+
+          default {
+            "Digite a revisao do Desenho Original"
+          }
         }
 
         $clientRevision =
@@ -1205,113 +1260,23 @@ function Invoke-DcaMain {
 
     if ($documentType -eq "NDT") {
 
-      $ndtDrawingEntry =
-      $selectedPdf.File
-
-      if (
-        $selectedPdf.PSObject.Properties["NdtSheetType"]
-      ) {
-
-        $ndtSheetType =
-        ([string]$selectedPdf.NdtSheetType).Trim().ToUpperInvariant()
-      }
-
-      # Compatibilidade com resultados que ainda nao possuam a
-      # propriedade NdtSheetType. Nesse caso, le MPI ou FPI
-      # diretamente do nome do desenho.
-      if (
-        [string]::IsNullOrWhiteSpace(
-          $ndtSheetType
-        )
-      ) {
-
-        $ndtDrawingBaseName =
-        ([string]$ndtDrawingEntry.BaseName).Trim()
-
-        if (
-          $ndtDrawingBaseName -match
-          '(?i)\[(?<NdtType>MPI|FPI)\]'
-        ) {
-
-          $ndtSheetType =
-          ([string]$Matches["NdtType"]).Trim().ToUpperInvariant()
-        }
-      }
-
-      if (
-        [string]::IsNullOrWhiteSpace(
-          $ndtSheetType
-        )
-      ) {
-
-        throw (
-          "Nao foi possivel identificar MPI ou FPI no desenho " +
-          "NDT '$($ndtDrawingEntry.Name)'."
-        )
-      }
-
-      $ndtPdfEntry =
-      Find-DcaNdtPdfEntry `
-        -DrawingEntry $ndtDrawingEntry `
+      $ndtFileResolution =
+      Resolve-DcaNdtSelectedFiles `
+        -SelectedDocument $selectedPdf `
         -ItemCode $itemCodeFromFile `
-        -NdtSheetType $ndtSheetType `
         -ClientRevision $clientRevision
 
-      if ($null -eq $ndtPdfEntry) {
+      $selectedPdf =
+      $ndtFileResolution.SelectedDocument
 
-        throw (
-          "A pesquisa do PDF correspondente retornou NULL para " +
-          "'$itemCodeFromFile [$ndtSheetType]'."
-        )
-      }
+      $ndtDrawingEntry =
+      $ndtFileResolution.DrawingEntry
 
-      # A partir deste ponto, File deve representar o PDF que sera
-      # disponibilizado no cache e importado como Dataset.
-      #
-      # O desenho continua preservado separadamente.
-      $selectedPdf.File =
-      $ndtPdfEntry
+      $ndtPdfEntry =
+      $ndtFileResolution.PdfEntry
 
-      Add-Member `
-        -InputObject $selectedPdf `
-        -NotePropertyName "NdtDrawingFile" `
-        -NotePropertyValue $ndtDrawingEntry `
-        -Force
-
-      Add-Member `
-        -InputObject $selectedPdf `
-        -NotePropertyName "NdtPdfFile" `
-        -NotePropertyValue $ndtPdfEntry `
-        -Force
-
-      Add-Member `
-        -InputObject $selectedPdf `
-        -NotePropertyName "NdtSheetType" `
-        -NotePropertyValue $ndtSheetType `
-        -Force
-
-      if ($Details) {
-
-        Write-Host (
-          "  Arquivos associados ao DCA NDT:"
-        ) -ForegroundColor Cyan
-
-        Write-Host (
-          "    Desenho: '$($ndtDrawingEntry.FullName)'"
-        ) -ForegroundColor DarkGray
-
-        Write-Host (
-          "    PDF:     '$($ndtPdfEntry.FullName)'"
-        ) -ForegroundColor DarkGray
-
-        Write-Host (
-          "    Folha:   '$ndtSheetType'"
-        ) -ForegroundColor DarkGray
-
-        Write-Host (
-          "    Revisao: '$clientRevision'"
-        ) -ForegroundColor DarkGray
-      }
+      $ndtSheetType =
+      [string]$ndtFileResolution.SheetType
     }
 
     # A descricao obtida do cartao de dados tem prioridade sobre o
@@ -1527,19 +1492,6 @@ function Invoke-DcaMain {
   }
   if ($Preview) {
 
-    if (
-      $Details -and
-      @(
-        $preparedDocuments |
-          Where-Object {
-          $_.DocumentType -eq "NDT"
-        }
-      ).Count -gt 0
-    ) {
-
-      Show-TeamcenterImporterFileMethods
-    }
-
     Show-DcaImportPlan -Documents $preparedDocuments.ToArray()
 
     Write-AnimatedLine ""
@@ -1641,7 +1593,7 @@ function Invoke-DcaMain {
 
     Write-Info (
       "Consultando no Teamcenter: " +
-      "$($document.ItemCode), revisao " +
+      "$lookupItemCode, revisao " +
       "$expectedTeamcenterRevision"
     )
 
@@ -1824,32 +1776,6 @@ function Invoke-DcaMain {
     )
   }
 
-  $ndtDocumentsForImporterDiagnostic =
-  @(
-    $preparedDocuments |
-      Where-Object {
-      ([string]$_.DocumentType).Trim() -ieq "NDT"
-    }
-  )
-
-  if (
-    $Details -and
-    $ndtDocumentsForImporterDiagnostic.Count -gt 0
-  ) {
-
-    Write-Host ""
-    Write-Host (
-      "  Diagnostico do importador para arquivos NDT:"
-    ) -ForegroundColor Cyan
-
-    Write-Host (
-      "  Documentos NDT encontrados: " +
-      $ndtDocumentsForImporterDiagnostic.Count
-    ) -ForegroundColor DarkGray
-
-    Show-TeamcenterImporterFileMethods
-  }
-
   Show-DcaImportPlan -Documents $preparedDocuments.ToArray()
 
   $datasetOnlyCount =
@@ -2014,6 +1940,10 @@ function Invoke-DcaMain {
   $batchResults =
   [System.Collections.Generic.List[object]]::new()
 
+  # Local de importacao de cada folha NDT, exibido no resumo final.
+  $importLocations =
+  [System.Collections.Generic.Dictionary[string, object]]::new()
+
   # Registra o inicio efetivo do processamento dos documentos.
   # Esse tempo nao inclui pesquisa, selecao, preparacao do plano
   # nem o tempo aguardando a confirmacao do usuario.
@@ -2082,6 +2012,9 @@ function Invoke-DcaMain {
     $false
 
     $pdfImported =
+    $false
+
+    $ndtDrawingImported =
     $false
 
     # Indica se o Dataset ja estava relacionado a revisao antes
@@ -2322,9 +2255,9 @@ function Invoke-DcaMain {
         )
       }
 
-      Write-Info (
-        "Revisao do Teamcenter localizada."
-      )
+      if ($Details) {
+        Write-Info "Revisao do Teamcenter localizada."
+      }
 
       if ($Details) {
 
@@ -2666,17 +2599,12 @@ function Invoke-DcaMain {
       }
       else {
 
-        Write-Info (
-          "Dataset nao encontrado. Importando o PDF no Teamcenter..."
-        )
+        Write-Info "Importando o PDF no Teamcenter..."
 
-        Write-Info (
-          "Nome do Dataset: '$datasetName'"
-        )
-
-        Write-Info (
-          "Revisao do Dataset: '$($document.ClientRevision)'"
-        )
+        if ($Details) {
+          Write-Info "Nome do Dataset: '$datasetName'"
+          Write-Info "Revisao do Dataset: '$($document.ClientRevision)'"
+        }
 
         if ($null -eq $temporaryPdfPath) {
 
@@ -2832,10 +2760,7 @@ function Invoke-DcaMain {
       # ==================================================
       # Executa depois do PDF e antes do workflow. Uma falha aqui
       # interrompe o documento, e o workflow nao e iniciado.
-      if (
-        $document.DocumentType -eq "NDT" -and
-        -not $datasetAlreadyExists
-      ) {
+      if ($document.DocumentType -eq "NDT") {
 
         $null =
         Import-DcaNdtDrawing `
@@ -2845,7 +2770,44 @@ function Invoke-DcaMain {
           -DrawingEntry $document.NdtDrawingFile `
           -TemporaryFolder (Split-Path -Path $temporaryPdfPath -Parent)
 
-        Write-Success "Desenho NDT importado como Dataset."
+        $ndtDrawingImported =
+        $true
+
+        $locationConfiguration =
+        Get-DcaTypeConfiguration `
+          -DocumentType $document.DocumentType `
+          -ClientRevision $document.ClientRevision `
+          -TeamcenterEnvironment $script:TeamcenterEnvironment
+
+        # Le o que realmente existe na revisao depois da importacao.
+        $revisionContents =
+        @(
+          Show-DcaTeamcenterRevisionDatasets `
+            -Revision $teamcenterRevision
+        )
+
+        $importLocations[[string]$document.ItemCode] =
+        [PSCustomObject]@{
+          SourceCode = [string]$document.ItemCode
+          Environment = [string]$script:TeamcenterEnvironment
+          ItemCode = [string]$createdCode
+          ItemType = [string]$locationConfiguration.ItemType
+          RevisionId = [string]$locationConfiguration.TeamcenterRevisionId
+          RevisionType = [string]$locationConfiguration.RevisionType
+          Contents = $revisionContents
+          PdfSource = [string]$document.NdtPdfFile.FullName
+          DrawingSource = [string]$document.NdtDrawingFile.FullName
+          Workflow = $null
+        }
+
+        Write-Success (
+          "Desenho NDT importado no item $createdCode, " +
+          "revisao $($locationConfiguration.TeamcenterRevisionId)."
+        )
+        # Adiciona o desenho a Pasta NDT do DCA Processo de mesmo codigo.
+        $null = Add-DcaNdtDrawingToProcessFolder `
+          -NdtRevision $teamcenterRevision `
+          -ProcessItemCode $document.ItemCode
       }
 
       # ==================================================
@@ -2870,13 +2832,30 @@ function Invoke-DcaMain {
       # processos para o mesmo documento.
       if (
         $datasetAlreadyExists -and
-        $document.DocumentType -ne "DatasetOnly"
+        $document.DocumentType -ne "DatasetOnly" -and
+        -not $ndtDrawingImported
       ) {
 
         Write-Info (
-          "O Dataset ja existia. Nenhum workflow sera repetido."
+          "Nenhum arquivo novo foi importado. " +
+          "O workflow nao sera repetido."
         )
       }
+
+      $isApprovedState =
+      $pdmState -in @(
+        "Aprovado",
+        "Verificado"
+      )
+
+      $isObsoleteState =
+      $pdmState -ieq "Obsoleto"
+
+      $newContentImported =
+      (
+        $pdfImportedThisRun -or
+        $ndtDrawingImported
+      )
 
       $workflowTemplate =
       $null
@@ -2886,8 +2865,8 @@ function Invoke-DcaMain {
 
       if (
         $document.DocumentType -ne "DatasetOnly" -and
-        -not $datasetAlreadyExists -and
-        $pdmState -in @("Aprovado", "Verificado")
+        $newContentImported -and
+        $isApprovedState
       ) {
 
         $workflowTemplate =
@@ -2898,8 +2877,8 @@ function Invoke-DcaMain {
       }
       elseif (
         $document.DocumentType -ne "DatasetOnly" -and
-        -not $datasetAlreadyExists -and
-        $pdmState -ieq "Obsoleto"
+        $newContentImported -and
+        $isObsoleteState
       ) {
 
         $workflowTemplate =
@@ -2965,6 +2944,11 @@ function Invoke-DcaMain {
 
         $workflowStarted =
         $true
+
+        if ($importLocations.ContainsKey([string]$document.ItemCode)) {
+          $importLocations[[string]$document.ItemCode].Workflow =
+          "$workflowTemplate ($workflowLabel)"
+        }
 
         Write-Success (
           "Workflow de $workflowLabel solicitado."
@@ -3071,6 +3055,7 @@ function Invoke-DcaMain {
           Operation = [string]$document.RequestedMode
           ItemCreated = $itemCreated
           PdfImported = $pdfImported
+          NdtDrawingImported = $ndtDrawingImported
           PdfImportedThisRun = $pdfImportedThisRun
           DatasetAlreadyExists = $datasetAlreadyExists
           WorkflowStarted = $workflowStarted
@@ -3351,6 +3336,7 @@ function Invoke-DcaMain {
           Operation = [string]$document.RequestedMode
           ItemCreated = $itemCreated
           PdfImported = $pdfImported
+          NdtDrawingImported = $ndtDrawingImported
           PdfImportedThisRun = $pdfImportedThisRun
           DatasetAlreadyExists = $datasetAlreadyExists
           WorkflowStarted = $workflowStarted
@@ -3556,15 +3542,30 @@ function Invoke-DcaMain {
       $successMessage =
       "$($result.ItemCode) -> " +
       "$($result.TeamcenterCode) - " +
-      "Item e PDF importados"
+      $(if (
+          $result.DocumentType -eq "NDT" -and
+          $result.NdtDrawingImported
+        ) {
+          "Item, PDF e desenho NDT importados"
+        }
+        elseif ($result.DocumentType -eq "NDT") {
+          "Item e PDF importados; desenho NDT nao confirmado"
+        }
+        else {
+          "Item e PDF importados"
+        })
 
       if ($result.WorkflowStarted) {
-
-        $successMessage +=
-        " - workflow solicitado"
+        $successMessage += " - workflow solicitado"
       }
 
       Write-Success $successMessage
+
+      if ($importLocations.ContainsKey([string]$result.ItemCode)) {
+
+        Show-DcaNdtImportLocation `
+          -Location $importLocations[[string]$result.ItemCode]
+      }
     }
     elseif (
       $result.ItemCreated -and
@@ -3842,8 +3843,6 @@ function Invoke-DcaMain {
 
       Write-Host ""
     }
-
-    # Exibe somente tempos superiores a zero.
 
     # Exibe somente tempos superiores a zero.
     if ($destinationTotalSeconds -gt 0.01) {

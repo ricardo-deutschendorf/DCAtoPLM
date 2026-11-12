@@ -172,59 +172,79 @@ function Write-SearchResultLine {
 # Isso evita repetir as mesmas regras de apresentacao nos outros
 # arquivos do projeto.
 
+function Write-DcaConsoleMessage {
+
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$Message,
+
+    [AllowEmptyString()]
+    [string]$Prefix = "",
+
+    [Parameter(Mandatory = $true)]
+    [System.ConsoleColor]$Color
+  )
+
+  Write-AnimatedLine `
+    -Message (
+    "  " +
+    $Prefix +
+    $Message
+  ) `
+    -Color $Color
+}
+
 function Write-Success {
 
-  # Exibe uma mensagem de operacao concluida com sucesso.
   param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$Message
   )
 
-  Write-AnimatedLine `
-    -Message "  $Message" `
+  Write-DcaConsoleMessage `
+    -Message $Message `
     -Color Green
 }
 
 function Write-Failure {
 
-  # Exibe uma mensagem de falha com o prefixo padronizado.
   param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$Message
   )
 
-  Write-AnimatedLine `
-    -Message "  Algo deu errado: $Message" `
+  Write-DcaConsoleMessage `
+    -Message $Message `
+    -Prefix "Algo deu errado: " `
     -Color Red
 }
 
 function Write-Warn {
 
-  # Exibe um aviso que exige atencao do usuario, mas que nem
-  # sempre representa uma falha definitiva do fluxo.
   param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$Message
   )
 
-  Write-AnimatedLine `
-    -Message "  Atencao: $Message" `
+  Write-DcaConsoleMessage `
+    -Message $Message `
+    -Prefix "Atencao: " `
     -Color Yellow
 }
 
 function Write-Info {
 
-  # Exibe uma mensagem informativa sem indicar sucesso ou falha.
   param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$Message
   )
 
-  Write-AnimatedLine `
-    -Message "  $Message" `
+  Write-DcaConsoleMessage `
+    -Message $Message `
     -Color Gray
 }

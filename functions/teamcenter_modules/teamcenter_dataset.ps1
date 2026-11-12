@@ -141,7 +141,9 @@ function Show-DcaTeamcenterRevisionDatasets {
   param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNull()]
-    $Revision
+    $Revision,
+
+    [string[]]$RelationNames
   )
 
   # ============================================================
@@ -216,6 +218,12 @@ function Show-DcaTeamcenterRevisionDatasets {
     "IMAN_manifestation",
     "IMAN_requirement"
   )
+
+  if ($null -ne $RelationNames -and $RelationNames.Count -gt 0) {
+
+    $relationPropertyNames =
+    [string[]]$RelationNames
+  }
 
   # ============================================================
   # 4. CARREGAR AS PROPRIEDADES DA REVISAO
@@ -1340,7 +1348,7 @@ function Import-DcaNdtDrawing {
   $revisionObject = $Revision.PSObject.BaseObject
   if ($null -eq $revisionObject) { $revisionObject = $Revision }
 
-  Write-Info "Importando o desenho NDT como Dataset '$datasetType'..."
+  Write-Info "Importando o desenho NDT..."
 
   if ($Details) {
     Write-Host "  Dados enviados ao ImportarOffice:" -ForegroundColor Cyan
@@ -1398,7 +1406,9 @@ function Import-DcaNdtDrawing {
 
   $importResultText = ([string]$importResult).Trim()
 
-  Write-Host "  Retorno do ImportarOffice: '$importResultText'"
+  if ($Details) {
+    Write-Host "  Retorno do ImportarOffice: '$importResultText'"
+  }
 
   # Sucesso real: "Sim" + espacos + "Dataset criado no Teamcenter".
   if ($importResultText -notmatch '(?i)^sim\b') {
@@ -1409,4 +1419,519 @@ function Import-DcaNdtDrawing {
   }
 
   return $importResultText
+}
+
+# ============================================================
+# VINCULO DO DESENHO NDT A PASTA NDT DO DCA PROCESSO
+# ============================================================
+
+function Get-DcaModelObjectUid {
+  param($ModelObject)
+
+  if ($null -eq $ModelObject) { return "" }
+
+  try { return ([string]$ModelObject.Uid).Trim() }
+catch { return "" }
+}
+
+function Update-DcaModelObjectProperties {
+
+  # Carrega propriedades de um objeto e devolve os erros do servico.
+  param(
+    [Parameter(Mandatory = $true)]
+    $ModelObject,
+
+    [Parameter(Mandatory = $true)]
+    [string[]]$PropertyNames
+  )
+
+  $baseObject = $ModelObject.PSObject.BaseObject
+  if ($null -ne $baseObject) { $ModelObject = $baseObject }
+
+  $dataManagementService = Get-TeamcenterDataManagementService
+
+  $getPropertiesMethod =
+  $dataManagementService.GetType().GetMethods() |
+    Where-Object {
+    $_.Name -ieq "GetProperties" -and
+    $_.GetParameters().Count -eq 2
+  } |
+    Select-Object -First 1
+
+  if ($null -eq $getPropertiesMethod) {
+    throw "DataManagementService.GetProperties nao foi encontrado."
+  }
+
+  $objectType =
+  $getPropertiesMethod.GetParameters()[0].ParameterType.GetElementType()
+
+  $objectArray = [System.Array]::CreateInstance($objectType, 1)
+  $objectArray.SetValue($ModelObject, 0)
+
+  $arguments = [object[]]::new(2)
+  $arguments[0] = $objectArray
+  $arguments[1] = [string[]]$PropertyNames
+
+  $response = $getPropertiesMethod.Invoke($dataManagementService, $arguments)
+
+  if ($null -eq $response) { return @() }
+
+  return @(Get-TeamcenterServiceErrors -ServiceData $response)
+}
+
+function New-DcaTeamcenterRelation {
+
+  # Cria uma relacao (GRM) entre dois objetos usando
+  # DataManagementService.CreateRelations.
+  param(
+    [Parameter(Mandatory = $true)] $PrimaryObject,
+    [Parameter(Mandatory = $true)] $SecondaryObject,
+    [Parameter(Mandatory = $true)] [string]$RelationType
+  )
+
+  $primaryBase = $PrimaryObject.PSObject.BaseObject
+  if ($null -ne $primaryBase) { $PrimaryObject = $primaryBase }
+
+  $secondaryBase = $SecondaryObject.PSObject.BaseObject
+  if ($null -ne $secondaryBase) { $SecondaryObject = $secondaryBase }
+
+  $dataManagementService = Get-TeamcenterDataManagementService
+
+  $createRelationsMethod =
+  $dataManagementService.GetType().GetMethods() |
+    Where-Object {
+
+    if (
+      $_.Name -ine "CreateRelations" -or
+      $_.GetParameters().Count -ne 1
+    ) {
+      return $false
+    }
+
+    $parameterType = $_.GetParameters()[0].ParameterType
+
+    $parameterType.IsArray -and
+    $parameterType.GetElementType().Name -ieq "Relationship"
+  } |
+    Select-Object -First 1
+
+  if ($null -eq $createRelationsMethod) {
+    throw "DataManagementService.CreateRelations nao foi encontrado."
+  }
+
+  $relationshipType =
+  $createRelationsMethod.GetParameters()[0].ParameterType.GetElementType()
+
+  $relationship = [System.Activator]::CreateInstance($relationshipType)
+
+  $memberValues = [ordered]@{
+    PrimaryObject = $PrimaryObject
+    SecondaryObject = $SecondaryObject
+    RelationType = [string]$RelationType
+    ClientId = [string]"DcaNdtPasta"
+  }
+
+  $memberFlags =
+  [System.Reflection.BindingFlags]::Public -bor
+  [System.Reflection.BindingFlags]::Instance -bor
+  [System.Reflection.BindingFlags]::IgnoreCase
+
+  $memberTypes =
+  [System.Reflection.MemberTypes]::Property -bor
+  [System.Reflection.MemberTypes]::Field
+
+  foreach ($memberName in $memberValues.Keys) {
+
+    $member =
+    $relationshipType.GetMember($memberName, $memberTypes, $memberFlags) |
+      Select-Object -First 1
+
+    if ($null -eq $member) {
+      throw (
+        "O membro '$memberName' nao foi encontrado em " +
+        "'$($relationshipType.FullName)'."
+      )
+    }
+
+    if ($member -is [System.Reflection.PropertyInfo]) {
+      $member.SetValue($relationship, $memberValues[$memberName], $null)
+    }
+    else {
+      $member.SetValue($relationship, $memberValues[$memberName])
+    }
+  }
+
+  $relationshipArray = [System.Array]::CreateInstance($relationshipType, 1)
+  $relationshipArray.SetValue($relationship, 0)
+
+  $arguments = [object[]]::new(1)
+  $arguments[0] = $relationshipArray
+
+  try {
+    $response = $createRelationsMethod.Invoke(
+      $dataManagementService,
+      $arguments
+    )
+  }
+  catch {
+    $realException = $_.Exception
+    while ($null -ne $realException.InnerException) {
+      $realException = $realException.InnerException
+    }
+    throw "Falha ao criar a relacao '$RelationType': $($realException.Message)"
+  }
+
+  # A resposta pode ser o proprio ServiceData ou conter um.
+  $serviceData = $response
+
+  if ($null -ne $response) {
+
+    $serviceDataProperty = $response.GetType().GetProperty("ServiceData")
+
+    if ($null -ne $serviceDataProperty) {
+
+      $nestedServiceData = $serviceDataProperty.GetValue($response, $null)
+
+      if ($null -ne $nestedServiceData) { $serviceData = $nestedServiceData }
+    }
+  }
+
+  if ($null -ne $serviceData) {
+
+    $serviceErrors = @(Get-TeamcenterServiceErrors -ServiceData $serviceData)
+
+    if ($serviceErrors.Count -gt 0) {
+      throw (
+        "O Teamcenter recusou a relacao '$RelationType': " +
+        ($serviceErrors -join " | ")
+      )
+    }
+  }
+}
+
+function Add-DcaNdtDrawingToProcessFolder {
+
+  # Depois de importar o SLDDRW na Folha NDT, procura o DCA Processo de
+  # mesmo codigo e relaciona o Dataset do desenho a Pasta NDT dele
+  # (relacao GD5PastaNDT). Nao lanca excecao: problemas viram aviso.
+  param(
+    [Parameter(Mandatory = $true)]
+    $NdtRevision,
+
+    [Parameter(Mandatory = $true)]
+    [string]$ProcessItemCode,
+
+    [string]$RelationName = "GD5PastaNDT"
+  )
+
+  $processCode = ($ProcessItemCode.Trim() -replace '(?i)$', '')
+
+  try {
+
+    $ndtRevisionObject = $NdtRevision.PSObject.BaseObject
+    if ($null -eq $ndtRevisionObject) { $ndtRevisionObject = $NdtRevision }
+
+    # 1. Dataset do desenho na revisao da Folha NDT.
+    $datasetType = ([string]$env:DCA_TC_NDT_DRAWING_DATASET_TYPE).Trim()
+
+    $drawingDataset =
+    @(
+      Show-DcaTeamcenterRevisionDatasets -Revision $ndtRevisionObject |
+        Where-Object { [string]$_.BusinessType -ieq $datasetType }
+    ) |
+      Select-Object -First 1
+
+    if ($null -eq $drawingDataset) {
+      throw (
+        "O Dataset '$datasetType' nao foi encontrado na revisao " +
+        "da Folha NDT."
+      )
+    }
+
+    # 2. DCA Processo de mesmo codigo, escolhido pelo tipo do Item.
+    if ($Details) {
+      Write-Host (
+        "  Procurando o DCA Processo '$processCode' para vincular " +
+        "o desenho NDT..."
+      ) -ForegroundColor Cyan
+    }
+
+    $processMatch =
+    Find-DcaProcessRevisionByCode `
+      -ItemCode $processCode
+
+    if ($null -eq $processMatch -or $null -eq $processMatch.Revision) {
+
+      Write-Warn (
+        "Nenhum DCA Processo com o codigo '$processCode' foi " +
+        "encontrado. O desenho NDT nao foi vinculado a uma Pasta NDT."
+      )
+
+      return [PSCustomObject]@{ Status = "ProcessoNaoEncontrado" }
+    }
+
+    $processRevision = $processMatch.Revision.PSObject.BaseObject
+    if ($null -eq $processRevision) {
+      $processRevision = $processMatch.Revision
+    }
+
+    # 3. Ler o ID da revisao do Processo para as mensagens.
+    $null = @(
+      Update-DcaModelObjectProperties `
+        -ModelObject $processRevision `
+        -PropertyNames @("item_revision_id")
+    )
+
+    $processRevisionId =
+    ([string](
+        Get-TeamcenterModelPropertyText `
+          -ModelObject $processRevision `
+          -PropertyName "item_revision_id"
+      )).Trim()
+    # 4. O desenho ja esta na pasta?
+    $drawingUid = Get-DcaModelObjectUid $drawingDataset.Object
+
+    $matchesDrawing = {
+      param($RelatedEntry)
+
+      $relatedUid = Get-DcaModelObjectUid $RelatedEntry.Object
+
+      if ($drawingUid -and $relatedUid) {
+        return ($relatedUid -eq $drawingUid)
+      }
+
+      return (
+        [string]$RelatedEntry.ObjectString -ieq
+        [string]$drawingDataset.ObjectString
+      )
+    }
+
+    $existingObjects =
+    @(
+      Show-DcaTeamcenterRevisionDatasets `
+        -Revision $processRevision `
+        -RelationNames @($RelationName)
+    )
+
+    $alreadyLinked =
+    @($existingObjects | Where-Object { & $matchesDrawing $_ })
+
+    if ($alreadyLinked.Count -gt 0) {
+
+      if ($Details) {
+        Write-Host (
+          "  O desenho NDT ja esta vinculado a Pasta NDT do Processo " +
+          "'$processCode/$processRevisionId'."
+        ) -ForegroundColor DarkGray
+      }
+
+      return [PSCustomObject]@{
+        Status = "JaVinculado"
+        Target = "$processCode/$processRevisionId"
+      }
+    }
+
+    # 5. Criar a relacao Processo -> Dataset do desenho.
+    New-DcaTeamcenterRelation `
+      -PrimaryObject $processRevision `
+      -SecondaryObject $drawingDataset.Object `
+      -RelationType $RelationName
+
+    # 6. Confirmar.
+    $objectsAfter =
+    @(
+      Show-DcaTeamcenterRevisionDatasets `
+        -Revision $processRevision `
+        -RelationNames @($RelationName)
+    )
+
+    $linkedAfter =
+    @($objectsAfter | Where-Object { & $matchesDrawing $_ })
+
+    if ($linkedAfter.Count -gt 0) {
+
+      if ($Details) {
+        Write-Host (
+          "  O desenho NDT foi vinculado a Pasta NDT do Processo " +
+          "'$processCode/$processRevisionId'."
+        ) -ForegroundColor DarkGray
+      }
+
+      return [PSCustomObject]@{
+        Status = "Vinculado"
+        Target = "$processCode/$processRevisionId"
+      }
+    }
+
+    Write-Warn (
+      "A relacao com a Pasta NDT foi solicitada, mas nao foi " +
+      "possivel confirma-la. Confira no Teamcenter."
+    )
+
+    return [PSCustomObject]@{ Status = "NaoConfirmado" }
+  }
+  catch {
+
+    $realException = $_.Exception
+    while ($null -ne $realException.InnerException) {
+      $realException = $realException.InnerException
+    }
+
+    Write-Warn (
+      "O desenho NDT foi importado, mas nao foi vinculado a Pasta " +
+      "NDT do Processo '$processCode': $($realException.Message)"
+    )
+
+    return [PSCustomObject]@{
+      Status = "Erro"
+      ErrorMessage = [string]$realException.Message
+    }
+  }
+}
+function Find-DcaProcessRevisionByCode {
+
+  # Localiza o DCA Processo pelo codigo, sem perguntar ao usuario.
+  # Usa a saved query e fica apenas com o Item cujo tipo e o
+  # configurado em *_PROCESS_ITEM_TYPE no .env. Itens de outro tipo
+  # com o mesmo codigo (por exemplo Design) sao ignorados.
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$ItemCode
+  )
+
+  $envPrefix =
+  if ($script:TeamcenterEnvironment -eq "Processo") {
+    "DCA_TC_PROCESS_PROCESS"
+  }
+  else {
+    "DCA_TC_TEST_PROCESS"
+  }
+
+  $configuredType =
+  ([string][System.Environment]::GetEnvironmentVariable(
+      "${envPrefix}_ITEM_TYPE"
+    )).Trim()
+
+  if ([string]::IsNullOrWhiteSpace($configuredType)) {
+    $configuredType = "GD5_DCA_PROCESSO"
+  }
+
+  # object_type devolve o nome de exibicao ("DCA PROCESSO"), e o .env
+  # tem o nome interno (GD5_DCA_PROCESSO). Os dois sao normalizados.
+  $normalizeType = {
+    param($TypeText)
+
+    (
+      ([string]$TypeText).Trim().ToUpperInvariant() `
+        -replace '^GD5_', '' `
+        -replace '_', ' '
+    )
+  }
+
+  $expectedType = & $normalizeType $configuredType
+
+  $candidates =
+  @(
+    Find-DcaTeamcenterItemBySavedQuery `
+      -ItemCode $ItemCode.Trim().ToUpperInvariant()
+  )
+
+  foreach ($candidate in $candidates) {
+
+    $candidateItem = $candidate.Item
+
+    if ($null -eq $candidateItem) { continue }
+
+    $null = @(
+      Update-DcaModelObjectProperties `
+        -ModelObject $candidateItem `
+        -PropertyNames @("object_type")
+    )
+
+    $candidateType =
+    & $normalizeType (
+      Get-TeamcenterModelPropertyText `
+        -ModelObject $candidateItem `
+        -PropertyName "object_type"
+    )
+
+    if ($Details) {
+      Write-Host (
+        "  Candidato '$($candidate.ObjectUid)': tipo " +
+        "'$candidateType' (esperado '$expectedType')."
+      ) -ForegroundColor DarkGray
+    }
+
+    if ($candidateType -ne $expectedType) { continue }
+
+    $candidateRevision =
+    Get-TeamcenterRevision -Item $candidateItem
+
+    if ($null -eq $candidateRevision) { continue }
+
+    return [PSCustomObject]@{
+      Item = $candidateItem
+      Revision = $candidateRevision
+      ItemType = $candidateType
+    }
+  }
+
+  return $null
+}
+
+function Show-DcaNdtImportLocation {
+  param(
+    [Parameter(Mandatory = $true)]
+    $Location
+  )
+
+  Write-Host ""
+  Write-Host (
+    "  Onde a folha NDT {0} foi importada:" -f $Location.SourceCode
+  ) -ForegroundColor Green
+
+  Write-Host ("  " + ("-" * 68)) -ForegroundColor DarkGray
+
+  Write-Host (
+    "    Ambiente:  Teamcenter de {0}" -f $Location.Environment
+  ) -ForegroundColor White
+
+  Write-Host (
+    "    Item:      {0}   (tipo {1})" -f $Location.ItemCode, $Location.ItemType
+  ) -ForegroundColor White
+
+  Write-Host (
+    "    Revisao:   {0}   (tipo {1})" -f $Location.RevisionId, $Location.RevisionType
+  ) -ForegroundColor White
+
+  Write-Host ""
+  Write-Host "    Conteudo da revisao no Teamcenter:" -ForegroundColor Cyan
+
+  foreach ($entry in @($Location.Contents)) {
+
+    $kind =
+    if ([string]$entry.BusinessType -match '(?i)^PDF$') { "PDF    " }
+    else { "Desenho" }
+
+    Write-Host (
+      "      [{0}] {1}   tipo: {2}   relacao: {3}" -f
+      $kind,
+      $entry.ObjectName,
+      $entry.BusinessType,
+      $entry.Relation
+    ) -ForegroundColor Gray
+  }
+
+  Write-Host ""
+  Write-Host "    Origem dos arquivos (PDM):" -ForegroundColor Cyan
+  Write-Host ("      PDF:     {0}" -f $Location.PdfSource) -ForegroundColor DarkGray
+  Write-Host ("      Desenho: {0}" -f $Location.DrawingSource) -ForegroundColor DarkGray
+
+  if (-not [string]::IsNullOrWhiteSpace([string]$Location.Workflow)) {
+
+    Write-Host ""
+    Write-Host (
+      "    Workflow:  {0}" -f $Location.Workflow
+    ) -ForegroundColor Cyan
+  }
 }

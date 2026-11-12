@@ -17,6 +17,63 @@
 # As funcoes deste arquivo nao pesquisam Items e nao alteram
 # objetos no Teamcenter.
 # ============================================================
+function Get-DcaAssemblyTypesSafe {
+
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNull()]
+    $Assembly
+  )
+
+  try {
+
+    return @(
+      $Assembly.GetTypes()
+    )
+  }
+  catch [System.Reflection.ReflectionTypeLoadException] {
+
+    if ($Details) {
+
+      foreach (
+        $loaderException in
+        $_.Exception.LoaderExceptions
+      ) {
+
+        if ($null -eq $loaderException) {
+          continue
+        }
+
+        Write-Warn (
+          "Falha parcial ao carregar tipo do assembly " +
+          "'$($Assembly.GetName().Name)': " +
+          $loaderException.Message
+        )
+      }
+    }
+
+    return @(
+      $_.Exception.Types |
+        Where-Object {
+        $null -ne $_
+      }
+    )
+  }
+  catch {
+
+    if ($Details) {
+
+      Write-Warn (
+        "Nao foi possivel ler os tipos do assembly " +
+        "'$($Assembly.GetName().Name)': " +
+        $_.Exception.Message
+      )
+    }
+
+    return @()
+  }
+}
+
 function Show-DcaTeamcenterLookupMethods {
 
   if ($null -eq $script:TeamcenterFunctions) {
@@ -80,23 +137,11 @@ function Show-TeamcenterQueryServiceTypes {
 
   foreach ($queryAssembly in $queryAssemblies) {
 
-    try {
-
-      $assemblyTypes =
-      @(
-        $queryAssembly.GetTypes()
-      )
-    }
-    catch [System.Reflection.ReflectionTypeLoadException] {
-
-      $assemblyTypes =
-      @(
-        $_.Exception.Types |
-          Where-Object {
-          $null -ne $_
-        }
-      )
-    }
+    $assemblyTypes =
+    @(
+      Get-DcaAssemblyTypesSafe `
+        -Assembly $queryAssembly
+    )
 
     foreach ($assemblyType in $assemblyTypes) {
 
@@ -217,45 +262,19 @@ function Show-TeamcenterSavedQueryTypeDetails {
       $queryAssembly.GetName().Name
     ) -ForegroundColor DarkGray
 
-    try {
-
-      $assemblyTypes =
-      @(
-        $queryAssembly.GetTypes()
-      )
-    }
-    catch [System.Reflection.ReflectionTypeLoadException] {
-
-      $assemblyTypes =
-      @(
-        $_.Exception.Types |
-          Where-Object {
-          $null -ne $_
-        }
-      )
-
-      if ($Details) {
-
-        foreach (
-          $loaderException in
-          $_.Exception.LoaderExceptions
-        ) {
-
-          if ($null -eq $loaderException) {
-            continue
-          }
-
-          Write-Warn (
-            "Falha parcial ao carregar tipo: " +
-            $loaderException.Message
-          )
-        }
-      }
-    }
+    $assemblyTypes =
+    @(
+      Get-DcaAssemblyTypesSafe `
+        -Assembly $queryAssembly
+    )
 
     foreach ($assemblyType in $assemblyTypes) {
 
       if (
+        $null -ne $assemblyType -and
+        -not [string]::IsNullOrWhiteSpace(
+          [string]$assemblyType.FullName
+        ) -and
         $assemblyType.FullName -match
         "(?i)QueryInput|" +
         "SavedQueryInput|" +

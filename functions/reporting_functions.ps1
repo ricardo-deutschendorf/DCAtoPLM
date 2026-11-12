@@ -274,12 +274,32 @@ function Export-DcaBatchReport {
 
       "RecoverExisting" {
 
-        "Recuperar Item existente e importar Dataset"
+        if (
+          [string]$result.DocumentType -eq
+          "NDT"
+        ) {
+
+          "Recuperar Item NDT e completar PDF ou SLDDRW"
+        }
+        else {
+
+          "Recuperar Item existente e importar Dataset"
+        }
       }
 
       "CreateItem" {
 
-        "Criar Item e importar Dataset"
+        if (
+          [string]$result.DocumentType -eq
+          "NDT"
+        ) {
+
+          "Criar Item NDT e importar PDF e SLDDRW"
+        }
+        else {
+
+          "Criar Item e importar Dataset"
+        }
       }
 
       default {
@@ -309,6 +329,7 @@ function Export-DcaBatchReport {
       OperationDescription = $operationText
       ItemCreated = [bool]$result.ItemCreated
       PdfImported = [bool]$result.PdfImported
+      NdtDrawingImported = [bool]$result.NdtDrawingImported
       PdfImportedThisRun = [bool]$result.PdfImportedThisRun
       DatasetAlreadyExists = [bool]$result.DatasetAlreadyExists
       WorkflowStarted = [bool]$result.WorkflowStarted
@@ -317,7 +338,23 @@ function Export-DcaBatchReport {
       DocumentStartedAt = [string]$result.DocumentStartedAt
       DocumentFinishedAt = [string]$result.DocumentFinishedAt
       DurationSeconds = $result.DurationSeconds
+      DestinationSeconds =
+      $result.DestinationSeconds
+
+      PdfPreparationSeconds =
+      $result.PdfPreparationSeconds
+
+      DatasetLookupSeconds =
+      $result.DatasetLookupSeconds
+
+      PdfImportSeconds =
+      $result.PdfImportSeconds
+
+      WorkflowSeconds =
+      $result.WorkflowSeconds
       SourceFile = [string]$result.SourceFile
+      NdtPdfFile = [string]$result.NdtPdfFile
+      NdtDrawingFile = [string]$result.NdtDrawingFile
       ErrorMessage = [string]$result.ErrorMessage
     }
   }
@@ -465,12 +502,11 @@ function Import-DcaRetryReport {
   # ============================================================
   # 4. SELECIONAR SOMENTE FALHAS REPROCESSAVEIS
   # ============================================================
-  # Documentos cujo PDF ja foi importado nao sao reprocessados.
-  # Isso evita criar ou relacionar um Dataset duplicado.
+  # Falhas sao reprocessadas quando algum arquivo obrigatorio
+  # ainda estiver ausente.
   #
-  # Falhas exclusivas de workflow devem ser tratadas por um fluxo
-  # separado, pois este reprocessamento atua somente em criacao de
-  # Item e importacao de Dataset.
+  # Para NDT, um PDF ja importado nao impede a nova tentativa
+  # quando o desenho SLDDRW ainda nao foi confirmado.
 
   $retryRows =
   [System.Collections.Generic.List[object]]::new()
@@ -489,19 +525,52 @@ function Import-DcaRetryReport {
     ([string]$reportRow.ItemCreated).Trim() -match
     '^(?i:true|1|sim|yes)$'
 
+    $ndtDrawingImported =
+    $false
+
+    if (
+      $availableColumns -contains
+      "NdtDrawingImported"
+    ) {
+
+      $ndtDrawingImported =
+      ([string]$reportRow.NdtDrawingImported).Trim() -match
+      '^(?i:true|1|sim|yes)$'
+    }
+
     if ($succeeded) {
       continue
     }
 
-    if ($pdfImported) {
+    $documentType =
+    ([string]$reportRow.DocumentType).Trim()
+
+    $needsNdtDrawingRecovery =
+    (
+      $documentType -eq "NDT" -and
+      -not $ndtDrawingImported
+    )
+
+    if (
+      $pdfImported -and
+      -not $needsNdtDrawingRecovery
+    ) {
 
       Write-Warn (
         "O documento '$($reportRow.ItemCode)' nao sera " +
-        "reprocessado porque o relatorio informa que o PDF " +
-        "ja foi importado."
+        "reprocessado porque todos os arquivos esperados ja " +
+        "foram importados."
       )
 
       continue
+    }
+
+    if ($needsNdtDrawingRecovery) {
+
+      Write-Info (
+        "O NDT '$($reportRow.ItemCode)' sera reprocessado " +
+        "porque o desenho SLDDRW ainda nao foi confirmado."
+      )
     }
 
     $itemCode =
@@ -510,11 +579,21 @@ function Import-DcaRetryReport {
     $clientRevision =
     ([string]$reportRow.ClientRevision).Trim()
 
-    $documentType =
-    ([string]$reportRow.DocumentType).Trim()
-
     $sourceFile =
     ([string]$reportRow.SourceFile).Trim()
+
+    if (
+      $documentType -eq "NDT" -and
+      $availableColumns -contains
+      "NdtDrawingFile" -and
+      -not [string]::IsNullOrWhiteSpace(
+        [string]$reportRow.NdtDrawingFile
+      )
+    ) {
+
+      $sourceFile =
+      ([string]$reportRow.NdtDrawingFile).Trim()
+    }
 
     if (
       [string]::IsNullOrWhiteSpace(
@@ -596,6 +675,7 @@ function Import-DcaRetryReport {
         DocumentType = $documentType
         PdmState = ([string]$reportRow.PdmState).Trim()
         SourceFile = $sourceFile
+        NdtDrawingImported = $ndtDrawingImported
         RetryMode = $retryMode
         Approver = $retryApprover
         ApprovalDate = $retryApprovalDate

@@ -94,7 +94,7 @@ function Get-TeamcenterModelPropertyText {
     $propertyType =
     $propertyObject.GetType()
 
-    foreach (
+       foreach (
       $candidatePropertyName in @(
         "StringValue",
         "DisplayableValue",
@@ -108,15 +108,28 @@ function Get-TeamcenterModelPropertyText {
       )
 
       if ($null -eq $candidateProperty) {
-
         continue
       }
 
-      $candidateValue =
-      $candidateProperty.GetValue(
-        $propertyObject,
-        $null
-      )
+      try {
+
+        $candidateValue =
+        $candidateProperty.GetValue(
+          $propertyObject,
+          $null
+        )
+      }
+      catch {
+
+        # Algumas propriedades existem no tipo, mas nao podem ser
+        # lidas para todos os tipos de valor. Nesse caso, tenta a
+        # proxima representacao disponivel.
+        continue
+      }
+
+      if ($null -eq $candidateValue) {
+        continue
+      }
 
       if (
         $candidateValue -is
@@ -124,18 +137,30 @@ function Get-TeamcenterModelPropertyText {
         $candidateValue -isnot [string]
       ) {
 
-        $candidateValue =
-        @($candidateValue) -join ", "
+        $candidateText =
+        @(
+          $candidateValue |
+            ForEach-Object {
+              ([string]$_).Trim()
+            } |
+            Where-Object {
+              -not [string]::IsNullOrWhiteSpace(
+                [string]$_
+              )
+            }
+        ) -join ", "
+      }
+      else {
+
+        $candidateText =
+        ([string]$candidateValue).Trim()
       }
 
-      $candidateText =
-      ([string]$candidateValue).Trim()
-
-      if (
-        -not [string]::IsNullOrWhiteSpace(
-          $candidateText
-        )
-      ) {
+      if (-not (
+          [string]::IsNullOrWhiteSpace(
+            $candidateText
+          )
+        )) {
 
         return $candidateText
       }
@@ -176,7 +201,7 @@ function Get-TeamcenterModelPropertyText {
 function Show-DcaTeamcenterRevisionProperties {
 
   # Lista os nomes tecnicos e os valores exibidos das propriedades
-  # disponíveis no objeto de revisao.
+  # disponiveis no objeto de revisao.
   #
   # Esta funcao realiza somente consultas. Nenhuma propriedade
   # do Teamcenter e alterada.
@@ -540,9 +565,24 @@ function Show-DcaTeamcenterRevisionProperties {
 
   if ($propertyResults.Count -eq 0) {
 
-    Write-Warn (
-      "Nenhuma propriedade corresponde ao filtro informado."
-    )
+    if (
+      [string]::IsNullOrWhiteSpace(
+        $searchTextClean
+      )
+    ) {
+
+      Write-Warn (
+        "Nenhuma propriedade com valor legivel foi encontrada " +
+        "na revisao."
+      )
+    }
+    else {
+
+      Write-Warn (
+        "Nenhuma propriedade corresponde ao filtro " +
+        "'$searchTextClean'."
+      )
+    }
 
     return @()
   }

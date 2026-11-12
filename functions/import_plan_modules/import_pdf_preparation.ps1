@@ -359,9 +359,11 @@ finally {
 #
 # Depois de todas as verificacoes, retorna o caminho completo
 # da copia que sera enviada ao importador do Teamcenter.
-Write-Success (
-  "PDF copiado e validado na pasta temporaria."
-)
+if ($Details) {
+  Write-Success (
+    "PDF copiado e validado na pasta temporaria."
+  )
+}
 
 return [string]$temporaryFile.FullName
 }

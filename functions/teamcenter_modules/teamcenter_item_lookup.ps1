@@ -16,7 +16,7 @@
 #   1. o codigo do Item;
 #   2. o tipo tecnico do objeto retornado;
 #   3. o item_revision_id;
-#   4. a correspondencia entre a revisao do PDF e a revisao
+#   4. a correspondencia entre a revisao esperada e a revisao
 #      encontrada no Teamcenter.
 #
 # As funcoes deste arquivo nao criam Items, revisoes ou Datasets.
@@ -62,15 +62,20 @@ function Test-DcaTeamcenterItemExists {
     }
   }
 
+  $cacheKey =
+  "{0}|{1}" -f
+  ([string]$script:TeamcenterEnvironment).Trim(),
+  $itemCodeClean
+
   if (
     $null -ne $script:TeamcenterItemLookupCache -and
     $script:TeamcenterItemLookupCache.ContainsKey(
-      $itemCodeClean
+      $cacheKey
     )
   ) {
 
     return $script:TeamcenterItemLookupCache[
-    $itemCodeClean
+    $cacheKey
     ]
   }
 
@@ -215,7 +220,7 @@ function Test-DcaTeamcenterItemExists {
   ) {
 
     $script:TeamcenterItemLookupCache[
-    $itemCodeClean
+    $cacheKey
     ] =
     $result
   }
@@ -391,6 +396,14 @@ function Find-DcaTeamcenterItemBySavedQuery {
 
   $queryInputType =
   $queryInputArrayType.GetElementType()
+
+  if ($null -eq $queryInputType) {
+
+    throw (
+      "O tipo QueryInput aceito por ExecuteSavedQueries " +
+      "nao foi identificado."
+    )
+  }
 
   $queryInput =
   [System.Activator]::CreateInstance(
@@ -601,22 +614,60 @@ function Find-DcaTeamcenterItemBySavedQuery {
   $matchingItems =
   [System.Collections.Generic.List[object]]::new()
 
+  $getPropertiesMethod =
+  $dataManagementService.GetType().GetMethods() |
+    Where-Object {
+    $_.Name -ieq "GetProperties" -and
+    $_.GetParameters().Count -eq 2
+  } |
+    Select-Object -First 1
+
+  if ($null -eq $getPropertiesMethod) {
+
+    throw (
+      "DataManagementService.GetProperties nao foi encontrado."
+    )
+  }
+
+  $modelObjectArrayType =
+  $getPropertiesMethod.GetParameters()[0].ParameterType
+
+  if (-not $modelObjectArrayType.IsArray) {
+
+    throw (
+      "O primeiro parametro de GetProperties nao e um array."
+    )
+  }
+
+  $modelObjectType =
+  $modelObjectArrayType.GetElementType()
+
+  if ($null -eq $modelObjectType) {
+
+    throw (
+      "O tipo de objeto de GetProperties nao foi identificado."
+    )
+  }
+
+  $loadObjectsMethod =
+  $dataManagementService.GetType().GetMethods() |
+    Where-Object {
+    $_.Name -ieq "LoadObjects" -and
+    $_.GetParameters().Count -eq 1
+  } |
+    Select-Object -First 1
+
+  if ($null -eq $loadObjectsMethod) {
+
+    throw (
+      "DataManagementService.LoadObjects nao foi encontrado."
+    )
+  }
+
+  $plainObjectMethod =
+  $null
+
   foreach ($objectUid in $objectUids) {
-
-    $loadObjectsMethod =
-    $dataManagementService.GetType().GetMethods() |
-      Where-Object {
-      $_.Name -ieq "LoadObjects" -and
-      $_.GetParameters().Count -eq 1
-    } |
-      Select-Object -First 1
-
-    if ($null -eq $loadObjectsMethod) {
-
-      throw (
-        "DataManagementService.LoadObjects nao foi encontrado."
-      )
-    }
 
     $uidArray =
     [string[]]@(
@@ -639,19 +690,22 @@ function Find-DcaTeamcenterItemBySavedQuery {
       continue
     }
 
-    $plainObjectMethod =
-    $serviceData.GetType().GetMethods() |
-      Where-Object {
-      $_.Name -ieq "GetPlainObject" -and
-      $_.GetParameters().Count -eq 1
-    } |
-      Select-Object -First 1
-
     if ($null -eq $plainObjectMethod) {
 
-      throw (
-        "ServiceData.GetPlainObject nao foi encontrado."
-      )
+      $plainObjectMethod =
+      $serviceData.GetType().GetMethods() |
+        Where-Object {
+        $_.Name -ieq "GetPlainObject" -and
+        $_.GetParameters().Count -eq 1
+      } |
+        Select-Object -First 1
+
+      if ($null -eq $plainObjectMethod) {
+
+        throw (
+          "ServiceData.GetPlainObject nao foi encontrado."
+        )
+      }
     }
 
     $plainObject =
@@ -675,54 +729,37 @@ function Find-DcaTeamcenterItemBySavedQuery {
 
     try {
 
-      $getPropertiesMethod =
-      $dataManagementService.GetType().GetMethods() |
-        Where-Object {
-        $_.Name -ieq "GetProperties" -and
-        $_.GetParameters().Count -eq 2
-      } |
-        Select-Object -First 1
+      $objectArray =
+      [System.Array]::CreateInstance(
+        $modelObjectType,
+        1
+      )
 
-      if ($null -ne $getPropertiesMethod) {
+      $objectArray.SetValue(
+        $plainObject,
+        0
+      )
 
-        $modelObjectArrayType =
-        $getPropertiesMethod.GetParameters()[0].ParameterType
+      $propertyNames =
+      [string[]]@(
+        "item_id",
+        "object_name"
+      )
 
-        $modelObjectType =
-        $modelObjectArrayType.GetElementType()
+      $propertyArguments =
+      [object[]]::new(2)
 
-        $objectArray =
-        [System.Array]::CreateInstance(
-          $modelObjectType,
-          1
-        )
+      $propertyArguments[0] =
+      $objectArray
 
-        $objectArray.SetValue(
-          $plainObject,
-          0
-        )
+      $propertyArguments[1] =
+      $propertyNames
 
-        $propertyNames =
-        [string[]]@(
-          "item_id",
-          "object_name"
-        )
-
-        $propertyArguments =
-        [object[]]::new(2)
-
-        $propertyArguments[0] =
-        $objectArray
-
-        $propertyArguments[1] =
-        $propertyNames
-
-        $null =
-        $getPropertiesMethod.Invoke(
-          $dataManagementService,
-          $propertyArguments
-        )
-      }
+      $null =
+      $getPropertiesMethod.Invoke(
+        $dataManagementService,
+        $propertyArguments
+      )
     }
     catch {
 
@@ -811,7 +848,7 @@ function Find-DcaTeamcenterItemRevision {
   #   3. Saved Query Item_Name_or_ID.
   #
   # A revisao somente e aceita quando item_revision_id corresponde
-  # exatamente a revisao informada pelo PDF.
+  # exatamente a revisao esperada pelo documento.
 
   param(
     [Parameter(Mandatory = $true)]
@@ -1159,6 +1196,14 @@ function Find-DcaTeamcenterItemRevision {
             $revisionObjectType =
             $revisionObjectArrayType.GetElementType()
 
+            if ($null -eq $revisionObjectType) {
+
+              throw (
+                "O tipo de objeto aceito por GetProperties " +
+                "nao foi identificado."
+              )
+            }
+
             $revisionObjectArray =
             [System.Array]::CreateInstance(
               $revisionObjectType,
@@ -1346,7 +1391,7 @@ function Find-DcaTeamcenterItemRevision {
                 [System.ConsoleColor]::Green
 
                 $candidateSuffix =
-                "  <- revisao do PDF"
+                "  <- revisao esperada"
               }
 
               Write-Host (
@@ -1419,7 +1464,7 @@ function Find-DcaTeamcenterItemRevision {
 
                 $selectedCandidate =
                 $destinationCandidates[
-                $selectedDestinationNumber - 1
+                $suggestedCandidateNumber - 1
                 ]
 
                 if (
@@ -1428,7 +1473,7 @@ function Find-DcaTeamcenterItemRevision {
                 ) {
 
                   Write-Warn (
-                    "O destino selecionado possui revisao " +
+                    "O destino sugerido possui revisao " +
                     "'$($selectedCandidate.RevisionId)'. " +
                     "Escolha um destino com revisao " +
                     "'$expectedRevisionClean'."
@@ -1483,7 +1528,7 @@ function Find-DcaTeamcenterItemRevision {
 
               throw (
                 "O destino selecionado possui revisao " +
-                "'$($selectedDestination.RevisionId)', mas o PDF " +
+                "'$($selectedDestination.RevisionId)', mas o documento " +
                 "informa a revisao '$expectedRevisionClean'. " +
                 "A importacao foi bloqueada."
               )
@@ -1536,7 +1581,8 @@ function Find-DcaTeamcenterItemRevision {
         Item = $null
         Revision = $null
         ErrorMessage = (
-          "Falha ao selecionar o destino pela saved query: " +
+          "Nenhuma revisao foi localizada pelas consultas diretas e " +
+          "a Saved Query falhou: " +
           $realException.Message
         )
       }
@@ -1668,7 +1714,7 @@ function Find-DcaTeamcenterItemRevision {
     )
 
     $propertyArguments =
-    New-Object "System.Object[]" 2
+    [object[]]::new(2)
 
     $propertyArguments[0] =
     $revisionArray
@@ -1778,7 +1824,7 @@ function Find-DcaTeamcenterItemRevision {
       Revision = $revision
       ErrorMessage = (
         "O destino selecionado possui revisao " +
-        "'$foundRevision', mas o PDF informa " +
+        "'$foundRevision', mas o documento informa " +
         "'$expectedRevisionClean'."
       )
     }

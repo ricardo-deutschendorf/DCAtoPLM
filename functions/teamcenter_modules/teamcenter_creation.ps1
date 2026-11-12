@@ -203,9 +203,9 @@ function New-DcaTeamcenterItem {
   # ============================================================
   $candidateCode = $sourceCodeClean
 
-  # Folhas NDT recebem o sufixo -NDT para nao conflitar com o
+  # Folhas NDT recebem o prefixo NDT- para nao conflitar com o
   # item de Processo que usa o mesmo codigo base.
-  if ($DocumentType -eq "NDT" -and $candidateCode -notmatch '-NDT$') {
+  if ($DocumentType -eq "NDT" -and $candidateCode -notmatch '^NDT-') {
     $candidateCode = "$candidateCode-NDT"
   }
 
@@ -243,7 +243,7 @@ function New-DcaTeamcenterItem {
   # propriedades da revisao criada por SetProperties.
   #
   # Nenhum desses dados e concatenado em comentarios ou object_desc.
-  if ($DocumentType -eq "Processo") {
+  if ($DocumentType -in @("Processo", "NDT")) {
 
     # ==========================================================
     # A. APROVADOR DO PDM
@@ -996,7 +996,7 @@ function New-DcaTeamcenterItem {
   #
   # As propriedades sao aplicadas diretamente ao objeto da
   # revisao retornado pelo CreateObjects.
-  if ($DocumentType -eq "Processo") {
+  if ($DocumentType -in @("Processo", "NDT")) {
 
     # ==========================================================
     # A. LOCALIZAR OS TIPOS NECESSARIOS
@@ -1339,13 +1339,15 @@ function New-DcaTeamcenterItem {
           [string]$_.Name
         }
       )
+      if ($Details) {
 
-      Write-Success (
-        "Propriedades de aprovacao gravadas na revisao " +
-        "$candidateCode/${teamcenterRevisionId}: " +
-        ($updatedApprovalPropertyNames -join ", ") +
-        "."
-      )
+        Write-Host (
+          "  Propriedades de aprovacao gravadas na revisao " +
+          "${candidateCode}/${teamcenterRevisionId}: " +
+          ($updatedApprovalPropertyNames -join ", ") +
+          "."
+        ) -ForegroundColor Green
+      }
     }
   }
   # ============================================================
