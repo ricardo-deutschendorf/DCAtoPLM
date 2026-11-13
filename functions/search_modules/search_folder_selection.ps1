@@ -64,6 +64,20 @@ function Select-DcaDocumentsFromFolder {
     }
   )
 
+  foreach ($document in $documents) {
+
+    if (
+      $null -eq $document -or
+      $null -eq $document.File
+    ) {
+
+      throw (
+        "Foi encontrado um documento sem arquivo fisico " +
+        "na pasta '$($FolderOption.RelativePath)'."
+      )
+    }
+  }
+
   # Uma pasta sem PDFs nao abre a tela de selecao.
   if ($documents.Count -eq 0) {
 
@@ -127,8 +141,7 @@ function Select-DcaDocumentsFromFolder {
       #
       # Quando uma informacao nao estiver preenchida, utiliza um
       # texto alternativo para evitar linhas vazias na listagem.
-      $sourceCode =
-      [string]$document.SourceCode
+      $sourceCode = [string]$document.SourceCode
 
       if (
         [string]::IsNullOrWhiteSpace(
@@ -388,9 +401,14 @@ function Select-DcaDocumentsFromFolder {
             $currentPart
           )
         ) {
-          continue
-        }
 
+          Write-Warn (
+            "Selecao invalida: existem valores vazios na entrada."
+          )
+
+          $selectionIsValid = $false
+          break
+        }
         # Verifica primeiro se a parte atual representa um
         # intervalo numerico, por exemplo 1-5.
         if (

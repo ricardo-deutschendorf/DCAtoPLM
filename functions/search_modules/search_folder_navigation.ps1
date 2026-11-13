@@ -195,10 +195,6 @@ function Select-DcaDocumentsWithFolderNavigation {
       ) -ForegroundColor Cyan
 
       Write-Host (
-        "  Itens encontrados:"
-      ) -ForegroundColor Cyan
-
-      Write-Host (
         "  " + ("-" * 104)
       ) -ForegroundColor DarkGray
 
@@ -267,12 +263,6 @@ function Select-DcaDocumentsWithFolderNavigation {
       #
       # Os documentos sao identificados pelo prefixo D e aparecem
       # depois das subpastas.
-
-      $showDocumentLines =
-      (
-        $Details -and
-        $documents.Count -le 20
-      )
 
       for (
         $documentIndex = 0
@@ -618,10 +608,9 @@ function Select-DcaDocumentsWithFolderNavigation {
       $selectedChildFolder =
       $childFolders[$selectedFolderNumber - 1]
 
-      $childFullPath =
-      [System.IO.Path]::GetFullPath(
+      $childFullPath = [System.IO.Path]::GetFullPath(
         $selectedChildFolder.FullName
-      ).TrimEnd("\")
+      ).TrimEnd([char[]]@('\', '/'))
 
       # Calcula o caminho relativo da subpasta em relacao a pasta
       # raiz utilizada para iniciar a navegacao.
@@ -774,7 +763,12 @@ function Select-DcaDocumentsWithFolderNavigation {
         )
       ) {
 
-        continue
+        Write-Warn (
+          "Selecao invalida: existem valores vazios na entrada."
+        )
+
+        $selectionIsValid = $false
+        break
       }
 
       # Verifica primeiro se a parte atual representa um intervalo.

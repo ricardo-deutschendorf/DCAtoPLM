@@ -224,6 +224,30 @@ if (
 
 try {
 
+  $normalizedSourceFolder = [System.IO.Path]::GetFullPath(
+    $importerSourcePath
+  ).TrimEnd([char[]]@('\', '/'))
+
+  $normalizedDestinationFolder = [System.IO.Path]::GetFullPath(
+    $importerDestinationPath
+  ).TrimEnd([char[]]@('\', '/'))
+
+  if (
+    $normalizedSourceFolder -ieq $normalizedDestinationFolder -or
+    $normalizedSourceFolder.StartsWith(
+      $normalizedDestinationFolder + [System.IO.Path]::DirectorySeparatorChar,
+      [System.StringComparison]::OrdinalIgnoreCase
+    )
+  ) {
+
+    throw (
+      "O destino do Importar GD nao pode ser igual ou conter " +
+      "a pasta de origem. Origem: '{0}'. Destino: '{1}'." -f
+      $normalizedSourceFolder,
+      $normalizedDestinationFolder
+    )
+  }
+
   if (
     Test-Path `
       -LiteralPath $importerDestinationPath
@@ -393,14 +417,9 @@ function Get-TeamcenterSettings {
   $teamcenterEnvironment =
   $teamcenterEnvironment.Trim()
 
-  $teamcenterServerUrl =
-  $null
-
-  $teamcenterUser =
-  $null
-
-  $teamcenterPassword =
-  $null
+  $teamcenterServerUrl = $null
+  $teamcenterUser = $null
+  $teamcenterPassword = $null
 
   # ============================================================
   # 2. SELECIONAR A CONFIGURACAO DO AMBIENTE
@@ -847,12 +866,12 @@ function Show-TeamcenterImporterFileMethods {
   @(
     $script:TeamcenterFunctions.GetMethods() |
       Where-Object {
-        $_.Name -match
-        '(?i)(import|dataset|solid|sld|arquivo|file|document)'
-      } |
+      $_.Name -match
+      '(?i)(import|dataset|solid|sld|arquivo|file|document)'
+    } |
       Sort-Object Name, {
-        $_.GetParameters().Count
-      }
+      $_.GetParameters().Count
+    }
   )
 
   if ($candidateMethods.Count -eq 0) {

@@ -198,8 +198,7 @@ function Get-DcaTypeConfiguration {
   # ============================================================
   # 4. SELECIONAR A CONFIGURACAO DO AMBIENTE ATIVO
   # ============================================================
-  $selectedTypes =
-  if ($TeamcenterEnvironment -eq "Processo") {
+  $selectedTypes = if ($TeamcenterEnvironment -eq "Processo") {
     $processTypes
   }
   else {
@@ -324,14 +323,9 @@ function Get-DcaTypeConfiguration {
     $processValueRaw =
     ([string]$ClientRevision).Trim().ToUpperInvariant()
 
-    $clientRevisionValue =
-    $null
-
-    $internalRevisionValue =
-    $null
-
-    $processValue =
-    $null
+    $clientRevisionValue = $null
+    $internalRevisionValue = $null
+    $processValue = $null
 
     # O cartao pode retornar a revisao de Processo com ou sem
     # separador. Exemplos aceitos: AH-3, AH3, BA-4 e BA4.
@@ -444,8 +438,8 @@ function Get-DcaTypeConfiguration {
   #
   # O NDT utiliza tipos proprios de Item e revisao.
   #
-  # Nesta primeira configuracao, a revisao lida no cartao do PDM
-  # e enviada diretamente como item_revision_id. Nenhuma
+  # A revisao lida no cartao do PDM e enviada diretamente
+  # como item_revision_id. Nenhuma
   # propriedade de revisao de Processo, como gd5revcliente ou
   # gd5revinterna, e adicionada ao tipo DCA NDT Revision.
   if ($DocumentType -eq "NDT") {
@@ -656,9 +650,7 @@ function Get-DcaIntegerPropertyNames {
     }
   }
 
-  return @(
-    $names
-  )
+  return @($names)
 }
 
 # ============================================================
@@ -746,15 +738,7 @@ function New-DcaCreateInputObject {
   # ============================================================
   foreach ($key in $Properties.Keys) {
 
-    $isInteger = $false
-
-    foreach ($integerName in $IntegerPropertyNames) {
-
-      if ($key -ieq $integerName) {
-        $isInteger = $true
-        break
-      }
-    }
+    $isInteger = $key -in $IntegerPropertyNames
 
     if ($isInteger) {
 

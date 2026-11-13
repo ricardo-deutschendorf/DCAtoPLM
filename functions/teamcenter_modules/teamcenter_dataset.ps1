@@ -955,21 +955,6 @@ function Import-TeamcenterPdf {
     )
   }
 
-  $pdfFile =
-  Get-Item `
-    -LiteralPath $FilePath `
-    -ErrorAction Stop
-
-  if ($pdfFile.Length -le 0) {
-
-    throw (
-      "O PDF informado para '$ItemCode' esta vazio."
-    )
-  }
-
-  $FilePath =
-  $pdfFile.FullName
-
   # ============================================================
   # 2. NORMALIZAR O OBJETO DE REVISAO
   # ============================================================
@@ -1624,7 +1609,7 @@ function Add-DcaNdtDrawingToProcessFolder {
     [string]$RelationName = "GD5PastaNDT"
   )
 
-  $processCode = ($ProcessItemCode.Trim() -replace '(?i)$', '')
+  $processCode = $ProcessItemCode.Trim()
 
   try {
 

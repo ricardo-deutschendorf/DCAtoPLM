@@ -1,3 +1,4 @@
+
 # ============================================================
 # PESQUISA E DISPONIBILIZACAO DOS PDFS
 # ============================================================
@@ -44,7 +45,7 @@ function Search-DcaVaultPdfEntries {
   # ============================================================
 
   $searchTextClean =
-  $SearchText.Trim()
+    $SearchText.Trim()
 
   if (
     [string]::IsNullOrWhiteSpace(
@@ -67,195 +68,195 @@ function Search-DcaVaultPdfEntries {
   #   * = zero ou mais caracteres;
   #   ? = exatamente um caractere.
   $likePattern =
-  $searchTextClean.Replace(
-    "*",
-    "%"
-  ).Replace(
-  "?",
-  "_"
-)
+    $searchTextClean.Replace(
+      "*",
+      "%"
+    ).Replace(
+      "?",
+      "_"
+    )
 
-# Quando nenhum curinga for informado, realiza uma pesquisa
-# parcial pelo texto recebido.
-if ($likePattern -notmatch "[%_]") {
+  # Quando nenhum curinga for informado, realiza uma pesquisa
+  # parcial pelo texto recebido.
+  if ($likePattern -notmatch "[%_]") {
 
-  $likePattern =
-  "%$likePattern%"
-}
+    $likePattern =
+      "%$likePattern%"
+  }
 
-# ============================================================
-# 2. CRIAR O OBJETO DE PESQUISA
-# ============================================================
+  # ============================================================
+  # 2. CRIAR O OBJETO DE PESQUISA
+  # ============================================================
 
-$search =
-$Vault.CreateSearch()
+  $search =
+    $Vault.CreateSearch()
 
-if ($null -eq $search) {
-
-  throw (
-    "A API do PDM nao retornou um objeto de pesquisa."
-  )
-}
-
-$search.FileName =
-$likePattern
-
-# Impede que versoes historicas dos arquivos sejam retornadas.
-$search.FindHistoricStates =
-$false
-
-# ============================================================
-# 3. LIMITAR A PESQUISA A UMA PASTA
-# ============================================================
-
-$startFolderPathClean =
-([string]$StartFolderPath).Trim()
-
-if (
-  -not [string]::IsNullOrWhiteSpace(
-    $startFolderPathClean
-  )
-) {
-
-  $startFolder =
-  $Vault.GetFolderFromPath(
-    $startFolderPathClean
-  )
-
-  if ($null -eq $startFolder) {
+  if ($null -eq $search) {
 
     throw (
-      "A pasta nao foi encontrada pela API do PDM: " +
-      "'$startFolderPathClean'."
+      "A API do PDM nao retornou um objeto de pesquisa."
     )
   }
 
-  $search.StartFolderID =
-  [int]$startFolder.ID
-}
+  $search.FileName =
+    $likePattern
 
-# ============================================================
-# 4. COLETAR OS RESULTADOS
-# ============================================================
+  # Impede que versoes historicas dos arquivos sejam retornadas.
+  $search.FindHistoricStates =
+    $false
 
-$entries =
-[System.Collections.Generic.List[object]]::new()
+  # ============================================================
+  # 3. LIMITAR A PESQUISA A UMA PASTA
+  # ============================================================
 
-$currentResult =
-$search.GetFirstResult()
-
-while ($null -ne $currentResult) {
-
-  $resultName =
-  ([string]$currentResult.Name).Trim()
-
-  $resultFullName =
-  ([string]$currentResult.Path).Trim()
-
-  $resultExtension =
-  [System.IO.Path]::GetExtension(
-    $resultName
-  )
-
-  $isPdf =
-  $resultExtension -ieq ".pdf"
-
-  $isSolidWorksDrawing =
-  $resultExtension -ieq ".slddrw"
-
-  $isInsideNdtFolder =
-  $false
-
-  if (-not (
-      [string]::IsNullOrWhiteSpace(
-        $resultFullName
-      )
-    )) {
-
-    $resultPathParts =
-    @(
-      $resultFullName -split '[\\/]'
-    )
-
-    $isInsideNdtFolder =
-    @(
-      $resultPathParts |
-        Where-Object {
-        ([string]$_).Trim() -ieq "Folhas NDT"
-      }
-    ).Count -gt 0
-  }
-
-  $isAllowedResult =
-  (
-    $isPdf -or
-    (
-      $isSolidWorksDrawing -and
-      $isInsideNdtFolder
-    )
-  )
+  $startFolderPathClean =
+    ([string]$StartFolderPath).Trim()
 
   if (
-    $isAllowedResult -and
     -not [string]::IsNullOrWhiteSpace(
-      $resultFullName
+      $startFolderPathClean
     )
   ) {
 
-    $baseName =
-    [System.IO.Path]::GetFileNameWithoutExtension(
-      $resultName
-    )
+    $startFolder =
+      $Vault.GetFolderFromPath(
+        $startFolderPathClean
+      )
 
-    $entryDocumentType =
-    if ($isSolidWorksDrawing) {
-      "NDT"
-    }
-    else {
-      $null
-    }
+    if ($null -eq $startFolder) {
 
-    $entryDisplayName =
-    if ($isSolidWorksDrawing) {
-      "GD5_DCA_NDT"
-    }
-    else {
-      $null
+      throw (
+        "A pasta nao foi encontrada pela API do PDM: " +
+        "'$startFolderPathClean'."
+      )
     }
 
-    $entries.Add(
-      [PSCustomObject]@{
-        Name = $resultName
-        BaseName = ([string]$baseName).Trim()
-        FullName = $resultFullName
-        Extension = $resultExtension
-        DocumentType = $entryDocumentType
-        TypeDisplayName = $entryDisplayName
-        IsNdt = [bool]$isSolidWorksDrawing
-        FromVault = $true
-      }
-    )
+    $search.StartFolderID =
+      [int]$startFolder.ID
   }
-  elseif (
-    $isAllowedResult -and
-    $Details
-  ) {
 
-    Write-Host (
-      "  Resultado do Vault ignorado por nao possuir caminho: " +
-      "'$resultName'."
-    ) -ForegroundColor DarkGray
-  }
+  # ============================================================
+  # 4. COLETAR OS RESULTADOS
+  # ============================================================
+
+  $entries =
+    [System.Collections.Generic.List[object]]::new()
 
   $currentResult =
-  $search.GetNextResult()
-}
+    $search.GetFirstResult()
 
-# ============================================================
-# 5. RETORNAR OS PDFS ENCONTRADOS
-# ============================================================
+  while ($null -ne $currentResult) {
 
-return $entries.ToArray()
+    $resultName =
+      ([string]$currentResult.Name).Trim()
+
+    $resultFullName =
+      ([string]$currentResult.Path).Trim()
+
+    $resultExtension =
+      [System.IO.Path]::GetExtension(
+        $resultName
+      )
+
+    $isPdf =
+      $resultExtension -ieq ".pdf"
+
+    $isSolidWorksDrawing =
+      $resultExtension -ieq ".slddrw"
+
+    $isInsideNdtFolder =
+      $false
+
+    if (-not (
+        [string]::IsNullOrWhiteSpace(
+          $resultFullName
+        )
+      )) {
+
+      $resultPathParts =
+        @(
+          $resultFullName -split '[\\/]'
+        )
+
+      $isInsideNdtFolder =
+        @(
+          $resultPathParts |
+            Where-Object {
+              ([string]$_).Trim() -ieq "Folhas NDT"
+            }
+        ).Count -gt 0
+    }
+
+    $isAllowedResult =
+      (
+        $isPdf -or
+        (
+          $isSolidWorksDrawing -and
+          $isInsideNdtFolder
+        )
+      )
+
+    if (
+      $isAllowedResult -and
+      -not [string]::IsNullOrWhiteSpace(
+        $resultFullName
+      )
+    ) {
+
+      $baseName =
+        [System.IO.Path]::GetFileNameWithoutExtension(
+          $resultName
+        )
+
+      $entryDocumentType =
+        if ($isSolidWorksDrawing) {
+          "NDT"
+        }
+        else {
+          $null
+        }
+
+      $entryDisplayName =
+        if ($isSolidWorksDrawing) {
+          "GD5_DCA_NDT"
+        }
+        else {
+          $null
+        }
+
+      $entries.Add(
+        [PSCustomObject]@{
+          Name            = $resultName
+          BaseName        = ([string]$baseName).Trim()
+          FullName        = $resultFullName
+          Extension       = $resultExtension
+          DocumentType    = $entryDocumentType
+          TypeDisplayName = $entryDisplayName
+          IsNdt           = [bool]$isSolidWorksDrawing
+          FromVault       = $true
+        }
+      )
+    }
+    elseif (
+      $isAllowedResult -and
+      $Details
+    ) {
+
+      Write-Host (
+        "  Resultado do Vault ignorado por nao possuir caminho: " +
+        "'$resultName'."
+      ) -ForegroundColor DarkGray
+    }
+
+    $currentResult =
+      $search.GetNextResult()
+  }
+
+  # ============================================================
+  # 5. RETORNAR OS PDFS ENCONTRADOS
+  # ============================================================
+
+  return $entries.ToArray()
 }
 
 # ============================================================
@@ -279,7 +280,7 @@ function Get-DcaDiskPdfEntries {
   # ============================================================
 
   $folderPathClean =
-  $FolderPath.Trim()
+    $FolderPath.Trim()
 
   if (
     [string]::IsNullOrWhiteSpace(
@@ -309,7 +310,7 @@ function Get-DcaDiskPdfEntries {
   # ============================================================
 
   $entries =
-  [System.Collections.Generic.List[object]]::new()
+    [System.Collections.Generic.List[object]]::new()
 
   # A pesquisa e recursiva porque esta funcao tambem e utilizada
   # pela pesquisa geral por codigo.
@@ -317,16 +318,16 @@ function Get-DcaDiskPdfEntries {
   # A leitura somente da pasta atual e realizada pelo modulo
   # especifico de navegacao por pastas.
   $pdfFiles =
-  @(
-    Get-ChildItem `
-      -LiteralPath $folderPathClean `
-      -Filter "*.pdf" `
-      -File `
-      -Recurse `
-      -Force `
-      -ErrorAction SilentlyContinue |
-      Sort-Object FullName
-  )
+    @(
+      Get-ChildItem `
+        -LiteralPath $folderPathClean `
+        -Filter "*.pdf" `
+        -File `
+        -Recurse `
+        -Force `
+        -ErrorAction SilentlyContinue |
+        Sort-Object FullName
+    )
 
   foreach ($pdfFile in $pdfFiles) {
 
@@ -335,7 +336,7 @@ function Get-DcaDiskPdfEntries {
     }
 
     $pdfFullName =
-    ([string]$pdfFile.FullName).Trim()
+      ([string]$pdfFile.FullName).Trim()
 
     if (
       [string]::IsNullOrWhiteSpace(
@@ -347,14 +348,14 @@ function Get-DcaDiskPdfEntries {
     }
 
     $baseName =
-    [System.IO.Path]::GetFileNameWithoutExtension(
-      $pdfFile.Name
-    )
+      [System.IO.Path]::GetFileNameWithoutExtension(
+        $pdfFile.Name
+      )
 
     # Mantem a mesma estrutura utilizada pelos resultados da API.
     $entries.Add(
       [PSCustomObject]@{
-        Name = [string]$pdfFile.Name
+        Name     = [string]$pdfFile.Name
         BaseName = ([string]$baseName).Trim()
         FullName = $pdfFullName
         FromVault = $false
@@ -392,7 +393,7 @@ function Confirm-DcaLocalPdf {
   # ============================================================
 
   $entryPath =
-  ([string]$Entry.FullName).Trim()
+    ([string]$Entry.FullName).Trim()
 
   if (
     [string]::IsNullOrWhiteSpace(
@@ -428,9 +429,9 @@ function Confirm-DcaLocalPdf {
   ) {
 
     $localFile =
-    Get-Item `
-      -LiteralPath $entryPath `
-      -ErrorAction Stop
+      Get-Item `
+        -LiteralPath $entryPath `
+        -ErrorAction Stop
 
     if ($localFile.Length -le 0) {
 
@@ -448,15 +449,15 @@ function Confirm-DcaLocalPdf {
   # ============================================================
 
   $vault =
-  $script:DcaVault
+    $script:DcaVault
 
   $entryFromVault =
-  $false
+    $false
 
   if ($Entry.PSObject.Properties["FromVault"]) {
 
     $entryFromVault =
-    [bool]$Entry.FromVault
+      [bool]$Entry.FromVault
   }
 
   if (
@@ -478,13 +479,13 @@ function Confirm-DcaLocalPdf {
   )
 
   [object]$parentFolder =
-  $null
+    $null
 
   $pdmFile =
-  $vault.GetFileFromPath(
-    $entryPath,
-    [ref]$parentFolder
-  )
+    $vault.GetFileFromPath(
+      $entryPath,
+      [ref]$parentFolder
+    )
 
   if ($null -eq $pdmFile) {
 
@@ -507,10 +508,10 @@ function Confirm-DcaLocalPdf {
   # ============================================================
 
   [object]$fileVersion =
-  [int]0
+    [int]0
 
   [object]$folderId =
-  [int]$parentFolder.ID
+    [int]$parentFolder.ID
 
   if ($Details) {
 
@@ -552,23 +553,23 @@ function Confirm-DcaLocalPdf {
     # e procurada pelo nome entre os assemblies ja carregados.
 
     $edmFile5Type =
-    [System.AppDomain]::CurrentDomain.GetAssemblies() |
-      ForEach-Object {
+      [System.AppDomain]::CurrentDomain.GetAssemblies() |
+        ForEach-Object {
 
-      try {
+          try {
 
-        $_.GetTypes()
-      }
-      catch {
+            $_.GetTypes()
+          }
+          catch {
 
-        @()
-      }
-    } |
-      Where-Object {
-      $_.IsInterface -and
-      $_.Name -eq "IEdmFile5"
-    } |
-      Select-Object -First 1
+            @()
+          }
+        } |
+        Where-Object {
+          $_.IsInterface -and
+          $_.Name -eq "IEdmFile5"
+        } |
+        Select-Object -First 1
 
     # Se a biblioteca ainda nao estiver carregada, tenta carregar
     # explicitamente o caminho configurado no .env.
@@ -585,32 +586,32 @@ function Confirm-DcaLocalPdf {
     ) {
 
       $pdmInteropAssembly =
-      [System.Reflection.Assembly]::LoadFrom(
-        $env:DCA_PDM_LIB
-      )
+        [System.Reflection.Assembly]::LoadFrom(
+          $env:DCA_PDM_LIB
+        )
 
       if ($null -ne $pdmInteropAssembly) {
 
         $edmFile5Type =
-        $pdmInteropAssembly.GetTypes() |
-          Where-Object {
-          $_.IsInterface -and
-          $_.Name -eq "IEdmFile5"
-        } |
-          Select-Object -First 1
+          $pdmInteropAssembly.GetTypes() |
+            Where-Object {
+              $_.IsInterface -and
+              $_.Name -eq "IEdmFile5"
+            } |
+            Select-Object -First 1
       }
     }
 
     if ($null -eq $edmFile5Type) {
 
       $loadedAssemblyNames =
-      @(
-        [System.AppDomain]::CurrentDomain.GetAssemblies() |
-          ForEach-Object {
-          $_.GetName().Name
-        } |
-          Sort-Object -Unique
-      )
+        @(
+          [System.AppDomain]::CurrentDomain.GetAssemblies() |
+            ForEach-Object {
+              $_.GetName().Name
+            } |
+            Sort-Object -Unique
+        )
 
       throw (
         "A interface IEdmFile5 nao foi encontrada nas " +
@@ -638,7 +639,7 @@ function Confirm-DcaLocalPdf {
       ) -ForegroundColor DarkGray
     }
 
-       # ==========================================================
+    # ==========================================================
     # LOCALIZAR GETFILECOPY NA INTERFACE IEDMFILE5
     # ==========================================================
     #
@@ -650,12 +651,12 @@ function Confirm-DcaLocalPdf {
     # diretamente o objeto COM retornado pelo Vault.
 
     $getFileCopyMethod =
-    $edmFile5Type.GetMethods() |
-      Where-Object {
-        $_.Name -eq "GetFileCopy" -and
-        $_.GetParameters().Count -eq 5
-      } |
-      Select-Object -First 1
+      $edmFile5Type.GetMethods() |
+        Where-Object {
+          $_.Name -eq "GetFileCopy" -and
+          $_.GetParameters().Count -eq 5
+        } |
+        Select-Object -First 1
 
     if ($null -eq $getFileCopyMethod) {
 
@@ -666,7 +667,7 @@ function Confirm-DcaLocalPdf {
     }
 
     $getFileCopyParameters =
-    $getFileCopyMethod.GetParameters()
+      $getFileCopyMethod.GetParameters()
 
     if ($Details) {
 
@@ -681,7 +682,7 @@ function Confirm-DcaLocalPdf {
       ) {
 
         $currentParameter =
-        $getFileCopyParameters[$parameterIndex]
+          $getFileCopyParameters[$parameterIndex]
 
         Write-Host (
           "    [{0}] {1} {2} | ByRef: {3}" -f
@@ -701,28 +702,28 @@ function Confirm-DcaLocalPdf {
     # pelo MethodInfo.Invoke quando os parametros forem ByRef.
 
     [object]$versionArgument =
-    [int]0
+      [int]0
 
     [object]$folderArgument =
-    [int]$parentFolder.ID
+      [int]$parentFolder.ID
 
     $getFileCopyArguments =
-    [object[]]::new(5)
+      [object[]]::new(5)
 
     $getFileCopyArguments[0] =
-    [int]0
+      [int]0
 
     $getFileCopyArguments[1] =
-    $versionArgument
+      $versionArgument
 
     $getFileCopyArguments[2] =
-    $folderArgument
+      $folderArgument
 
     $getFileCopyArguments[3] =
-    [int]0
+      [int]0
 
     $getFileCopyArguments[4] =
-    [string]""
+      [string]""
 
     if ($Details) {
 
@@ -740,19 +741,19 @@ function Confirm-DcaLocalPdf {
     }
 
     $unknownPointer =
-    [System.IntPtr]::Zero
+      [System.IntPtr]::Zero
 
     $typedPdmFile =
-    $null
+      $null
 
     try {
 
       # Obtem o ponteiro IUnknown do objeto COM retornado pelo
       # Vault e cria uma referencia tipada como IEdmFile5.
       $unknownPointer =
-      [System.Runtime.InteropServices.Marshal]::GetIUnknownForObject(
-        $pdmFile
-      )
+        [System.Runtime.InteropServices.Marshal]::GetIUnknownForObject(
+          $pdmFile
+        )
 
       if ($unknownPointer -eq [System.IntPtr]::Zero) {
 
@@ -763,10 +764,10 @@ function Confirm-DcaLocalPdf {
       }
 
       $typedPdmFile =
-      [System.Runtime.InteropServices.Marshal]::GetTypedObjectForIUnknown(
-        $unknownPointer,
-        $edmFile5Type
-      )
+        [System.Runtime.InteropServices.Marshal]::GetTypedObjectForIUnknown(
+          $unknownPointer,
+          $edmFile5Type
+        )
 
       if ($null -eq $typedPdmFile) {
 
@@ -792,10 +793,10 @@ function Confirm-DcaLocalPdf {
       }
 
       $null =
-      $getFileCopyMethod.Invoke(
-        $typedPdmFile,
-        $getFileCopyArguments
-      )
+        $getFileCopyMethod.Invoke(
+          $typedPdmFile,
+          $getFileCopyArguments
+        )
     }
     finally {
 
@@ -805,25 +806,25 @@ function Confirm-DcaLocalPdf {
       if ($unknownPointer -ne [System.IntPtr]::Zero) {
 
         $null =
-        [System.Runtime.InteropServices.Marshal]::Release(
-          $unknownPointer
-        )
+          [System.Runtime.InteropServices.Marshal]::Release(
+            $unknownPointer
+          )
       }
     }
 
     # Os elementos do array recebem os valores atualizados para
     # parametros ref/out depois da invocacao por reflexao.
     $versionArgument =
-    $getFileCopyArguments[1]
+      $getFileCopyArguments[1]
 
     $folderArgument =
-    $getFileCopyArguments[2]
+      $getFileCopyArguments[2]
 
     $fileVersion =
-    $versionArgument
+      $versionArgument
 
     $folderId =
-    $folderArgument
+      $folderArgument
 
     if ($Details) {
 
@@ -843,14 +844,14 @@ function Confirm-DcaLocalPdf {
   catch {
 
     $realException =
-    $_.Exception
+      $_.Exception
 
     while (
       $null -ne $realException.InnerException
     ) {
 
       $realException =
-      $realException.InnerException
+        $realException.InnerException
     }
 
     throw (
@@ -870,12 +871,12 @@ function Confirm-DcaLocalPdf {
   # GetLocalPath tambem pertence a IEdmFile5 e pode nao aparecer
   # diretamente no System.__ComObject retornado pelo Vault.
   $getLocalPathMethod =
-  $edmFile5Type.GetMethods() |
-    Where-Object {
-      $_.Name -eq "GetLocalPath" -and
-      $_.GetParameters().Count -eq 1
-    } |
-    Select-Object -First 1
+    $edmFile5Type.GetMethods() |
+      Where-Object {
+        $_.Name -eq "GetLocalPath" -and
+        $_.GetParameters().Count -eq 1
+      } |
+      Select-Object -First 1
 
   if ($null -eq $getLocalPathMethod) {
 
@@ -893,10 +894,10 @@ function Confirm-DcaLocalPdf {
   }
 
   $getLocalPathArguments =
-  [object[]]::new(1)
+    [object[]]::new(1)
 
   $getLocalPathArguments[0] =
-  [int]$parentFolder.ID
+    [int]$parentFolder.ID
 
   if ($Details) {
 
@@ -916,22 +917,22 @@ function Confirm-DcaLocalPdf {
   try {
 
     $localCachePath =
-    [string]$getLocalPathMethod.Invoke(
-      $typedPdmFile,
-      $getLocalPathArguments
-    )
+      [string]$getLocalPathMethod.Invoke(
+        $typedPdmFile,
+        $getLocalPathArguments
+      )
   }
   catch {
 
     $realException =
-    $_.Exception
+      $_.Exception
 
     while (
       $null -ne $realException.InnerException
     ) {
 
       $realException =
-      $realException.InnerException
+        $realException.InnerException
     }
 
     throw (
@@ -955,7 +956,7 @@ function Confirm-DcaLocalPdf {
   }
 
   $localCachePath =
-  $localCachePath.Trim()
+    $localCachePath.Trim()
 
   if (
     [string]::IsNullOrWhiteSpace(
@@ -994,9 +995,9 @@ function Confirm-DcaLocalPdf {
   }
 
   $localCacheFile =
-  Get-Item `
-    -LiteralPath $localCachePath `
-    -ErrorAction Stop
+    Get-Item `
+      -LiteralPath $localCachePath `
+      -ErrorAction Stop
 
   if ($localCacheFile.Length -le 0) {
 
@@ -1011,5 +1012,4 @@ function Confirm-DcaLocalPdf {
   # ============================================================
 
   return $localCacheFile.FullName
-
 }

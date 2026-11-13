@@ -1,3 +1,4 @@
+
 # ============================================================
 # PREPARACAO DOS ARQUIVOS DA FOLHA NDT
 # ============================================================
@@ -17,180 +18,180 @@
 
 function Resolve-DcaNdtSelectedFiles {
 
-  param(
-    [Parameter(Mandatory = $true)]
-    [ValidateNotNull()]
-    $SelectedDocument,
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNull()]
+        $SelectedDocument,
 
-    [Parameter(Mandatory = $true)]
-    [ValidateNotNullOrEmpty()]
-    [string]$ItemCode,
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$ItemCode,
 
-    [Parameter(Mandatory = $true)]
-    [ValidateNotNullOrEmpty()]
-    [string]$ClientRevision
-  )
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$ClientRevision
+    )
 
-  $documentType =
-  ([string]$SelectedDocument.DocumentType).Trim()
+    $documentType =
+        ([string]$SelectedDocument.DocumentType).Trim()
 
-  if ($documentType -ine "NDT") {
+    if ($documentType -ine "NDT") {
 
-    return [PSCustomObject]@{
-      SelectedDocument = $SelectedDocument
-      DrawingEntry = $null
-      PdfEntry = $null
-      SheetType = $null
+        return [PSCustomObject]@{
+            SelectedDocument = $SelectedDocument
+            DrawingEntry     = $null
+            PdfEntry         = $null
+            SheetType        = $null
+        }
     }
-  }
-
-  if (
-    -not $SelectedDocument.PSObject.Properties["File"] -or
-    $null -eq $SelectedDocument.File
-  ) {
-
-    throw (
-      "O resultado NDT nao possui o desenho de origem."
-    )
-  }
-
-  $drawingEntry =
-  $SelectedDocument.File
-
-  $drawingPath =
-  ([string]$drawingEntry.FullName).Trim()
-
-  if (
-    [string]::IsNullOrWhiteSpace(
-      $drawingPath
-    )
-  ) {
-
-    throw (
-      "O desenho NDT nao possui um caminho completo."
-    )
-  }
-
-  if (
-    [System.IO.Path]::GetExtension(
-      $drawingPath
-    ) -ine ".slddrw"
-  ) {
-
-    throw (
-      "O arquivo de origem do NDT nao e SLDDRW: " +
-      "'$drawingPath'."
-    )
-  }
-
-  $sheetType =
-  ""
-
-  if (
-    $SelectedDocument.PSObject.Properties["NdtSheetType"]
-  ) {
-
-    $sheetType =
-    ([string]$SelectedDocument.NdtSheetType).Trim().ToUpperInvariant()
-  }
-
-  if (
-    [string]::IsNullOrWhiteSpace(
-      $sheetType
-    )
-  ) {
-
-    $drawingBaseName =
-    ([string]$drawingEntry.BaseName).Trim()
 
     if (
-      $drawingBaseName -match
-      '(?i)\[(?<NdtType>MPI|FPI)\]'
+        -not $SelectedDocument.PSObject.Properties["File"] -or
+        $null -eq $SelectedDocument.File
     ) {
 
-      $sheetType =
-      ([string]$Matches["NdtType"]).Trim().ToUpperInvariant()
+        throw (
+            "O resultado NDT nao possui o desenho de origem."
+        )
     }
-  }
 
-  if (
-    $sheetType -notin @(
-      "MPI",
-      "FPI"
-    )
-  ) {
+    $drawingEntry =
+        $SelectedDocument.File
 
-    throw (
-      "Nao foi possivel identificar MPI ou FPI no desenho " +
-      "NDT '$($drawingEntry.Name)'."
-    )
-  }
+    $drawingPath =
+        ([string]$drawingEntry.FullName).Trim()
 
-  $pdfEntry =
-  Find-DcaNdtPdfEntry `
-    -DrawingEntry $drawingEntry `
-    -ItemCode $ItemCode `
-    -NdtSheetType $sheetType `
-    -ClientRevision $ClientRevision
+    if (
+        [string]::IsNullOrWhiteSpace(
+            $drawingPath
+        )
+    ) {
 
-  if ($null -eq $pdfEntry) {
+        throw (
+            "O desenho NDT nao possui um caminho completo."
+        )
+    }
 
-    throw (
-      "A pesquisa do PDF correspondente retornou NULL para " +
-      "'$ItemCode [$sheetType]'."
-    )
-  }
+    if (
+        [System.IO.Path]::GetExtension(
+            $drawingPath
+        ) -ine ".slddrw"
+    ) {
 
-  # O campo File continua representando o arquivo que sera
-  # importado pelo fluxo comum de PDF.
-  $SelectedDocument.File =
-  $pdfEntry
+        throw (
+            "O arquivo de origem do NDT nao e SLDDRW: " +
+            "'$drawingPath'."
+        )
+    }
 
-  Add-Member `
-    -InputObject $SelectedDocument `
-    -NotePropertyName "NdtDrawingFile" `
-    -NotePropertyValue $drawingEntry `
-    -Force
+    $sheetType =
+        ""
 
-  Add-Member `
-    -InputObject $SelectedDocument `
-    -NotePropertyName "NdtPdfFile" `
-    -NotePropertyValue $pdfEntry `
-    -Force
+    if (
+        $SelectedDocument.PSObject.Properties["NdtSheetType"]
+    ) {
 
-  Add-Member `
-    -InputObject $SelectedDocument `
-    -NotePropertyName "NdtSheetType" `
-    -NotePropertyValue $sheetType `
-    -Force
+        $sheetType =
+            ([string]$SelectedDocument.NdtSheetType).Trim().ToUpperInvariant()
+    }
 
-  if ($Details) {
+    if (
+        [string]::IsNullOrWhiteSpace(
+            $sheetType
+        )
+    ) {
 
-    Write-Host (
-      "  Arquivos associados ao DCA NDT:"
-    ) -ForegroundColor Cyan
+        $drawingBaseName =
+            ([string]$drawingEntry.BaseName).Trim()
 
-    Write-Host (
-      "    Desenho: '$($drawingEntry.FullName)'"
-    ) -ForegroundColor DarkGray
+        if (
+            $drawingBaseName -match
+            '(?i)\[(?<NdtType>MPI|FPI)\]'
+        ) {
 
-    Write-Host (
-      "    PDF:     '$($pdfEntry.FullName)'"
-    ) -ForegroundColor DarkGray
+            $sheetType =
+                ([string]$Matches["NdtType"]).Trim().ToUpperInvariant()
+        }
+    }
 
-    Write-Host (
-      "    Folha:   '$sheetType'"
-    ) -ForegroundColor DarkGray
+    if (
+        $sheetType -notin @(
+            "MPI",
+            "FPI"
+        )
+    ) {
 
-    Write-Host (
-      "    Revisao: '$ClientRevision'"
-    ) -ForegroundColor DarkGray
-  }
+        throw (
+            "Nao foi possivel identificar MPI ou FPI no desenho " +
+            "NDT '$($drawingEntry.Name)'."
+        )
+    }
 
-  return [PSCustomObject]@{
-    SelectedDocument = $SelectedDocument
-    DrawingEntry = $drawingEntry
-    PdfEntry = $pdfEntry
-    SheetType = $sheetType
-  }
+    $pdfEntry =
+        Find-DcaNdtPdfEntry `
+            -DrawingEntry $drawingEntry `
+            -ItemCode $ItemCode `
+            -NdtSheetType $sheetType `
+            -ClientRevision $ClientRevision
+
+    if ($null -eq $pdfEntry) {
+
+        throw (
+            "A pesquisa do PDF correspondente retornou NULL para " +
+            "'$ItemCode [$sheetType]'."
+        )
+    }
+
+    # O campo File continua representando o arquivo que sera
+    # importado pelo fluxo comum de PDF.
+    $SelectedDocument.File =
+        $pdfEntry
+
+    Add-Member `
+        -InputObject $SelectedDocument `
+        -NotePropertyName "NdtDrawingFile" `
+        -NotePropertyValue $drawingEntry `
+        -Force
+
+    Add-Member `
+        -InputObject $SelectedDocument `
+        -NotePropertyName "NdtPdfFile" `
+        -NotePropertyValue $pdfEntry `
+        -Force
+
+    Add-Member `
+        -InputObject $SelectedDocument `
+        -NotePropertyName "NdtSheetType" `
+        -NotePropertyValue $sheetType `
+        -Force
+
+    if ($Details) {
+
+        Write-Host (
+            "  Arquivos associados ao DCA NDT:"
+        ) -ForegroundColor Cyan
+
+        Write-Host (
+            "    Desenho: '$($drawingEntry.FullName)'"
+        ) -ForegroundColor DarkGray
+
+        Write-Host (
+            "    PDF:     '$($pdfEntry.FullName)'"
+        ) -ForegroundColor DarkGray
+
+        Write-Host (
+            "    Folha:   '$sheetType'"
+        ) -ForegroundColor DarkGray
+
+        Write-Host (
+            "    Revisao: '$ClientRevision'"
+        ) -ForegroundColor DarkGray
+    }
+
+    return [PSCustomObject]@{
+        SelectedDocument = $SelectedDocument
+        DrawingEntry     = $drawingEntry
+        PdfEntry         = $pdfEntry
+        SheetType        = $sheetType
+    }
 }

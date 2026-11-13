@@ -100,10 +100,10 @@ function Select-DcaPdfsByFolder {
 
   # Normaliza o caminho completo e remove a barra final para
   # permitir comparacoes consistentes com as subpastas.
-  $documentationRootPath =
+  $folderFullPath =
   [System.IO.Path]::GetFullPath(
-    $documentationFolder.FullName
-  ).TrimEnd("\")
+    $availableFolder.FullName
+  ).TrimEnd([char[]]@('\', '/'))
 
   # ============================================================
   # 4. DEFINIR AS CATEGORIAS DCA PERMITIDAS
@@ -777,7 +777,13 @@ function Select-DcaPdfsByFolder {
             $currentPart
           )
         ) {
-          continue
+
+          Write-Warn (
+            "Selecao invalida. Existem partes vazias na entrada."
+          )
+
+          $selectionIsValid = $false
+          break
         }
 
         # Verifica primeiro se a parte atual representa um
@@ -787,11 +793,27 @@ function Select-DcaPdfsByFolder {
           '^(?<Start>\d+)\s*-\s*(?<End>\d+)$'
         ) {
 
-          $rangeStart =
-          [int]$Matches["Start"]
+          $rangeStart = 0
+          $rangeEnd = 0
 
-          $rangeEnd =
-          [int]$Matches["End"]
+          if (
+            -not [int]::TryParse(
+              $Matches["Start"],
+              [ref]$rangeStart
+            ) -or
+            -not [int]::TryParse(
+              $Matches["End"],
+              [ref]$rangeEnd
+            )
+          ) {
+
+            Write-Warn (
+              "Intervalo invalido: '$currentPart'."
+            )
+
+            $selectionIsValid = $false
+            break
+          }
 
           if (
             $rangeStart -lt 1 -or
@@ -951,6 +973,18 @@ function Select-DcaPdfsByFolder {
 
       foreach ($document in $selectedFolder.Documents) {
 
+        if (
+          $null -eq $document -or
+          $null -eq $document.File
+        ) {
+
+          Write-Warn (
+            "Documento ignorado: arquivo fisico nao encontrado."
+          )
+
+          continue
+        }
+
         # O caminho completo e utilizado como identificador unico
         # do PDF durante a montagem do lote.
         $documentPath =
@@ -961,6 +995,7 @@ function Select-DcaPdfsByFolder {
             $documentPath
           )
         ) {
+
           continue
         }
 

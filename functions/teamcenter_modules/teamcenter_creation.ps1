@@ -17,7 +17,7 @@
 #   1. interpreta os erros retornados pelo servico SOA;
 #   2. recupera o Item e a revisao criados;
 #   3. remove wrappers criados pelo PowerShell;
-#   4. grava aprovador e data na revisao de Processo;
+#   4. grava aprovador e data na revisao de Processo ou NDT;
 #   5. devolve os objetos ao fluxo principal.
 #
 # Esta funcao pode criar objetos efetivamente no Teamcenter.
@@ -134,8 +134,7 @@ function New-DcaTeamcenterItem {
     ) -ForegroundColor Gray
   }
 
-  # Transfere os valores da configuracao para variaveis locais
-  # utilizadas durante a montagem dos objetos CreateInput.
+  # Armazena as configuracoes para montar os CreateInput.
   $itemType = $typeConfiguration.ItemType
   $revisionType = $typeConfiguration.RevisionType
   $clientProperty = $typeConfiguration.ClientProperty
@@ -203,9 +202,12 @@ function New-DcaTeamcenterItem {
   # ============================================================
   $candidateCode = $sourceCodeClean
 
-  # Folhas NDT recebem o prefixo NDT- para nao conflitar com o
+  # Folhas NDT recebem o sufixo -NDT para nao conflitar com o
   # item de Processo que usa o mesmo codigo base.
-  if ($DocumentType -eq "NDT" -and $candidateCode -notmatch '^NDT-') {
+  if (
+    $DocumentType -eq "NDT" -and
+    $candidateCode -notmatch '(?i)-NDT$'
+  ) {
     $candidateCode = "$candidateCode-NDT"
   }
 
@@ -236,7 +238,7 @@ function New-DcaTeamcenterItem {
   }
 
   # ============================================================
-  # MAPEAR APROVADOR E DATA DO PDM PARA O TEAMCENTER
+  # MAPEAR DADOS DE APROVACAO DO PDM PARA O TEAMCENTER
   # ============================================================
   # Os valores sao validados e preparados antes da criacao.
   # Depois do CreateObjects, eles sao gravados diretamente nas
@@ -500,7 +502,7 @@ function New-DcaTeamcenterItem {
   $integerPropertyNames =
   @(Get-DcaIntegerPropertyNames)
 
-  # Cria o CreateInput correspondente a revisao.
+  # Monta o CreateInput da revisao.
   $revisionInput =
   New-DcaCreateInputObject `
     -InputType $createInputType `
@@ -712,17 +714,6 @@ function New-DcaTeamcenterItem {
       throw (
         "gd5revcliente ficou vazio no objeto de revisao " +
         "antes do CreateObjects."
-      )
-    }
-
-    if (
-      [string]::IsNullOrWhiteSpace(
-        $revisionClient
-      )
-    ) {
-
-      throw (
-        "gd5revcliente ficou vazio antes do CreateObjects."
       )
     }
 
@@ -1112,8 +1103,7 @@ function New-DcaTeamcenterItem {
       )
     }
 
-    # Somente chama SetProperties quando existir pelo menos uma
-    # propriedade de aprovacao preenchida.
+    # Atualiza a revisao somente quando houver dados de aprovacao.
     if ($nameValueEntries.Count -gt 0) {
 
       # ========================================================

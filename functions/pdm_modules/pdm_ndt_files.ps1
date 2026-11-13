@@ -1,6 +1,8 @@
+
 # ============================================================
 # LOCALIZACAO DO PDF CORRESPONDENTE A UMA FOLHA NDT
 # ============================================================
+
 function Find-DcaNdtPdfEntry {
 
   # Localiza o PDF correspondente ao desenho SLDDRW de uma
@@ -42,33 +44,18 @@ function Find-DcaNdtPdfEntry {
   # 1. NORMALIZAR OS VALORES
   # ============================================================
 
-  $drawingPath =
-  ([string]$DrawingEntry.FullName).Trim()
+  $drawingPath = ([string]$DrawingEntry.FullName).Trim()
+  $itemCodeClean = $ItemCode.Trim().ToUpperInvariant()
+  $ndtSheetTypeClean = $NdtSheetType.Trim().ToUpperInvariant()
+  $clientRevisionClean = $ClientRevision.Trim().ToUpperInvariant()
 
-  $itemCodeClean =
-  $ItemCode.Trim().ToUpperInvariant()
+  if ([string]::IsNullOrWhiteSpace($drawingPath)) {
 
-  $ndtSheetTypeClean =
-  $NdtSheetType.Trim().ToUpperInvariant()
-
-  $clientRevisionClean =
-  $ClientRevision.Trim().ToUpperInvariant()
-
-  if (
-    [string]::IsNullOrWhiteSpace(
-      $drawingPath
-    )
-  ) {
-
-    throw (
-      "O desenho NDT nao possui um caminho completo."
-    )
+    throw "O desenho NDT nao possui um caminho completo."
   }
 
   if (
-    [System.IO.Path]::GetExtension(
-      $drawingPath
-    ) -ine ".slddrw"
+    [System.IO.Path]::GetExtension($drawingPath) -ine ".slddrw"
   ) {
 
     throw (
@@ -77,12 +64,7 @@ function Find-DcaNdtPdfEntry {
     )
   }
 
-  if (
-    $ndtSheetTypeClean -notin @(
-      "MPI",
-      "FPI"
-    )
-  ) {
+  if ($ndtSheetTypeClean -notin @("MPI", "FPI")) {
 
     throw (
       "O tipo da Folha NDT e invalido: " +
@@ -94,16 +76,11 @@ function Find-DcaNdtPdfEntry {
   # 2. LOCALIZAR A PASTA FOLHAS NDT PDF
   # ============================================================
 
-  $drawingFolder =
-  [System.IO.Path]::GetDirectoryName(
+  $drawingFolder = [System.IO.Path]::GetDirectoryName(
     $drawingPath
   )
 
-  if (
-    [string]::IsNullOrWhiteSpace(
-      $drawingFolder
-    )
-  ) {
+  if ([string]::IsNullOrWhiteSpace($drawingFolder)) {
 
     throw (
       "Nao foi possivel identificar a pasta do desenho NDT: " +
@@ -111,8 +88,7 @@ function Find-DcaNdtPdfEntry {
     )
   }
 
-  $drawingFolderName =
-  [System.IO.Path]::GetFileName(
+  $drawingFolderName = [System.IO.Path]::GetFileName(
     $drawingFolder.TrimEnd(
       [char[]]@(
         '\',
@@ -129,16 +105,11 @@ function Find-DcaNdtPdfEntry {
     )
   }
 
-  $ndtParentFolder =
-  [System.IO.Path]::GetDirectoryName(
+  $ndtParentFolder = [System.IO.Path]::GetDirectoryName(
     $drawingFolder
   )
 
-  if (
-    [string]::IsNullOrWhiteSpace(
-      $ndtParentFolder
-    )
-  ) {
+  if ([string]::IsNullOrWhiteSpace($ndtParentFolder)) {
 
     throw (
       "Nao foi possivel identificar a pasta superior de " +
@@ -146,13 +117,11 @@ function Find-DcaNdtPdfEntry {
     )
   }
 
-  $ndtPdfFolder =
-  Join-Path `
+  $ndtPdfFolder = Join-Path `
     -Path $ndtParentFolder `
     -ChildPath "Folhas NDT PDF"
 
-  $ndtPdfFolderAvailableLocally =
-  Test-Path `
+  $ndtPdfFolderAvailableLocally = Test-Path `
     -LiteralPath $ndtPdfFolder `
     -PathType Container
 
@@ -172,20 +141,16 @@ function Find-DcaNdtPdfEntry {
   # 3. MONTAR O NOME EXATO ESPERADO
   # ============================================================
 
-  $expectedPdfBaseName =
-  "{0} [{1}] [{2}]" -f
-  $itemCodeClean,
-  $ndtSheetTypeClean,
-  $clientRevisionClean
+  $expectedPdfBaseName = "{0} [{1}] [{2}]" -f `
+    $itemCodeClean,
+    $ndtSheetTypeClean,
+    $clientRevisionClean
 
-  $expectedPdfName =
-  $expectedPdfBaseName + ".PDF"
+  $expectedPdfName = $expectedPdfBaseName + ".PDF"
 
   if ($Details) {
 
-    Write-Host (
-      "  Associando o PDF da Folha NDT:"
-    ) -ForegroundColor Cyan
+    Write-Host "  Associando o PDF da Folha NDT:" -ForegroundColor Cyan
 
     Write-Host (
       "    Desenho:  '$drawingPath'"
@@ -204,83 +169,57 @@ function Find-DcaNdtPdfEntry {
   # 4. PESQUISAR PRIMEIRO PELO VAULT
   # ============================================================
 
-  $vault =
-  Get-DcaVault
-
-  $pdfCandidates =
-  @()
+  $vault = Get-DcaVault
+  $pdfCandidates = @()
 
   if ($null -ne $vault) {
 
     try {
 
-      $vaultEntries =
-      @(
+      $vaultEntries = @(
         Search-DcaVaultPdfEntries `
           -Vault $vault `
           -SearchText (
-          "*{0}*" -f
-          $itemCodeClean
-        )
+            "*{0}*" -f $itemCodeClean
+          )
       )
 
-      $pdfCandidates =
-      @(
+      $pdfCandidates = @(
         $vaultEntries |
           Where-Object {
 
-          $candidateBaseName =
-          ([string]$_.BaseName).Trim()
+            $candidateBaseName = ([string]$_.BaseName).Trim()
+            $candidateFullName = ([string]$_.FullName).Trim()
 
-          $candidateFullName =
-          ([string]$_.FullName).Trim()
+            if ([string]::IsNullOrWhiteSpace($candidateFullName)) {
+              return $false
+            }
 
-          if (
-            [string]::IsNullOrWhiteSpace(
+            if ($candidateBaseName -ine $expectedPdfBaseName) {
+              return $false
+            }
+
+            $candidateFolderPath = [System.IO.Path]::GetDirectoryName(
               $candidateFullName
             )
-          ) {
 
-            return $false
-          }
+            if ([string]::IsNullOrWhiteSpace($candidateFolderPath)) {
+              return $false
+            }
 
-          if (
-            $candidateBaseName -ine
-            $expectedPdfBaseName
-          ) {
-
-            return $false
-          }
-
-          $candidateFolderPath =
-          [System.IO.Path]::GetDirectoryName(
-            $candidateFullName
-          )
-
-          if (
-            [string]::IsNullOrWhiteSpace(
-              $candidateFolderPath
-            )
-          ) {
-
-            return $false
-          }
-
-          $candidateFolderName =
-          [System.IO.Path]::GetFileName(
-            $candidateFolderPath.TrimEnd(
-              [char[]]@(
-                '\',
-                '/'
+            $candidateFolderName = [System.IO.Path]::GetFileName(
+              $candidateFolderPath.TrimEnd(
+                [char[]]@(
+                  '\',
+                  '/'
+                )
               )
             )
-          )
 
-          return (
-            $candidateFolderName -ieq
-            "Folhas NDT PDF"
-          )
-        }
+            return (
+              $candidateFolderName -ieq "Folhas NDT PDF"
+            )
+          }
       )
     }
     catch {
@@ -294,8 +233,7 @@ function Find-DcaNdtPdfEntry {
         )
       }
 
-      $pdfCandidates =
-      @()
+      $pdfCandidates = @()
     }
   }
 
@@ -308,8 +246,7 @@ function Find-DcaNdtPdfEntry {
     $ndtPdfFolderAvailableLocally
   ) {
 
-    $diskFiles =
-    @(
+    $diskFiles = @(
       Get-ChildItem `
         -LiteralPath $ndtPdfFolder `
         -Filter "*.pdf" `
@@ -317,14 +254,11 @@ function Find-DcaNdtPdfEntry {
         -Force `
         -ErrorAction SilentlyContinue |
         Where-Object {
-
-        $_.BaseName -ieq
-        $expectedPdfBaseName
-      }
+          $_.BaseName -ieq $expectedPdfBaseName
+        }
     )
 
-    $pdfCandidates =
-    @(
+    $pdfCandidates = @(
       foreach ($diskFile in $diskFiles) {
 
         [PSCustomObject]@{
@@ -357,12 +291,11 @@ function Find-DcaNdtPdfEntry {
 
   if ($pdfCandidates.Count -gt 1) {
 
-    $candidatePaths =
-    @(
+    $candidatePaths = @(
       $pdfCandidates |
         ForEach-Object {
-        [string]$_.FullName
-      }
+          [string]$_.FullName
+        }
     )
 
     throw (
@@ -373,8 +306,7 @@ function Find-DcaNdtPdfEntry {
     )
   }
 
-  $selectedPdfEntry =
-  $pdfCandidates[0]
+  $selectedPdfEntry = $pdfCandidates[0]
 
   if ($Details) {
 
