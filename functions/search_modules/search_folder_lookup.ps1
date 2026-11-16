@@ -98,13 +98,6 @@ function Select-DcaPdfsByFolder {
     )
   }
 
-  # Normaliza o caminho completo e remove a barra final para
-  # permitir comparacoes consistentes com as subpastas.
-  $folderFullPath =
-  [System.IO.Path]::GetFullPath(
-    $availableFolder.FullName
-  ).TrimEnd([char[]]@('\', '/'))
-
   # ============================================================
   # 4. DEFINIR AS CATEGORIAS DCA PERMITIDAS
   # ============================================================
@@ -152,6 +145,10 @@ function Select-DcaPdfsByFolder {
   # A busca e recursiva. Somente pastas cujo nome ou caminho
   # relativo correspondam exatamente ao texto pesquisado sao
   # consideradas.
+
+  $documentationRootPath =
+  $documentationFolder.FullName
+
   $availableFolders =
   @(
     Get-ChildItem `

@@ -36,7 +36,8 @@ mesma execução, seleção múltipla de resultados e importação completa de p
 - Pesquisa local alternativa quando a API do PDM não está disponível.
 - Pesquisa parcial por código, sem necessidade de `*`.
 - Curingas `*` e `?` nas pesquisas por código.
-- Várias pesquisas separadas por vírgula, com remoção de termos repetidos.
+- Várias pesquisas separadas por vírgula.
+- Pesquisas repetidas são permitidas e processadas na ordem informada.
 - Seleção múltipla de resultados (número, lista, intervalo, `T` ou `TODOS`).
 - Pesquisa de pasta por nome completo, com importação direta ou seleção dos
   documentos da pasta.
@@ -60,13 +61,13 @@ mesma execução, seleção múltipla de resultados e importação completa de p
 
 ## Categorias de documentos suportadas
 
-| Categoria de origem | Tipo interno | Finalidade |
-| --- | --- | --- |
-| `Desenhos Originais` | `Original` | Desenhos originais DCA |
-| `FP - Ficha de Processo (PDF)` | `Processo` | Documentos de processo DCA |
-| `FP - Ficha de Processo (PDF) / Folhas NDT` | `NDT` | Folhas de ensaio MPI/FPI |
-| `Normas Externas` | `NormaExterna` | Normas externas DCA |
-| `FP - XXRE Dimensional` | `DatasetOnly` | PDFs dimensionais importados em Items já existentes |
+| Categoria de origem                         | Tipo interno   | Finalidade                                          |
+| ------------------------------------------- | -------------- | --------------------------------------------------- |
+| `Desenhos Originais`                        | `Original`     | Desenhos originais DCA                              |
+| `FP - Ficha de Processo (PDF)`              | `Processo`     | Documentos de processo DCA                          |
+| `FP - Ficha de Processo (PDF) / Folhas NDT` | `NDT`          | Folhas de ensaio MPI/FPI                            |
+| `Normas Externas`                           | `NormaExterna` | Normas externas DCA                                 |
+| `FP - XXRE Dimensional`                     | `DatasetOnly`  | PDFs dimensionais importados em Items já existentes |
 
 Cada categoria que cria Item é associada a um tipo de Item e a um tipo de
 revisão do Teamcenter por variáveis de ambiente. Os mapeamentos podem ser
@@ -87,16 +88,22 @@ O destino (Item e revisão) é validado antes da confirmação do lote. Veja a s
 
 ### Categoria `Folhas NDT` (`NDT`)
 
-As folhas NDT ficam dentro de `FP - Ficha de Processo (PDF)`. O DCAtoPLM usa o
-desenho `.SLDDRW` encontrado em `Folhas NDT` para localizar, na pasta paralela
-`Folhas NDT PDF`, o PDF com o mesmo código, tipo de folha (`MPI` ou `FPI`) e
-revisão.
+As folhas NDT ficam dentro de FP - Ficha de Processo (PDF). O DCAtoPLM usa o desenho .SLDDRW encontrado em Folhas NDT para localizar, na pasta paralela Folhas NDT PDF, o PDF com o mesmo código, tipo de folha (MPI ou FPI) e revisão.
 
-O fluxo cria o Item e a revisão NDT configurados para o ambiente, importa o PDF
-como Dataset e, em seguida, importa o desenho `.SLDDRW` como outro Dataset. A
-configuração do Teamcenter para o tipo, ferramenta e referência do Dataset de
-desenho é feita por `DCA_TC_NDT_DRAWING_DATASET_TYPE`,
-`DCA_TC_NDT_DRAWING_TOOL` e `DCA_TC_NDT_DRAWING_REFERENCE`.
+Antes da confirmação do lote, o DCAtoPLM valida se existe um DCA Processo de mesmo código no próprio lote ou já cadastrado no Teamcenter.
+
+Folhas NDT sem Processo correspondente não são importadas e são removidas do lote antes da confirmação da operação.
+
+O fluxo cria o Item e a revisão NDT configurados para o ambiente, importa o PDF como Dataset e, em seguida, importa o desenho .SLDDRW como outro Dataset.
+
+Após a importação, o desenho NDT é vinculado à Pasta NDT do Processo correspondente.
+
+A configuração do Teamcenter para o tipo, ferramenta e referência do Dataset de desenho é feita por:
+
+- DCA_TC_NDT_DRAWING_DATASET_TYPE
+- DCA_TC_NDT_DRAWING_TOOL
+- DCA_TC_NDT_DRAWING_REFERENCE
+
 Os três valores são obrigatórios para importar o desenho.
 
 ---
@@ -106,11 +113,11 @@ Os três valores são obrigatórios para importar o desenho.
 O DCAtoPLM lê o estado atual de cada arquivo no SolidWorks PDM. Os estados abaixo
 podem disparar workflows do Teamcenter:
 
-| Estado no PDM | Ação no Teamcenter |
-| --- | --- |
+| Estado no PDM              | Ação no Teamcenter                                          |
+| -------------------------- | ----------------------------------------------------------- |
 | `Aprovado` ou `Verificado` | Inicia o workflow configurado em `DCA_TC_APPROVED_WORKFLOW` |
-| `Obsoleto` | Inicia o workflow configurado em `DCA_TC_OBSOLETE_WORKFLOW` |
-| Qualquer outro estado | Importa os Datasets sem iniciar workflow |
+| `Obsoleto`                 | Inicia o workflow configurado em `DCA_TC_OBSOLETE_WORKFLOW` |
+| Qualquer outro estado      | Importa os Datasets sem iniciar workflow                    |
 
 O workflow só é solicitado depois que as etapas de criação do Item e importação
 dos Datasets terminam sem exceção. Para NDT, os Datasets são o PDF e o desenho
@@ -140,18 +147,18 @@ DCAtoPLM/
 └── README.md
 ```
 
-| Arquivo ou pasta | Responsabilidade |
-| --- | --- |
-| `import_dcaPdfToTeamcenter.ps1` | Script principal: carregamento e validação dos módulos, parâmetros, prompts, orquestração do lote e códigos de saída |
-| `functions/output_functions.ps1` | Funções de saída no console, incluindo mensagens, destaques e atraso entre linhas |
-| `functions/pdm_modules` | Acesso ao SolidWorks PDM: autenticação, download de arquivos, estado do workflow e leitura dos cartões de dados |
-| `functions/pdm_modules/pdm_ndt_files.ps1` | Localiza o PDF correspondente ao desenho de uma Folha NDT |
-| `functions/import_plan_modules` | Interpretação dos documentos, preparação do lote e montagem do plano de importação |
-| `functions/search_modules` | Pesquisa por código e por pasta, seleção de resultados e remoção de duplicidades |
-| `functions/teamcenter_modules` | Conexão com o Teamcenter, criação de Items, localização de revisões, importação de Datasets e solicitação de workflows |
-| `start_DCAtoPLM.bat` | Inicializador recomendado para Windows |
-| `.env.example` | Modelo seguro de configuração |
-| `.env` | Configuração local do ambiente, nunca enviada ao repositório |
+| Arquivo ou pasta                          | Responsabilidade                                                                                                       |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `import_dcaPdfToTeamcenter.ps1`           | Script principal: carregamento e validação dos módulos, parâmetros, prompts, orquestração do lote e códigos de saída   |
+| `functions/output_functions.ps1`          | Funções de saída no console, incluindo mensagens, destaques e atraso entre linhas                                      |
+| `functions/pdm_modules`                   | Acesso ao SolidWorks PDM: autenticação, download de arquivos, estado do workflow e leitura dos cartões de dados        |
+| `functions/pdm_modules/pdm_ndt_files.ps1` | Localiza o PDF correspondente ao desenho de uma Folha NDT                                                              |
+| `functions/import_plan_modules`           | Interpretação dos documentos, preparação do lote e montagem do plano de importação                                     |
+| `functions/search_modules`                | Pesquisa por código e por pasta, seleção de resultados e remoção de duplicidades                                       |
+| `functions/teamcenter_modules`            | Conexão com o Teamcenter, criação de Items, localização de revisões, importação de Datasets e solicitação de workflows |
+| `start_DCAtoPLM.bat`                      | Inicializador recomendado para Windows                                                                                 |
+| `.env.example`                            | Modelo seguro de configuração                                                                                          |
+| `.env`                                    | Configuração local do ambiente, nunca enviada ao repositório                                                           |
 
 > [!NOTE]
 > O arquivo antigo `functions/teamcenter_functions.ps1` não existe mais. Suas
@@ -384,23 +391,23 @@ DCA_TC_PROCESS_NDT_CLIENT_VALUE=<VALOR_CLIENTE>
 Antes de usar o projeto em outra empresa, vault, estação ou ambiente Teamcenter,
 revise:
 
-| Configuração | Onde configurar |
-| --- | --- |
-| Raiz local do vault | `DCA_ROOT` ou `-SearchRoot` |
-| Nome do vault SolidWorks PDM | `DCA_VAULT_NAME` ou `-VaultName` |
-| Biblioteca de interoperabilidade do PDM | `DCA_PDM_LIB` ou `-PdmLibraryPath` |
-| Arquivo de credencial protegido do PDM | `DCA_VAULT_CREDENTIAL` ou `-VaultCredentialPath` |
-| Diretório temporário dos PDFs | `DCA_TEMP_FOLDER` |
-| Variáveis dos cartões de dados do PDM | `DCA_PDM_VAR_*` e `DCA_PDM_DISCOVER_CARD_VARIABLES` |
-| Assembly de integração do Teamcenter | `DCA_IMPORTER_PATH` |
-| Ambiente do Teamcenter | `DCA_TC_ENV` |
-| Tipos de Item e revisão NDT | `DCA_TC_TEST_NDT_*` e `DCA_TC_PROCESS_NDT_*` |
-| Dataset do desenho NDT | `DCA_TC_NDT_DRAWING_DATASET_TYPE`, `DCA_TC_NDT_DRAWING_TOOL` e `DCA_TC_NDT_DRAWING_REFERENCE` |
-| Conexão do Teamcenter de teste | Variáveis `DCA_TC_TEST_*` |
-| Conexão do Teamcenter de processo | Variáveis `DCA_TC_PROCESS_*` |
-| Objetos de negócio | Variáveis de Item e revisão de cada ambiente |
-| Workflow de aprovação | `DCA_TC_APPROVED_WORKFLOW` |
-| Workflow de obsolescência | `DCA_TC_OBSOLETE_WORKFLOW` |
+| Configuração                            | Onde configurar                                                                               |
+| --------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Raiz local do vault                     | `DCA_ROOT` ou `-SearchRoot`                                                                   |
+| Nome do vault SolidWorks PDM            | `DCA_VAULT_NAME` ou `-VaultName`                                                              |
+| Biblioteca de interoperabilidade do PDM | `DCA_PDM_LIB` ou `-PdmLibraryPath`                                                            |
+| Arquivo de credencial protegido do PDM  | `DCA_VAULT_CREDENTIAL` ou `-VaultCredentialPath`                                              |
+| Diretório temporário dos PDFs           | `DCA_TEMP_FOLDER`                                                                             |
+| Variáveis dos cartões de dados do PDM   | `DCA_PDM_VAR_*` e `DCA_PDM_DISCOVER_CARD_VARIABLES`                                           |
+| Assembly de integração do Teamcenter    | `DCA_IMPORTER_PATH`                                                                           |
+| Ambiente do Teamcenter                  | `DCA_TC_ENV`                                                                                  |
+| Tipos de Item e revisão NDT             | `DCA_TC_TEST_NDT_*` e `DCA_TC_PROCESS_NDT_*`                                                  |
+| Dataset do desenho NDT                  | `DCA_TC_NDT_DRAWING_DATASET_TYPE`, `DCA_TC_NDT_DRAWING_TOOL` e `DCA_TC_NDT_DRAWING_REFERENCE` |
+| Conexão do Teamcenter de teste          | Variáveis `DCA_TC_TEST_*`                                                                     |
+| Conexão do Teamcenter de processo       | Variáveis `DCA_TC_PROCESS_*`                                                                  |
+| Objetos de negócio                      | Variáveis de Item e revisão de cada ambiente                                                  |
+| Workflow de aprovação                   | `DCA_TC_APPROVED_WORKFLOW`                                                                    |
+| Workflow de obsolescência               | `DCA_TC_OBSOLETE_WORKFLOW`                                                                    |
 
 O código-fonte evita armazenar credenciais de produção ou configurações internas
 da empresa.
@@ -460,18 +467,20 @@ propriedades e templates.
 
 ## Parâmetros
 
-| Parâmetro | Tipo | Padrão | Descrição |
-| --- | --- | --- | --- |
-| `-SearchRoot` | string | `DCA_ROOT` | Raiz do vault DCA configurado |
-| `-SourceCode` | string | Vazio | Códigos, padrões ou pesquisas de pasta separados por vírgula |
-| `-ItemName` | string | Vazio | Nome inicial opcional do Item no Teamcenter |
-| `-VaultName` | string | `DCA_VAULT_NAME` | Nome do vault SolidWorks PDM |
-| `-PdmLibraryPath` | string | `DCA_PDM_LIB` | Caminho do `Interop.EdmLib.dll` |
-| `-VaultCredentialPath` | string | `DCA_VAULT_CREDENTIAL` | Arquivo de credencial protegido |
-| `-OutputDelayMilliseconds` | int | `10` | Atraso entre linhas de saída |
-| `-NoVaultApi` | switch | Desativado | Pesquisa somente arquivos disponíveis localmente |
-| `-Details` | switch | Desativado | Exibe informações detalhadas de pesquisa e diagnóstico |
-| `-Preview` | switch | Desativado | Prepara o lote sem alterar o Teamcenter |
+| Parâmetro                  | Tipo   | Padrão                 | Descrição                                                                                                |
+| -------------------------- | ------ | ---------------------- | -------------------------------------------------------------------------------------------------------- | --- |
+| `-SearchRoot`              | string | `DCA_ROOT`             | Raiz do vault DCA configurado                                                                            |
+| `-SourceCode`              | string | Vazio                  | Códigos, padrões ou pesquisas de pasta separados por vírgula                                             |
+| `-ItemName`                | string | Vazio                  | Nome inicial opcional do Item no Teamcenter                                                              |
+| `-VaultName`               | string | `DCA_VAULT_NAME`       | Nome do vault SolidWorks PDM                                                                             |
+| `-PdmLibraryPath`          | string | `DCA_PDM_LIB`          | Caminho do `Interop.EdmLib.dll`                                                                          |
+| `-VaultCredentialPath`     | string | `DCA_VAULT_CREDENTIAL` | Arquivo de credencial protegido                                                                          |
+| `-OutputDelayMilliseconds` | int    | `10`                   | Atraso entre linhas de saída                                                                             |
+| `-NoVaultApi`              | switch | Desativado             | Pesquisa somente arquivos disponíveis localmente                                                         |
+| `-Details`                 | switch | Desativado             | Exibe informações detalhadas de pesquisa e diagnóstico                                                   |
+| `-Preview`                 | switch | Desativado             | Prepara o lote sem alterar o Teamcenter                                                                  |
+| `-RecoverExisting`         | switch | Desativado             | Quando o Item já existir, tenta localizar a revisão esperada e importar o PDF sem criar novamente o Item |
+| `-RetryReport`             | string | Vazio                  | Reprocessa as falhas registradas em um relatório CSV anterior                                            |     |
 
 ---
 
@@ -505,10 +514,10 @@ AMS 22*
 BR50??A-00
 ```
 
-| Curinga | Significado |
-| --- | --- |
-| `*` | Zero ou mais caracteres |
-| `?` | Exatamente um caractere |
+| Curinga | Significado             |
+| ------- | ----------------------- |
+| `*`     | Zero ou mais caracteres |
+| `?`     | Exatamente um caractere |
 
 #### Várias pesquisas
 
@@ -518,20 +527,21 @@ Separe as pesquisas por vírgula:
 1000359,1000359-2,AMS 2248
 ```
 
-Cada valor é pesquisado de forma independente. Termos repetidos são removidos
-antes da pesquisa.
+Cada valor é pesquisado de forma independente e na mesma ordem em que foi informado.
+
+Pesquisas repetidas são permitidas. Isso permite selecionar documentos diferentes para o mesmo código em pesquisas sucessivas.
 
 #### Seleção de resultados
 
 Quando a pesquisa retorna mais de um PDF, a seleção aceita:
 
-| Entrada | Efeito |
-| --- | --- |
-| `2` | Seleciona um resultado individual |
+| Entrada | Efeito                                         |
+| ------- | ---------------------------------------------- |
+| `2`     | Seleciona um resultado individual              |
 | `1,2,4` | Seleciona vários números separados por vírgula |
-| `1-3` | Seleciona um intervalo |
-| `T` | Seleciona todos os resultados exibidos |
-| `TODOS` | Seleciona todos os resultados exibidos |
+| `1-3`   | Seleciona um intervalo                         |
+| `T`     | Seleciona todos os resultados exibidos         |
+| `TODOS` | Seleciona todos os resultados exibidos         |
 
 Quando a pesquisa retorna um único resultado, ele é selecionado
 automaticamente. Cada PDF selecionado vira uma entrada independente do lote.
@@ -541,10 +551,10 @@ automaticamente. Cada PDF selecionado vira uma entrada independente do lote.
 A pesquisa por pasta exige o **nome completo** da pasta. Ela é feita em toda a
 árvore de documentação e possui dois modos:
 
-| Entrada | Modo | Comportamento |
-| --- | --- | --- |
-| `\NomeCompleto` | Importação direta | Importa os documentos válidos da pasta |
-| `\\NomeCompleto` | Seleção | Abre a seleção dos documentos da pasta |
+| Entrada          | Modo              | Comportamento                          |
+| ---------------- | ----------------- | -------------------------------------- |
+| `\NomeCompleto`  | Importação direta | Importa os documentos válidos da pasta |
+| `\\NomeCompleto` | Seleção           | Abre a seleção dos documentos da pasta |
 
 As barras normais também são aceitas: `/NomeCompleto` equivale a
 `\NomeCompleto`, e `//NomeCompleto` equivale a `\\NomeCompleto`.
@@ -563,8 +573,9 @@ Exemplos:
 > caracteres `*`, `?`, a sequência `..` e caracteres inválidos em nomes de pasta
 > são bloqueados.
 
-Somente os PDFs diretamente contidos na pasta são considerados. Arquivos duplicados
-no mesmo lote são evitados.
+Somente os documentos diretamente pertencentes à pasta selecionada são considerados para montagem do lote.
+
+Categorias especiais, como Folhas NDT, podem utilizar arquivos auxiliares adicionais durante a preparação da importação.
 
 ---
 
@@ -575,20 +586,20 @@ e descrição. Os nomes das variáveis são configurados no `.env`.
 
 ### Variáveis de revisão
 
-| Variável | Uso |
-| --- | --- |
-| `DCA_PDM_VAR_ORIGINAL_REVISION` | Revisão de Desenhos Originais |
-| `DCA_PDM_VAR_PROCESS_REVISION` | Revisão de documentos de Processo e NDT |
-| `DCA_PDM_VAR_STANDARD_REVISION` | Revisão de Normas Externas |
-| `DCA_PDM_VAR_DATASET_REVISION` | Revisão de destino para `DatasetOnly` |
+| Variável                        | Uso                                     |
+| ------------------------------- | --------------------------------------- |
+| `DCA_PDM_VAR_ORIGINAL_REVISION` | Revisão de Desenhos Originais           |
+| `DCA_PDM_VAR_PROCESS_REVISION`  | Revisão de documentos de Processo e NDT |
+| `DCA_PDM_VAR_STANDARD_REVISION` | Revisão de Normas Externas              |
+| `DCA_PDM_VAR_DATASET_REVISION`  | Revisão de destino para `DatasetOnly`   |
 
 ### Variáveis de descrição
 
-| Variável | Uso |
-| --- | --- |
-| `DCA_PDM_VAR_ORIGINAL_DESCRIPTION` | Descrição de Desenhos Originais |
-| `DCA_PDM_VAR_PROCESS_DESCRIPTION` | Descrição de documentos de Processo e NDT |
-| `DCA_PDM_VAR_STANDARD_DESCRIPTION` | Descrição de Normas Externas |
+| Variável                           | Uso                                       |
+| ---------------------------------- | ----------------------------------------- |
+| `DCA_PDM_VAR_ORIGINAL_DESCRIPTION` | Descrição de Desenhos Originais           |
+| `DCA_PDM_VAR_PROCESS_DESCRIPTION`  | Descrição de documentos de Processo e NDT |
+| `DCA_PDM_VAR_STANDARD_DESCRIPTION` | Descrição de Normas Externas              |
 
 ### Descoberta de variáveis
 
@@ -632,13 +643,13 @@ tipo do documento.
 
 ### Resultados individuais
 
-| Resultado | Significado |
-| --- | --- |
-| Item e PDF importados | Item criado e PDF importado como Dataset; workflow solicitado quando aplicável |
-| Item criado, mas PDF não importado | O Item existe no Teamcenter sem o PDF e exige revisão manual |
-| Item não criado | O Item não foi criado e o PDF não foi processado |
-| Dataset importado em revisão existente | Fluxo `DatasetOnly` concluído |
-| Dataset não importado em revisão existente | Fluxo `DatasetOnly` falhou |
+| Resultado                                  | Significado                                                                    |
+| ------------------------------------------ | ------------------------------------------------------------------------------ |
+| Item e PDF importados                      | Item criado e PDF importado como Dataset; workflow solicitado quando aplicável |
+| Item criado, mas PDF não importado         | O Item existe no Teamcenter sem o PDF e exige revisão manual                   |
+| Item não criado                            | O Item não foi criado e o PDF não foi processado                               |
+| Dataset importado em revisão existente     | Fluxo `DatasetOnly` concluído                                                  |
+| Dataset não importado em revisão existente | Fluxo `DatasetOnly` falhou                                                     |
 
 Uma falha individual **não interrompe** os próximos documentos do lote.
 
@@ -666,8 +677,25 @@ Etapas principais:
 2. Obter ou localizar a revisão.
 3. Preparar o PDF.
 4. Importar o Dataset.
-5. Solicitar workflow, quando aplicável.
+5. Solicitar workflow quando aplicável.
 6. Registrar o resultado.
+
+## Fluxo NDT
+
+Aplicável a:
+
+- `NDT`
+
+Etapas principais:
+
+1. Validar a existência de um DCA Processo de mesmo código.
+2. Localizar o PDF correspondente da Folha NDT.
+3. Criar o Item NDT.
+4. Criar a revisão NDT
+5. Importar o PDF como Dataset.
+6. Importar o desenho .SLDDRW.
+7. Vincular o desenho à Pasta NDT do Processo correspondente.
+8. Solicitar workflow quando aplicável.
 
 ### Dataset em revisão existente
 
@@ -869,16 +897,13 @@ revisão esperada pode ser obtida da variável `DCA_PDM_VAR_DATASET_REVISION`.
 
 ## Itens duplicados
 
-Nos fluxos de criação de Item, se o Item já existir no Teamcenter, o script
-informa a duplicidade. A aplicação **não** gera um código alternativo
-automaticamente.
+Nos fluxos de criação de Item, um código já existente no Teamcenter não recebe um novo identificador automaticamente.
 
-```text
-O item 'AMS 2248' já existe no Teamcenter.
-```
+Quando a operação exige criação de Item e o código já existe, a ocorrência é registrada como falha individual e o processamento continua para os demais documentos do lote.
 
-No processamento em lote, a duplicidade é registrada como falha individual e a
-aplicação continua com o próximo documento.
+Quando a operação estiver configurada para reutilizar um Item existente (RecoverExisting), o DCAtoPLM procura a revisão esperada e realiza a importação do Dataset na revisão localizada.
+
+O processamento em lote não é interrompido por documentos individuais com duplicidade.
 
 ---
 
@@ -977,7 +1002,7 @@ Antes de executar uma importação em produção:
 
 ## Carregamento e validação de módulos
 
-Os módulos em `functions` são carregados por *dot source*. Antes da execução:
+Os módulos em `functions` são carregados por _dot source_. Antes da execução:
 
 1. Cada arquivo é validado antes de ser carregado.
 2. As funções obrigatórias são verificadas **antes da pesquisa**.
@@ -988,15 +1013,15 @@ Os módulos em `functions` são carregados por *dot source*. Antes da execução
 
 ## Códigos de saída
 
-| Código | Situação |
-| --- | --- |
-| `0` | Lote concluído com sucesso |
-| `0` | Preview concluído |
-| `0` | Operação cancelada antes das alterações |
-| `1` | Falha no fluxo principal |
-| `1` | Função obrigatória ausente |
-| `1` | Documento com falha |
-| `1` | Destino `DatasetOnly` não validado |
+| Código | Situação                                |
+| ------ | --------------------------------------- |
+| `0`    | Lote concluído com sucesso              |
+| `0`    | Preview concluído                       |
+| `0`    | Operação cancelada antes das alterações |
+| `1`    | Falha no fluxo principal                |
+| `1`    | Função obrigatória ausente              |
+| `1`    | Documento com falha                     |
+| `1`    | Destino `DatasetOnly` não validado      |
 
 ---
 
@@ -1135,13 +1160,17 @@ Verifique:
 - [x] Resumo final.
 - [x] Carregamento modular.
 - [x] Validação das funções.
+- [x] Importação de Folhas NDT.
+- [x] Associação automática entre PDF e desenho NDT.
+- [x] Importação automática de desenho SLDDRW.
+- [x] Validação de Processo correspondente para Folhas NDT.
+- [x] Vinculação automática à Pasta NDT do Processo.
 
 ### Pendente de validação ou melhoria
 
 - [ ] Confirmar a criação da relação do Dataset em todos os tipos.
 - [ ] Confirmar a conclusão dos workflows no ambiente de Processo.
 - [ ] Adicionar recuperação de Items criados sem PDF.
-- [ ] Adicionar verificação posterior da relação do Dataset.
 - [ ] Adicionar limpeza automática dos arquivos temporários.
 - [ ] Ampliar os testes de interpretação dos nomes e revisões.
 - [ ] Adicionar geração opcional de logs.

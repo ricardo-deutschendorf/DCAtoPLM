@@ -1,4 +1,3 @@
-
 # ============================================================
 # PESQUISA E SELECAO POR CODIGO
 # ============================================================
@@ -29,7 +28,9 @@ function Select-DcaPdfByCode {
 
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
-    [string]$Code
+    [string]$Code,
+
+    [System.Collections.Generic.HashSet[string]]$PreviouslySelectedPaths
   )
 
   # ============================================================
@@ -89,8 +90,8 @@ function Select-DcaPdfByCode {
 
   $documentationFolder = $rootFolders |
     Where-Object {
-      $_.Name -like "Documenta*"
-    } |
+    $_.Name -like "Documenta*"
+  } |
     Select-Object -First 1
 
   if ($null -eq $documentationFolder) {
@@ -98,8 +99,8 @@ function Select-DcaPdfByCode {
     $visibleFolderNames = @(
       $rootFolders |
         ForEach-Object {
-          $_.Name
-        }
+        $_.Name
+      }
     )
 
     throw (
@@ -158,8 +159,8 @@ function Select-DcaPdfByCode {
 
     $categoryFolder = $documentationSubfolders |
       Where-Object {
-        $_.Name.Trim() -ieq $categoryDefinition.FolderName
-      } |
+      $_.Name.Trim() -ieq $categoryDefinition.FolderName
+    } |
       Select-Object -First 1
 
     if ($null -eq $categoryFolder) {
@@ -211,8 +212,8 @@ function Select-DcaPdfByCode {
     $visibleSubfolderNames = @(
       $documentationSubfolders |
         ForEach-Object {
-          $_.Name
-        }
+        $_.Name
+      }
     )
 
     throw (
@@ -300,63 +301,63 @@ function Select-DcaPdfByCode {
         $apiEntries |
           Where-Object {
 
-            $entryFullName = [string]$_.FullName
+          $entryFullName = [string]$_.FullName
 
-            if ([string]::IsNullOrWhiteSpace($entryFullName)) {
+          if ([string]::IsNullOrWhiteSpace($entryFullName)) {
+            return $false
+          }
+
+          if (-not $entryFullName.StartsWith(
+              $categoryPrefix,
+              [System.StringComparison]::OrdinalIgnoreCase
+            )) {
+
+            return $false
+          }
+
+          $requiredPathSegment = (
+            [string]$searchFolder.RequiredPathSegment
+          ).Trim()
+
+          if (-not (
+              [string]::IsNullOrWhiteSpace($requiredPathSegment)
+            )) {
+
+            $entryPathParts = @(
+              $entryFullName -split '[\\/]'
+            )
+
+            $containsRequiredSegment = @(
+              $entryPathParts |
+                Where-Object {
+                ([string]$_).Trim() -ieq $requiredPathSegment
+              }
+            ).Count -gt 0
+
+            if (-not $containsRequiredSegment) {
               return $false
             }
+          }
 
-            if (-not $entryFullName.StartsWith(
-                $categoryPrefix,
-                [System.StringComparison]::OrdinalIgnoreCase
-              )) {
+          $allowedExtension = (
+            [string]$searchFolder.AllowedExtension
+          ).Trim()
 
+          if (-not (
+              [string]::IsNullOrWhiteSpace($allowedExtension)
+            )) {
+
+            $entryExtension = [System.IO.Path]::GetExtension(
+              $entryFullName
+            )
+
+            if ($entryExtension -ine $allowedExtension) {
               return $false
             }
+          }
 
-            $requiredPathSegment = (
-              [string]$searchFolder.RequiredPathSegment
-            ).Trim()
-
-            if (-not (
-                [string]::IsNullOrWhiteSpace($requiredPathSegment)
-              )) {
-
-              $entryPathParts = @(
-                $entryFullName -split '[\\/]'
-              )
-
-              $containsRequiredSegment = @(
-                $entryPathParts |
-                  Where-Object {
-                    ([string]$_).Trim() -ieq $requiredPathSegment
-                  }
-              ).Count -gt 0
-
-              if (-not $containsRequiredSegment) {
-                return $false
-              }
-            }
-
-            $allowedExtension = (
-              [string]$searchFolder.AllowedExtension
-            ).Trim()
-
-            if (-not (
-                [string]::IsNullOrWhiteSpace($allowedExtension)
-              )) {
-
-              $entryExtension = [System.IO.Path]::GetExtension(
-                $entryFullName
-              )
-
-              if ($entryExtension -ine $allowedExtension) {
-                return $false
-              }
-            }
-
-            return $true
-          } |
+          return $true
+        } |
           Sort-Object FullName
       )
 
@@ -379,17 +380,17 @@ function Select-DcaPdfByCode {
             -ErrorAction SilentlyContinue |
             Where-Object {
 
-              $ndtPathParts = @(
-                $_.FullName -split '[\\/]'
-              )
+            $ndtPathParts = @(
+              $_.FullName -split '[\\/]'
+            )
 
-              @(
-                $ndtPathParts |
-                  Where-Object {
-                    ([string]$_).Trim() -ieq "Folhas NDT"
-                  }
-              ).Count -gt 0
-            } |
+            @(
+              $ndtPathParts |
+                Where-Object {
+                ([string]$_).Trim() -ieq "Folhas NDT"
+              }
+            ).Count -gt 0
+          } |
             Sort-Object FullName
         )
 
@@ -452,8 +453,8 @@ function Select-DcaPdfByCode {
         $isNdtDocument = @(
           $entryPathParts |
             Where-Object {
-              ([string]$_).Trim() -ieq "Folhas NDT"
-            }
+            ([string]$_).Trim() -ieq "Folhas NDT"
+          }
         ).Count -gt 0
       }
 
@@ -539,6 +540,31 @@ function Select-DcaPdfByCode {
     throw "Nenhum documento foi encontrado para a pesquisa '$searchPattern'."
   }
 
+  # Numeros (a partir de 1) dos resultados que ja foram escolhidos
+  # em pesquisas anteriores desta execucao.
+  $previousNumbers =
+  [System.Collections.Generic.HashSet[int]]::new()
+
+  if ($null -ne $PreviouslySelectedPaths) {
+
+    for (
+      $previousIndex = 0
+      $previousIndex -lt $matchCount
+      $previousIndex++
+    ) {
+
+      $previousPath =
+      ([string]$matchingFiles[$previousIndex].File.FullName).Trim()
+
+      if (
+        -not [string]::IsNullOrWhiteSpace($previousPath) -and
+        $PreviouslySelectedPaths.Contains($previousPath)
+      ) {
+        $null = $previousNumbers.Add($previousIndex + 1)
+      }
+    }
+  }
+
   $script:SearchResultDelayMilliseconds = 30
 
   if ($matchCount -gt 3) {
@@ -566,6 +592,7 @@ function Select-DcaPdfByCode {
 
     $number = $index + 1
     $currentMatch = $matchingFiles[$index]
+    $chosenBefore = $previousNumbers.Contains($number)
     $revisionDisplay = [string]$currentMatch.ClientRevision
 
     if ([string]::IsNullOrWhiteSpace($revisionDisplay)) {
@@ -596,23 +623,35 @@ function Select-DcaPdfByCode {
       $stateColor = [System.ConsoleColor]::Cyan
     }
 
-    Write-SearchResultLine (
-      "  [{0}] {1}" -f
-      $number,
-      $currentMatch.SourceCode
-    ) -Color White
+    $headerColor = [System.ConsoleColor]::White
+    $textColor = [System.ConsoleColor]::Gray
+
+    # O que ja foi escolhido antes aparece todo em cinza.
+    if ($chosenBefore) {
+      $headerColor = [System.ConsoleColor]::DarkGray
+      $textColor = [System.ConsoleColor]::DarkGray
+      $stateColor = [System.ConsoleColor]::DarkGray
+    }
+
+    $headerText = "  [{0}] {1}" -f $number, $currentMatch.SourceCode
+
+    if ($chosenBefore) {
+      $headerText += "  (escolhido anteriormente)"
+    }
+
+    Write-SearchResultLine $headerText -Color $headerColor
 
     Write-SearchResultLine (
       "       Nome:    {0}" -f $nameDisplay
-    ) -Color Gray
+    ) -Color $textColor
 
     Write-SearchResultLine (
       "       Tipo:    {0}" -f $currentMatch.TypeDisplayName
-    ) -Color Gray
+    ) -Color $textColor
 
     Write-SearchResultLine (
       "       Revisao: {0}" -f $revisionDisplay
-    ) -Color Gray
+    ) -Color $textColor
 
     Write-SearchResultLine (
       "       Estado:  {0}" -f $stateDisplay
@@ -647,11 +686,26 @@ function Select-DcaPdfByCode {
   # Um unico resultado dispensa a etapa de selecao manual.
   if ($matchCount -eq 1) {
 
-    Write-Success (
-      "O unico documento encontrado foi selecionado automaticamente."
-    )
+    if (-not $previousNumbers.Contains(1)) {
+
+      Write-Success (
+        "O unico documento encontrado foi selecionado automaticamente."
+      )
+    }
 
     return $matchingFiles[0]
+  }
+
+  # Se todos os resultados ja foram escolhidos antes, nao ha o que
+  # perguntar. O fluxo principal ignora cada um com um aviso.
+  if ($previousNumbers.Count -eq $matchCount) {
+
+    Write-Warn (
+      "Todos os documentos desta pesquisa ja foram escolhidos " +
+      "anteriormente."
+    )
+
+    return $matchingFiles.ToArray()
   }
 
   # Com mais de um resultado, mantem a pergunta em repeticao ate
@@ -836,6 +890,40 @@ function Select-DcaPdfByCode {
 
     if (-not $selectionIsValid) {
       continue
+    }
+
+        # T e T-x pulam o que ja foi escolhido; se o usuario digitar o
+    # numero de um item em cinza, ele tambem e ignorado.
+    if ($previousNumbers.Count -gt 0) {
+
+      $alreadyChosenNumbers =
+      @(
+        $selectedNumbers |
+          Where-Object { $previousNumbers.Contains([int]$_) } |
+          Sort-Object
+      )
+
+      if ($alreadyChosenNumbers.Count -gt 0) {
+
+        Write-Warn (
+          "Ja escolhido(s) anteriormente e ignorado(s): " +
+          (
+            ($alreadyChosenNumbers | ForEach-Object { "[$_]" }) -join ", "
+          )
+        )
+
+        $remainingNumbers =
+        [System.Collections.Generic.List[int]]::new()
+
+        foreach ($candidateNumber in $selectedNumbers) {
+
+          if (-not $previousNumbers.Contains($candidateNumber)) {
+            $remainingNumbers.Add($candidateNumber)
+          }
+        }
+
+        $selectedNumbers = $remainingNumbers
+      }
     }
 
     if ($selectedNumbers.Count -eq 0) {
