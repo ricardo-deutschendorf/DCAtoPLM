@@ -483,13 +483,19 @@ function Find-DcaTeamcenterItemBySavedQuery {
   $queryResponse =
   $null
 
+  # Acumula os UIDs retornados pelas quatro tentativas.
+  # Algumas execucoes da Saved Query podem devolver somente parte
+  # dos Items que possuem o mesmo item_id.
+  $collectedObjectUids =
+  [System.Collections.Generic.HashSet[string]]::new(
+    [System.StringComparer]::OrdinalIgnoreCase
+  )
+
   try {
 
-    # As primeiras execucoes da Saved Query podem retornar
-    # resultados incompletos. A ultima resposta sera utilizada.
     for (
       $queryAttempt = 1
-      $queryAttempt -le 4
+      $queryAttempt -le 1
       $queryAttempt++
     ) {
 
@@ -499,19 +505,19 @@ function Find-DcaTeamcenterItemBySavedQuery {
         $executeArguments
       )
 
-      $attemptUidCount =
-      0
+      $attemptObjectUids =
+      @(
+        if (
+          $null -ne $queryResponse -and
+          $null -ne $queryResponse.ArrayOfResults
+        ) {
 
-      if (
-        $null -ne $queryResponse -and
-        $null -ne $queryResponse.ArrayOfResults
-      ) {
-
-        $attemptUidCount =
-        @(
           $queryResponse.ArrayOfResults |
             ForEach-Object {
             $_.ObjectUIDS
+          } |
+            ForEach-Object {
+            ([string]$_).Trim()
           } |
             Where-Object {
             -not [string]::IsNullOrWhiteSpace(
@@ -519,24 +525,28 @@ function Find-DcaTeamcenterItemBySavedQuery {
             )
           } |
             Sort-Object -Unique
-        ).Count
+        }
+      )
+
+      foreach ($attemptObjectUid in $attemptObjectUids) {
+        $null =
+        $collectedObjectUids.Add(
+          [string]$attemptObjectUid
+        )
       }
 
       if ($Details) {
 
         Write-Host (
           "  Tentativa $queryAttempt da saved query: " +
-          "$attemptUidCount UID(s)."
+          "$($attemptObjectUids.Count) UID(s); " +
+          "$($collectedObjectUids.Count) UID(s) acumulado(s)."
         ) -ForegroundColor DarkGray
-      }
-
-      if ($attemptUidCount -gt 0) {
-        break
       }
     }
   }
-  catch {
 
+  catch {
     $realException =
     $_.Exception
 
@@ -555,45 +565,11 @@ function Find-DcaTeamcenterItemBySavedQuery {
     )
   }
 
-  if (
-    $null -eq $queryResponse -or
-    $null -eq $queryResponse.ArrayOfResults
-  ) {
-
-    return $null
-  }
-
-  $objectUids =
-  @(
-    foreach (
-      $queryResult in
-      @($queryResponse.ArrayOfResults)
-    ) {
-
-      if ($null -eq $queryResult) {
-        continue
-      }
-
-      foreach (
-        $objectUid in
-        @($queryResult.ObjectUIDS)
-      ) {
-
-        $uidText =
-        ([string]$objectUid).Trim()
-
-        if (
-          -not [string]::IsNullOrWhiteSpace(
-            $uidText
-          )
-        ) {
-
-          $uidText
-        }
-      }
-    }
-  ) |
-    Sort-Object -Unique
+ $objectUids =
+@(
+  $collectedObjectUids |
+    Sort-Object
+)
 
   if ($Details) {
 

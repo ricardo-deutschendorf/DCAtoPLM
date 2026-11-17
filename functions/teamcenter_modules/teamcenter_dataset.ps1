@@ -1864,6 +1864,163 @@ function Find-DcaProcessRevisionByCode {
   return $null
 }
 
+# ============================================================
+# PESQUISA DE REVISOES NDT PELO CODIGO
+# ============================================================
+function Find-DcaNdtRevisionsByCode {
+
+  # Localiza todas as Folhas NDT do codigo informado.
+  # Itens de outros tipos com o mesmo codigo sao ignorados.
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$ItemCode
+  )
+
+  $itemCodeClean =
+  $ItemCode.Trim().ToUpperInvariant()
+
+  $ndtItemCode =
+  $itemCodeClean + "-NDT"
+
+  $envPrefix =
+  if ($script:TeamcenterEnvironment -eq "Processo") {
+    "DCA_TC_PROCESS_NDT"
+  }
+  else {
+    "DCA_TC_TEST_NDT"
+  }
+
+  $configuredType =
+  ([string][System.Environment]::GetEnvironmentVariable(
+      "${envPrefix}_ITEM_TYPE"
+    )).Trim()
+
+  if ([string]::IsNullOrWhiteSpace($configuredType)) {
+    $configuredType =
+    "GD5_DCA_NDT"
+  }
+
+  # object_type pode devolver o nome de exibicao, enquanto o .env
+  # normalmente possui o nome interno do tipo.
+  $normalizeType = {
+    param($TypeText)
+
+    (
+      ([string]$TypeText).Trim().ToUpperInvariant() `
+        -replace '^GD5_', '' `
+        -replace '_', ' '
+    )
+  }
+
+  $expectedType =
+  & $normalizeType $configuredType
+
+  $candidates =
+  @(
+    Find-DcaTeamcenterItemBySavedQuery `
+      -ItemCode $ndtItemCode
+  )
+
+  $matches =
+  [System.Collections.Generic.List[object]]::new()
+
+  # Impede o retorno repetido do mesmo Item quando a Saved Query
+  # devolver mais de uma entrada para o mesmo objeto.
+  $knownItemUids =
+  [System.Collections.Generic.HashSet[string]]::new(
+    [System.StringComparer]::OrdinalIgnoreCase
+  )
+
+  foreach ($candidate in $candidates) {
+
+    if ($null -eq $candidate) {
+      continue
+    }
+
+    $candidateItem =
+    $candidate.Item
+
+    if ($null -eq $candidateItem) {
+      continue
+    }
+
+    $candidateItemBase =
+    $candidateItem.PSObject.BaseObject
+
+    if ($null -ne $candidateItemBase) {
+      $candidateItem =
+      $candidateItemBase
+    }
+
+    $null =
+    @(
+      Update-DcaModelObjectProperties `
+        -ModelObject $candidateItem `
+        -PropertyNames @(
+        "object_type"
+      )
+    )
+
+    $candidateType =
+    & $normalizeType (
+      Get-TeamcenterModelPropertyText `
+        -ModelObject $candidateItem `
+        -PropertyName "object_type"
+    )
+
+    if ($Details) {
+
+      Write-Host (
+        "  Candidato NDT '$($candidate.ObjectUid)': tipo " +
+        "'$candidateType' (esperado '$expectedType')."
+      ) -ForegroundColor DarkGray
+    }
+
+    if ($candidateType -ne $expectedType) {
+      continue
+    }
+
+    $candidateRevision =
+    Get-TeamcenterRevision `
+      -Item $candidateItem
+
+    if ($null -eq $candidateRevision) {
+      continue
+    }
+
+    $candidateRevisionBase =
+    $candidateRevision.PSObject.BaseObject
+
+    if ($null -ne $candidateRevisionBase) {
+      $candidateRevision =
+      $candidateRevisionBase
+    }
+
+    $itemUid =
+    Get-DcaModelObjectUid `
+      -ModelObject $candidateItem
+
+    if (
+      -not [string]::IsNullOrWhiteSpace($itemUid) -and
+      -not $knownItemUids.Add($itemUid)
+    ) {
+      continue
+    }
+
+    $matches.Add(
+      [PSCustomObject]@{
+        Item = $candidateItem
+        Revision = $candidateRevision
+        ItemType = $candidateType
+        ItemUid = $itemUid
+      }
+    )
+  }
+
+  return $matches.ToArray()
+}
+
 function Show-DcaNdtImportLocation {
   param(
     [Parameter(Mandatory = $true)]
@@ -1896,27 +2053,27 @@ function Show-DcaNdtImportLocation {
 
     $kind =
     if ([string]$entry.BusinessType -match '(?i)^PDF$') { "PDF    " }
-    else { "Desenho" }
+  else { "Desenho" }
 
-    Write-Host (
-      "      [{0}] {1}   tipo: {2}   relacao: {3}" -f
-      $kind,
-      $entry.ObjectName,
-      $entry.BusinessType,
-      $entry.Relation
-    ) -ForegroundColor Gray
-  }
+  Write-Host (
+    "      [{0}] {1}   tipo: {2}   relacao: {3}" -f
+    $kind,
+    $entry.ObjectName,
+    $entry.BusinessType,
+    $entry.Relation
+  ) -ForegroundColor Gray
+}
+
+Write-Host ""
+Write-Host "    Origem dos arquivos (PDM):" -ForegroundColor Cyan
+Write-Host ("      PDF:     {0}" -f $Location.PdfSource) -ForegroundColor DarkGray
+Write-Host ("      Desenho: {0}" -f $Location.DrawingSource) -ForegroundColor DarkGray
+
+if (-not [string]::IsNullOrWhiteSpace([string]$Location.Workflow)) {
 
   Write-Host ""
-  Write-Host "    Origem dos arquivos (PDM):" -ForegroundColor Cyan
-  Write-Host ("      PDF:     {0}" -f $Location.PdfSource) -ForegroundColor DarkGray
-  Write-Host ("      Desenho: {0}" -f $Location.DrawingSource) -ForegroundColor DarkGray
-
-  if (-not [string]::IsNullOrWhiteSpace([string]$Location.Workflow)) {
-
-    Write-Host ""
-    Write-Host (
-      "    Workflow:  {0}" -f $Location.Workflow
-    ) -ForegroundColor Cyan
-  }
+  Write-Host (
+    "    Workflow:  {0}" -f $Location.Workflow
+  ) -ForegroundColor Cyan
+}
 }

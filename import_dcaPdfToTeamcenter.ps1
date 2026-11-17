@@ -362,6 +362,7 @@ $requiredFunctions =
   "Find-DcaTeamcenterItemBySavedQuery",
   "Find-DcaTeamcenterItemRevision",
   "Find-DcaProcessRevisionByCode",
+  "Find-DcaNdtRevisionsByCode",
   "Get-TeamcenterDataManagementService",
   "Get-TeamcenterServiceErrors",
   "Get-DcaClientRevisionInfo",
@@ -673,7 +674,6 @@ function Invoke-DcaMain {
 
       # Impede que o mesmo documento seja adicionado mais de uma vez
       # quando pesquisas diferentes retornarem o mesmo caminho.
-      # diferentes pesquisas retornarem o mesmo caminho.
       $selectedDocumentPaths =
       [System.Collections.Generic.HashSet[string]]::new(
         [System.StringComparer]::OrdinalIgnoreCase
@@ -1537,78 +1537,6 @@ function Invoke-DcaMain {
   $null =
   Connect-Teamcenter
 
-  # Cada NDT precisa de um DCA Processo de mesmo codigo:
-  # no proprio lote ou ja existente no Teamcenter. Sem isso o
-  # desenho nao entra em nenhuma Pasta NDT, entao o NDT sai do lote.
-  $ndtWithoutProcess =
-  [System.Collections.Generic.List[object]]::new()
-
-  foreach (
-    $ndtDocument in
-    @($preparedDocuments | Where-Object { $_.DocumentType -eq "NDT" })
-  ) {
-
-    $processInBatch =
-    @(
-      $preparedDocuments |
-        Where-Object {
-        $_.DocumentType -eq "Processo" -and
-        $_.ItemCode -ieq $ndtDocument.ItemCode
-      }
-    ).Count -gt 0
-
-    if ($processInBatch) { continue }
-
-    try {
-
-      $existingProcess =
-      Find-DcaProcessRevisionByCode `
-        -ItemCode $ndtDocument.ItemCode
-    }
-    catch {
-
-      # Consulta indisponivel: mantem o NDT e avisa.
-      Write-Warn (
-        "Nao foi possivel conferir o Processo de " +
-        "'$($ndtDocument.ItemCode)': $($_.Exception.Message)"
-      )
-
-      continue
-    }
-
-    if ($null -eq $existingProcess) {
-      $ndtWithoutProcess.Add($ndtDocument)
-    }
-  }
-
-  if ($ndtWithoutProcess.Count -gt 0) {
-
-    Write-AnimatedLine ""
-
-    Write-Warn (
-      "Folhas NDT sem DCA Processo de mesmo codigo (nem no lote, " +
-      "nem no Teamcenter). Retiradas do lote:"
-    )
-
-    foreach ($orphanNdt in $ndtWithoutProcess) {
-
-      Write-Host (
-        "    $($orphanNdt.ItemCode) [$($orphanNdt.NdtSheetType)]"
-      ) -ForegroundColor DarkGray
-
-      $null = $preparedDocuments.Remove($orphanNdt)
-    }
-
-    Write-Warn "Inclua o Processo na pesquisa e rode de novo."
-
-    if ($preparedDocuments.Count -eq 0) {
-
-      Write-Warn "Nada foi enviado ao Teamcenter."
-
-      return 0
-    }
-  }
-
   # Consulta somente os documentos que adicionam Dataset em uma
   # revisao existente. Isso evita consultar centenas de Items antes
   # que o usuario selecione os documentos desejados.
@@ -2335,6 +2263,112 @@ function Invoke-DcaMain {
         Write-Success (
           "Item criado: $createdCode"
         )
+        # Quando um Processo for criado, procura Folhas NDT que ja
+        # existiam no Teamcenter e vincula seus desenhos a Pasta NDT.
+        # Isso cobre NDTs importados em execucoes anteriores.
+        if ($document.DocumentType -ieq "Processo") {
+
+          Write-Info (
+            "Procurando Folhas NDT existentes para o Processo " +
+            "'$($document.ItemCode)'..."
+          )
+
+          $existingNdtMatches =
+          @(
+            Find-DcaNdtRevisionsByCode `
+              -ItemCode $document.ItemCode
+          )
+
+          if ($existingNdtMatches.Count -eq 0) {
+
+            if ($Details) {
+
+              Write-Host (
+                "  Nenhuma Folha NDT existente foi encontrada para " +
+                "'$($document.ItemCode)'."
+              ) -ForegroundColor DarkGray
+            }
+          }
+          else {
+
+            Write-Info (
+              "Folhas NDT existentes encontradas: " +
+              $existingNdtMatches.Count
+            )
+
+            foreach ($existingNdtMatch in $existingNdtMatches) {
+
+              if ($null -eq $existingNdtMatch.Revision) {
+
+                Write-Warn (
+                  "Uma Folha NDT de '$($document.ItemCode)' foi encontrada, " +
+                  "mas sua revisao nao foi retornada."
+                )
+
+                continue
+              }
+
+              $linkResult =
+              Add-DcaNdtDrawingToProcessFolder `
+                -NdtRevision $existingNdtMatch.Revision `
+                -ProcessItemCode $document.ItemCode
+
+              switch ([string]$linkResult.Status) {
+
+                "Vinculado" {
+
+                  Write-Success (
+                    "NDT existente vinculado a Pasta NDT do Processo " +
+                    "'$($document.ItemCode)'."
+                  )
+                }
+
+                "JaVinculado" {
+
+                  if ($Details) {
+
+                    Write-Host (
+                      "  O NDT existente ja estava vinculado ao Processo " +
+                      "'$($document.ItemCode)'."
+                    ) -ForegroundColor DarkGray
+                  }
+                }
+
+                "ProcessoNaoEncontrado" {
+
+                  Write-Warn (
+                    "O Processo '$($document.ItemCode)' foi criado, mas ainda " +
+                    "nao foi localizado para receber o vinculo NDT."
+                  )
+                }
+
+                "NaoConfirmado" {
+
+                  Write-Warn (
+                    "O vinculo do NDT existente ao Processo " +
+                    "'$($document.ItemCode)' nao foi confirmado."
+                  )
+                }
+
+                "Erro" {
+
+                  Write-Warn (
+                    "O NDT existente foi encontrado, mas o vinculo falhou: " +
+                    $linkResult.ErrorMessage
+                  )
+                }
+
+                default {
+
+                  Write-Warn (
+                    "O vinculo da Folha NDT retornou um estado inesperado: " +
+                    "'$($linkResult.Status)'."
+                  )
+                }
+              }
+            }
+          }
+        }
       }
 
       # ==================================================
@@ -2907,8 +2941,10 @@ function Invoke-DcaMain {
           "Desenho NDT importado no item $createdCode, " +
           "revisao $($locationConfiguration.TeamcenterRevisionId)."
         )
-        # Se o Processo ja existir, vincula imediatamente.
-        # Caso contrario, deixa pendente para quando o Processo for criado.
+
+        # Registra a Folha NDT para tentar o vinculo ao final do lote.
+        # Se o Processo ainda nao existir, o NDT permanece criado no
+        # Teamcenter e podera ser localizado quando o Processo for criado.
         $pendingNdtLinks.Add(
           [PSCustomObject]@{
             ItemCode = [string]$document.ItemCode
@@ -3250,10 +3286,10 @@ function Invoke-DcaMain {
         }
       )
     }
+
     # Uma falha neste documento e registrada no lote, mas nao
     # interrompe o processamento dos documentos seguintes.
     catch {
-
       $failureTime =
       Get-Date
 
@@ -3550,22 +3586,63 @@ function Invoke-DcaMain {
 
     foreach ($pendingLink in $pendingNdtLinks) {
 
-      try {
+      $linkResult =
+      Add-DcaNdtDrawingToProcessFolder `
+        -NdtRevision $pendingLink.Revision `
+        -ProcessItemCode $pendingLink.ItemCode
 
-        $null = Add-DcaNdtDrawingToProcessFolder `
-          -NdtRevision $pendingLink.Revision `
-          -ProcessItemCode $pendingLink.ItemCode
+      switch ([string]$linkResult.Status) {
 
-        Write-Success (
-          "NDT vinculado ao Processo '$($pendingLink.ItemCode)'."
-        )
-      }
-      catch {
+        "Vinculado" {
 
-        Write-Warn (
-          "Falha ao vincular NDT ao Processo '$($pendingLink.ItemCode)': " +
-          $_.Exception.Message
-        )
+          Write-Success (
+            "NDT vinculado ao Processo '$($pendingLink.ItemCode)'."
+          )
+        }
+
+        "JaVinculado" {
+
+          if ($Details) {
+
+            Write-Host (
+              "  O NDT ja estava vinculado ao Processo " +
+              "'$($pendingLink.ItemCode)'."
+            ) -ForegroundColor DarkGray
+          }
+        }
+
+        "ProcessoNaoEncontrado" {
+
+          Write-Warn (
+            "O NDT '$($pendingLink.ItemCode)' foi importado, mas o " +
+            "Processo ainda nao existe. O NDT permanecera no " +
+            "Teamcenter para vinculacao posterior."
+          )
+        }
+
+        "NaoConfirmado" {
+
+          Write-Warn (
+            "O vinculo do NDT '$($pendingLink.ItemCode)' foi " +
+            "solicitado, mas nao foi confirmado."
+          )
+        }
+
+        "Erro" {
+
+          Write-Warn (
+            "O NDT foi importado, mas o vinculo falhou: " +
+            $linkResult.ErrorMessage
+          )
+        }
+
+        default {
+
+          Write-Warn (
+            "O vinculo do NDT retornou estado inesperado: " +
+            "'$($linkResult.Status)'."
+          )
+        }
       }
     }
   }
@@ -4109,10 +4186,8 @@ function Invoke-DcaMain {
   if ($failureCount -gt 0) {
     return 1
   }
-
   return 0
 }
-
 # ============================================================
 # PONTO DE ENTRADA E CODIGO DE SAIDA
 # ============================================================
