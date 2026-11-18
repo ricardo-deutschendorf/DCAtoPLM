@@ -1,564 +1,194 @@
-
 # ============================================================
 # LEITURA DO ESTADO E DOS CARTOES DO PDM
 # ============================================================
-#
-# Responsabilidades:
-#   1. consultar o estado atual do arquivo;
-#   2. ler uma variavel especifica diretamente do banco do PDM;
-#   3. utilizar GetVar como alternativa de compatibilidade;
-#   4. fechar o enumerador do cartao depois da leitura.
-#
-# A aplicacao dos valores ao documento ocorre nos demais
-# modulos do projeto.
+#   1. consulta o estado atual do arquivo;
+#   2. le uma variavel do cartao (GetVarFromDb; GetVar como alternativa);
+#   3. fecha o enumerador do cartao depois da leitura.
+# A aplicacao dos valores ao documento ocorre nos demais modulos.
 # ============================================================
 
 function Get-DcaPdmFileState {
+    param([Parameter(Mandatory)][ValidateNotNull()]$Entry)
 
-    # Retorna o estado atual do arquivo no workflow do PDM.
-    param(
-        [Parameter(Mandatory = $true)]
-        [ValidateNotNull()]
-        $Entry
-    )
-
-    # ============================================================
-    # 1. VALIDAR A CONEXAO E O CAMINHO
-    # ============================================================
-
-    if ($null -eq $script:DcaVault) {
-
-        return $null
-    }
+    if ($null -eq $script:DcaVault) { return $null }
 
     $filePath = [string]$Entry.FullName
-
-    if (
-        [string]::IsNullOrWhiteSpace(
-            $filePath
-        )
-    ) {
-
-        return $null
-    }
-
-    # ============================================================
-    # 2. LOCALIZAR O ARQUIVO E CONSULTAR O ESTADO
-    # ============================================================
-
-    $parentFolder = $null
+    if ([string]::IsNullOrWhiteSpace($filePath)) { return $null }
 
     try {
-
-        $pdmFile = $script:DcaVault.GetFileFromPath(
-            $filePath,
-            [ref]$parentFolder
-        )
-
-        if ($null -eq $pdmFile) {
-
-            return $null
-        }
+        $parentFolder = $null
+        $pdmFile = $script:DcaVault.GetFileFromPath($filePath, [ref]$parentFolder)
+        if ($null -eq $pdmFile) { return $null }
 
         $currentState = $pdmFile.CurrentState
+        if ($null -eq $currentState) { return $null }
 
-        if ($null -eq $currentState) {
-
-            return $null
-        }
-
-        return (
-            [string]$currentState.Name
-        ).Trim()
+        return ([string]$currentState.Name).Trim()
     }
     catch {
-
         if ($Details) {
-
-            $realException = $_.Exception
-
-            while (
-                $null -ne $realException.InnerException
-            ) {
-
-                $realException = $realException.InnerException
-            }
-
-            Write-Warn (
-                "Nao foi possivel consultar o estado no PDM para " +
-                "'$filePath': " +
-                $realException.Message
-            )
+            Write-Warn "Nao foi possivel consultar o estado no PDM para '$filePath': $($_.Exception.GetBaseException().Message)"
         }
-
         return $null
     }
 }
 
 function Get-DcaPdmCardVariableValue {
-
-    # Le uma variavel especifica no cartao do arquivo.
-    #
-    # GetVarFromDb possui prioridade porque recupera diretamente
-    # o valor persistido no banco do PDM.
-    #
-    # GetVar permanece como alternativa de compatibilidade.
+    # GetVarFromDb tem prioridade (valor persistido no banco do PDM);
+    # GetVar fica como alternativa de compatibilidade.
     param(
-        [Parameter(Mandatory = $true)]
-        [ValidateNotNull()]
-        $VariableReader,
-
-        [Parameter(Mandatory = $true)]
-        [ValidateNotNullOrEmpty()]
-        [string]$VariableName
+        [Parameter(Mandatory)][ValidateNotNull()]$VariableReader,
+        [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$VariableName
     )
 
-    # ============================================================
-    # 1. PREPARAR A VARIAVEL E AS CONFIGURACOES
-    # ============================================================
+    $name = $VariableName.Trim()
+    if (-not $name) { throw "O nome da variavel do cartao ficou vazio." }
 
-    $variableNameClean = $VariableName.Trim()
+    $configurations = [string[]]@("", "@")
 
-    if (
-        [string]::IsNullOrWhiteSpace(
-            $variableNameClean
-        )
-    ) {
+    # --- 1. GetVarFromDb (interface descoberta em tempo de execucao, por causa das versoes da EdmLib) ---
+    $interfaceType = [System.AppDomain]::CurrentDomain.GetAssemblies() |
+        ForEach-Object { try { $_.GetTypes() } catch { @() } } |
+        Where-Object { $_.IsInterface -and $_.Name -ieq "IEdmEnumeratorVariable6" } |
+        Select-Object -First 1
 
-        throw (
-            "O nome da variavel do cartao ficou vazio."
-        )
-    }
-
-    $configurations = [string[]]@(
-        "",
-        "@"
-    )
-
-    # ============================================================
-    # 2. TENTAR GETVARFROMDB
-    # ============================================================
-    #
-    # A interface e descoberta em tempo de execucao para manter
-    # compatibilidade com diferentes versoes da EdmLib.
-
-    $enumeratorVariable6Type =
-        [System.AppDomain]::CurrentDomain.GetAssemblies() |
-            ForEach-Object {
-
-                try {
-
-                    $_.GetTypes()
-                }
-                catch {
-
-                    @()
-                }
-            } |
-            Where-Object {
-                $_.IsInterface -and
-                $_.Name -ieq "IEdmEnumeratorVariable6"
-            } |
+    $getVarFromDb = $null
+    if ($null -ne $interfaceType) {
+        $getVarFromDb = $interfaceType.GetMethods() |
+            Where-Object { $_.Name -ieq "GetVarFromDb" -and $_.GetParameters().Count -eq 3 } |
             Select-Object -First 1
+    }
 
-    if ($null -ne $enumeratorVariable6Type) {
+    if ($null -ne $getVarFromDb) {
+        foreach ($configuration in $configurations) {
+            $arguments = [object[]]@($name, $configuration, $null)
+            try {
+                $found = [bool]$getVarFromDb.Invoke($VariableReader, $arguments)
+                $value = $arguments[2]
 
-        $getVarFromDbMethod =
-            $enumeratorVariable6Type.GetMethods() |
-                Where-Object {
-                    $_.Name -ieq "GetVarFromDb" -and
-                    $_.GetParameters().Count -eq 3
-                } |
-                Select-Object -First 1
-
-        if ($null -ne $getVarFromDbMethod) {
-
-            foreach (
-                $configurationName in
-                $configurations
-            ) {
-
-                $arguments = [object[]]::new(3)
-
-                $arguments[0] = [string]$variableNameClean
-                $arguments[1] = [string]$configurationName
-                $arguments[2] = $null
-
-                try {
-
-                    $variableFound = [bool]$getVarFromDbMethod.Invoke(
-                        $VariableReader,
-                        $arguments
-                    )
-
-                    $variableValue = $arguments[2]
-                    $valueText = ([string]$variableValue).Trim()
-
-                    if (
-                        $variableFound -or
-                        -not [string]::IsNullOrWhiteSpace(
-                            $valueText
-                        )
-                    ) {
-
-                        return [PSCustomObject]@{
-                            Found         = $true
-                            Value         = $variableValue
-                            Method        = "GetVarFromDb"
-                            Configuration = $configurationName
-                            Error         = $null
-                        }
+                if ($found -or ([string]$value).Trim()) {
+                    return [PSCustomObject]@{
+                        Found = $true; Value = $value; Method = "GetVarFromDb"
+                        Configuration = $configuration; Error = $null
                     }
                 }
-                catch {
-
-                    if ($Details) {
-
-                        $realException = $_.Exception
-
-                        while (
-                            $null -ne $realException.InnerException
-                        ) {
-
-                            $realException = $realException.InnerException
-                        }
-
-                        $configurationDisplay = [string]$configurationName
-
-                        if (
-                            [string]::IsNullOrWhiteSpace(
-                                $configurationDisplay
-                            )
-                        ) {
-
-                            $configurationDisplay = "<vazia>"
-                        }
-
-                        Write-Host (
-                            "  GetVarFromDb nao leu '$variableNameClean' na " +
-                            "configuracao '$configurationDisplay': " +
-                            $realException.Message
-                        ) -ForegroundColor DarkGray
-                    }
+            }
+            catch {
+                if ($Details) {
+                    $display = if ($configuration) { $configuration } else { "<vazia>" }
+                    Write-Host (
+                        "  GetVarFromDb nao leu '$name' na configuracao '$display': " +
+                        $_.Exception.GetBaseException().Message
+                    ) -ForegroundColor DarkGray
                 }
             }
         }
     }
 
-    # ============================================================
-    # 3. UTILIZAR GETVAR COMO ALTERNATIVA
-    # ============================================================
-
-    foreach (
-        $configurationName in
-        $configurations
-    ) {
-
-        $variableValue = $null
-
+    # --- 2. GetVar como alternativa ---
+    foreach ($configuration in $configurations) {
+        $value = $null
         try {
+            $found = $VariableReader.GetVar($name, $configuration, [ref]$value)
 
-            $variableFound = $VariableReader.GetVar(
-                $variableNameClean,
-                $configurationName,
-                [ref]$variableValue
-            )
-
-            $valueText = ([string]$variableValue).Trim()
-
-            if (
-                $variableFound -or
-                -not [string]::IsNullOrWhiteSpace(
-                    $valueText
-                )
-            ) {
-
+            if ($found -or ([string]$value).Trim()) {
                 return [PSCustomObject]@{
-                    Found         = $true
-                    Value         = $variableValue
-                    Method        = "GetVar"
-                    Configuration = $configurationName
-                    Error         = $null
+                    Found = $true; Value = $value; Method = "GetVar"
+                    Configuration = $configuration; Error = $null
                 }
             }
         }
-        catch {
-
-            continue
-        }
+        catch { continue }
     }
 
-    # ============================================================
-    # 4. INFORMAR QUE A VARIAVEL NAO POSSUI VALOR
-    # ============================================================
-
+    # --- 3. Variavel sem valor ---
     return [PSCustomObject]@{
-        Found         = $false
-        Value         = $null
-        Method        = "nenhum"
-        Configuration = $null
-        Error         = $null
+        Found = $false; Value = $null; Method = "nenhum"; Configuration = $null; Error = $null
     }
 }
 
 function Get-DcaPdmVariableValue {
-
-    # Testa os nomes recebidos na ordem informada e retorna o
-    # primeiro valor preenchido encontrado no cartao.
+    # Testa os nomes na ordem informada e retorna o primeiro valor preenchido do cartao.
     param(
-        [Parameter(Mandatory = $true)]
-        [ValidateNotNull()]
-        $Entry,
-
-        [Parameter(Mandatory = $true)]
-        [ValidateNotNullOrEmpty()]
-        [string[]]$VariableNames
+        [Parameter(Mandatory)][ValidateNotNull()]$Entry,
+        [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string[]]$VariableNames
     )
 
-    # ============================================================
-    # 1. VALIDAR A CONEXAO E O CAMINHO
-    # ============================================================
-
+    # --- 1. Conexao, caminho e nomes ---
     $vault = Get-DcaVault
-
-    if ($null -eq $vault) {
-
-        return $null
-    }
+    if ($null -eq $vault) { return $null }
 
     $filePath = ([string]$Entry.FullName).Trim()
+    if (-not $filePath) { return $null }
 
-    if (
-        [string]::IsNullOrWhiteSpace(
-            $filePath
-        )
-    ) {
-
-        return $null
-    }
-
-    $variableNamesClean = @(
+    $names = @(
         $VariableNames |
-            ForEach-Object {
-                ([string]$_).Trim()
-            } |
-            Where-Object {
-                -not [string]::IsNullOrWhiteSpace(
-                    [string]$_
-                )
-            } |
+            ForEach-Object { ([string]$_).Trim() } |
+            Where-Object { $_ } |
             Select-Object -Unique
     )
-
-    if ($variableNamesClean.Count -eq 0) {
-
-        return $null
-    }
-
-    # ============================================================
-    # 2. LOCALIZAR O ARQUIVO E ABRIR O CARTAO
-    # ============================================================
+    if ($names.Count -eq 0) { return $null }
 
     $parentFolder = $null
     $variableReader = $null
 
     try {
-
-        $pdmFile = $vault.GetFileFromPath(
-            $filePath,
-            [ref]$parentFolder
-        )
-
+        # --- 2. Localizar o arquivo e abrir o cartao ---
+        $pdmFile = $vault.GetFileFromPath($filePath, [ref]$parentFolder)
         if ($null -eq $pdmFile) {
-
-            if ($Details) {
-
-                Write-Warn (
-                    "Arquivo nao encontrado pela API do PDM: " +
-                    "'$($Entry.Name)'."
-                )
-            }
-
+            if ($Details) { Write-Warn "Arquivo nao encontrado pela API do PDM: '$($Entry.Name)'." }
             return $null
         }
 
-        $variableReader = $pdmFile.GetEnumeratorVariable(
-            ""
-        )
-
+        $variableReader = $pdmFile.GetEnumeratorVariable("")
         if ($null -eq $variableReader) {
-
-            if ($Details) {
-
-                Write-Warn (
-                    "Nao foi possivel abrir as variaveis do cartao de " +
-                    "'$($Entry.Name)'."
-                )
-            }
-
+            if ($Details) { Write-Warn "Nao foi possivel abrir as variaveis do cartao de '$($Entry.Name)'." }
             return $null
         }
 
-        # ============================================================
-        # 3. TESTAR AS VARIAVEIS CONFIGURADAS
-        # ============================================================
-
-        foreach (
-            $variableName in
-            $variableNamesClean
-        ) {
-
-            $currentName = ([string]$variableName).Trim()
-
-            if (
-                [string]::IsNullOrWhiteSpace(
-                    $currentName
-                )
-            ) {
-
-                continue
-            }
-
+        # --- 3. Testar cada variavel ---
+        foreach ($currentName in $names) {
             try {
+                $readResult = Get-DcaPdmCardVariableValue -VariableReader $variableReader -VariableName $currentName
+                if ($null -eq $readResult) { continue }
 
-                $readResult = Get-DcaPdmCardVariableValue `
-                    -VariableReader $variableReader `
-                    -VariableName $currentName
-
-                if ($null -eq $readResult) {
-
-                    continue
-                }
-
-                $variableFound = [bool]$readResult.Found
-                $variableValue = $readResult.Value
-
-                # ====================================================
-                # A. APRESENTAR O DIAGNOSTICO
-                # ====================================================
+                $found = [bool]$readResult.Found
+                $value = $readResult.Value
+                $rawText = ([string]$value).Trim()
 
                 if ($Details) {
-
-                    $configurationDisplay = [string]$readResult.Configuration
-
-                    if (
-                        [string]::IsNullOrWhiteSpace(
-                            $configurationDisplay
-                        )
-                    ) {
-
-                        $configurationDisplay = "<vazia>"
-                    }
-
-                    $valueTypeName =
-                        if ($null -eq $variableValue) {
-
-                            "<null>"
-                        }
-                        else {
-
-                            $variableValue.GetType().FullName
-                        }
-
-                    Write-Host (
+                    $configurationDisplay = if ($readResult.Configuration) { [string]$readResult.Configuration } else { "<vazia>" }
+                    $valueTypeName = if ($null -eq $value) { "<null>" } else { $value.GetType().FullName }
+                    @(
                         "  Diagnostico da variavel '$currentName':"
-                    ) -ForegroundColor DarkGray
-
-                    Write-Host (
                         "    Metodo:        $($readResult.Method)"
-                    ) -ForegroundColor DarkGray
-
-                    Write-Host (
                         "    Configuracao:  $configurationDisplay"
-                    ) -ForegroundColor DarkGray
-
-                    Write-Host (
-                        "    Encontrada:    $variableFound"
-                    ) -ForegroundColor DarkGray
-
-                    Write-Host (
+                        "    Encontrada:    $found"
                         "    Tipo do valor: $valueTypeName"
-                    ) -ForegroundColor DarkGray
-
-                    Write-Host (
-                        "    Valor bruto:   '$([string]$variableValue)'"
-                    ) -ForegroundColor DarkGray
+                        "    Valor bruto:   '$([string]$value)'"
+                    ) | ForEach-Object { Write-Host $_ -ForegroundColor DarkGray }
                 }
 
-                # ====================================================
-                # B. VALIDAR O VALOR
-                # ====================================================
-
-                $rawValueText = ([string]$variableValue).Trim()
-
-                if (
-                    -not $variableFound -and
-                    [string]::IsNullOrWhiteSpace(
-                        $rawValueText
-                    )
-                ) {
-
+                if (-not $found -and -not $rawText) {
                     if ($Details) {
-
-                        Write-Host (
-                            "  Variavel nao encontrada ou desmarcada no cartao: " +
-                            "'$currentName'"
-                        ) -ForegroundColor DarkGray
+                        Write-Host "  Variavel nao encontrada ou desmarcada no cartao: '$currentName'" -ForegroundColor DarkGray
                     }
-
                     continue
                 }
 
-                # ====================================================
-                # C. FORMATAR DATAS E TEXTOS
-                # ====================================================
+                # Datas saem em dd/MM/yyyy; os demais valores, como texto.
+                $valueText = if ($value -is [datetime]) {
+                    $value.ToString("dd/MM/yyyy", [System.Globalization.CultureInfo]::InvariantCulture)
+                } else { $rawText }
 
-                $valueText =
-                    if ($variableValue -is [datetime]) {
-
-                        $variableValue.ToString(
-                            "dd/MM/yyyy",
-                            [System.Globalization.CultureInfo]::InvariantCulture
-                        )
-                    }
-                    else {
-
-                        $rawValueText
-                    }
-
-                if (
-                    -not [string]::IsNullOrWhiteSpace(
-                        $valueText
-                    )
-                ) {
-
-                    if ($Details) {
-
-                        Write-Host (
-                            "  Cartao de dados: '$currentName' = '$valueText'"
-                        ) -ForegroundColor Cyan
-                    }
-
+                if ($valueText) {
+                    if ($Details) { Write-Host "  Cartao de dados: '$currentName' = '$valueText'" -ForegroundColor Cyan }
                     return $valueText
                 }
             }
             catch {
-
-                $realException = $_.Exception
-
-                while (
-                    $null -ne $realException.InnerException
-                ) {
-
-                    $realException = $realException.InnerException
-                }
-
                 if ($Details) {
-
-                    Write-Host (
-                        "  Nao foi possivel ler a variavel '$currentName': " +
-                        $realException.Message
-                    ) -ForegroundColor DarkGray
+                    Write-Host "  Nao foi possivel ler a variavel '$currentName': $($_.Exception.GetBaseException().Message)" -ForegroundColor DarkGray
                 }
             }
         }
@@ -566,98 +196,32 @@ function Get-DcaPdmVariableValue {
         return $null
     }
     catch {
-
-        $realException = $_.Exception
-
-        while (
-            $null -ne $realException.InnerException
-        ) {
-
-            $realException = $realException.InnerException
-        }
-
         if ($Details) {
-
-            Write-Warn (
-                "Falha ao ler o cartao de dados de " +
-                "'$($Entry.Name)': " +
-                $realException.Message
-            )
+            Write-Warn "Falha ao ler o cartao de dados de '$($Entry.Name)': $($_.Exception.GetBaseException().Message)"
         }
-
         return $null
     }
     finally {
-
-        # ============================================================
-        # 4. FECHAR O ENUMERADOR DO CARTAO
-        # ============================================================
-
+        # --- 4. Fechar o enumerador (falha aqui nao interrompe o documento) ---
         if ($null -ne $variableReader) {
+            $closeFile = $variableReader.GetType().GetMethods() |
+                Where-Object { $_.Name -ieq "CloseFile" -and ($_.GetParameters().Count -in 0, 1) } |
+                Sort-Object { $_.GetParameters().Count } -Descending |
+                Select-Object -First 1
 
-            $closeFileMethod =
-                $variableReader.GetType().GetMethods() |
-                    Where-Object {
-
-                        if ($_.Name -ine "CloseFile") {
-                            return $false
-                        }
-
-                        $closeParameterCount = $_.GetParameters().Count
-
-                        $closeParameterCount -in @(0, 1)
-                    } |
-                    Sort-Object {
-                        $_.GetParameters().Count
-                    } -Descending |
-                    Select-Object -First 1
-
-            if ($null -ne $closeFileMethod) {
-
+            if ($null -ne $closeFile) {
                 try {
-
-                    $closeParameters = $closeFileMethod.GetParameters()
-
-                    if (
-                        $closeParameters.Count -eq 1 -and
-                        $closeParameters[0].ParameterType -eq [bool]
-                    ) {
-
-                        $null = $closeFileMethod.Invoke(
-                            $variableReader,
-                            @(
-                                [bool]$false
-                            )
-                        )
+                    $closeParameters = $closeFile.GetParameters()
+                    if ($closeParameters.Count -eq 1 -and $closeParameters[0].ParameterType -eq [bool]) {
+                        $null = $closeFile.Invoke($variableReader, @([bool]$false))
                     }
                     elseif ($closeParameters.Count -eq 0) {
-
-                        $null = $closeFileMethod.Invoke(
-                            $variableReader,
-                            @()
-                        )
+                        $null = $closeFile.Invoke($variableReader, @())
                     }
                 }
                 catch {
-
-                    # Uma falha ao fechar o enumerador nao deve interromper
-                    # o processamento do documento.
                     if ($Details) {
-
-                        $closeException = $_.Exception
-
-                        while (
-                            $null -ne $closeException.InnerException
-                        ) {
-
-                            $closeException = $closeException.InnerException
-                        }
-
-                        Write-Host (
-                            "  Nao foi possivel fechar o cartao de " +
-                            "'$($Entry.Name)': " +
-                            $closeException.Message
-                        ) -ForegroundColor DarkGray
+                        Write-Host "  Nao foi possivel fechar o cartao de '$($Entry.Name)': $($_.Exception.GetBaseException().Message)" -ForegroundColor DarkGray
                     }
                 }
             }

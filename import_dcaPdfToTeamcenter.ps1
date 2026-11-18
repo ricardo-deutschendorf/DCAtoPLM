@@ -1,19 +1,10 @@
 ﻿# ============================================================
-# DCAtoPLM - Importacao de documentos do PDM para o Teamcenter
+# DCAtoPLM - IMPORTACAO DO PDM PARA O TEAMCENTER
 # ============================================================
-#
-# Responsabilidades deste script:
-#   1. Carregar e validar a configuracao local.
-#   2. Pesquisar e selecionar documentos no Vault DCA.
-#   3. Ler codigo, revisao, descricao, aprovador, data e estado.
-#   4. Preparar e exibir o plano de importacao.
-#   5. Localizar ou criar o destino no Teamcenter.
-#   6. Importar os arquivos como Datasets.
-#   7. Iniciar o workflow quando aplicavel.
-#   8. Apresentar o resumo final do lote.
-#
-# Os detalhes de PDM, pesquisa, saida e Teamcenter permanecem
-# separados nos arquivos da pasta functions.
+# Coordena configuracao, pesquisa no PDM, preparacao do lote,
+# criacao ou recuperacao no Teamcenter, importacao de Datasets,
+# workflows, vinculos NDT, relatorio CSV e resumo da execucao.
+# As operacoes especificas permanecem em functions.
 # ============================================================
 
 # ============================================================
@@ -64,63 +55,32 @@ param(
 # para todos os arquivos carregados por dot source.
 function Import-DcaEnvironmentFile {
   param(
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory)]
     [string]$FilePath
   )
 
-  if (-not (
-      Test-Path `
-        -LiteralPath $FilePath `
-        -PathType Leaf
-    )) {
-
+  if (-not (Test-Path -LiteralPath $FilePath -PathType Leaf)) {
     throw "Arquivo de configuracao nao encontrado: '$FilePath'."
   }
 
-  foreach (
-    $line in Get-Content `
-      -LiteralPath $FilePath `
-      -Encoding UTF8
-  ) {
+  foreach ($lineText in Get-Content -LiteralPath $FilePath -Encoding UTF8) {
+    $line = ([string]$lineText).Trim()
 
-    $trimmedLine = $line.Trim()
-
-    if (
-      [string]::IsNullOrWhiteSpace($trimmedLine) -or
-      $trimmedLine.StartsWith("#")
-    ) {
+    if ([string]::IsNullOrWhiteSpace($line) -or $line.StartsWith("#")) {
       continue
     }
 
-    $separatorIndex =
-    $trimmedLine.IndexOf("=")
+    $separator = $line.IndexOf("=")
+    if ($separator -le 0) { continue }
 
-    if ($separatorIndex -le 0) {
-      continue
-    }
+    $name = $line.Substring(0, $separator).Trim()
+    if ([string]::IsNullOrWhiteSpace($name)) { continue }
 
-    $variableName =
-    $trimmedLine.Substring(
-      0,
-      $separatorIndex
-    ).Trim()
-
-    $variableValue =
-    $trimmedLine.Substring(
-      $separatorIndex + 1
-    ).Trim()
-
-    if (
-      [string]::IsNullOrWhiteSpace(
-        $variableName
-      )
-    ) {
-      continue
-    }
+    $value = $line.Substring($separator + 1).Trim()
 
     [System.Environment]::SetEnvironmentVariable(
-      $variableName,
-      $variableValue,
+      $name,
+      $value,
       [System.EnvironmentVariableTarget]::Process
     )
   }
@@ -419,6 +379,275 @@ if ($missingFunctions.Count -gt 0) {
 }
 
 # ============================================================
+# FUNCOES AUXILIARES DO FLUXO PRINCIPAL
+# ============================================================
+
+function Get-DcaBaseObject {
+    param($Object)
+
+    if ($null -eq $Object) { return $null }
+    if ($null -ne $Object.PSObject.BaseObject) { return $Object.PSObject.BaseObject }
+    return $Object
+}
+
+function ConvertTo-DcaVariableNames {
+    param(
+        [Parameter(Mandatory)][string]$Value,
+        [Parameter(Mandatory)][string]$EnvironmentName
+    )
+
+    $names = @(
+        $Value -split '[|;]' |
+            ForEach-Object { ([string]$_).Trim() } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Select-Object -Unique
+    )
+
+    if ($names.Count -eq 0) {
+        throw "$EnvironmentName nao possui nenhum nome de variavel valido no arquivo .env."
+    }
+
+    return $names
+}
+
+function Get-DcaValidFilePathFromOutput {
+    param(
+        [Parameter(Mandatory)][object[]]$Outputs,
+        [Parameter(Mandatory)][string]$Operation
+    )
+
+    $paths = @(
+        $Outputs |
+            Where-Object { $_ -is [string] } |
+            ForEach-Object {
+                $path = ([string]$_).Trim()
+                if (-not [string]::IsNullOrWhiteSpace($path) -and
+                    (Test-Path -LiteralPath $path -PathType Leaf)) {
+                    $path
+                }
+            }
+    )
+
+    if ($paths.Count -eq 0) {
+        throw "$Operation nao retornou um caminho de arquivo valido."
+    }
+
+    return [string]$paths[-1]
+}
+
+function Get-DcaElapsedSeconds {
+    param($Duration)
+
+    if ($null -eq $Duration) { return $null }
+    return [Math]::Round([double]$Duration.TotalSeconds, 2)
+}
+
+function Get-DcaResultSecondsTotal {
+    param(
+        [Parameter(Mandatory)][object[]]$Results,
+        [Parameter(Mandatory)][string]$PropertyName
+    )
+
+    $total = (
+        $Results |
+            Where-Object { $null -ne $_.$PropertyName } |
+            Measure-Object -Property $PropertyName -Sum
+    ).Sum
+
+    if ($null -eq $total) { return 0.0 }
+    return [double]$total
+}
+
+function New-DcaBatchResult {
+    param(
+        [Parameter(Mandatory)]$Document,
+        [string]$TeamcenterCode,
+        [bool]$ItemCreated,
+        [bool]$PdfImported,
+        [bool]$NdtDrawingImported,
+        [bool]$PdfImportedThisRun,
+        [bool]$DatasetAlreadyExists,
+        [bool]$WorkflowStarted,
+        [bool]$Succeeded,
+        [Parameter(Mandatory)][datetime]$StartedAt,
+        [Parameter(Mandatory)][datetime]$FinishedAt,
+        $DestinationDuration,
+        $PdfPreparationDuration,
+        $DatasetLookupDuration,
+        $PdfImportDuration,
+        $WorkflowDuration,
+        [AllowNull()][string]$ErrorMessage
+    )
+
+    [PSCustomObject]@{
+        ItemCode             = $Document.ItemCode
+        ItemName             = $Document.ItemName
+        TeamcenterCode       = $TeamcenterCode
+        ClientRevision       = $Document.ClientRevision
+        DocumentType         = $Document.DocumentType
+        PdmState             = $Document.PdmState
+        Approver             = [string]$Document.Approver
+        ApprovalDate         = [string]$Document.ApprovalDate
+        Operation            = [string]$Document.RequestedMode
+        ItemCreated          = $ItemCreated
+        PdfImported          = $PdfImported
+        NdtDrawingImported   = $NdtDrawingImported
+        PdfImportedThisRun   = $PdfImportedThisRun
+        DatasetAlreadyExists = $DatasetAlreadyExists
+        WorkflowStarted      = $WorkflowStarted
+        Succeeded            = $Succeeded
+        DocumentStartedAt    = $StartedAt.ToString("yyyy-MM-dd HH:mm:ss")
+        DocumentFinishedAt   = $FinishedAt.ToString("yyyy-MM-dd HH:mm:ss")
+        DurationSeconds      = [Math]::Round(($FinishedAt - $StartedAt).TotalSeconds, 2)
+        DestinationSeconds   = Get-DcaElapsedSeconds $DestinationDuration
+        PdfPreparationSeconds = Get-DcaElapsedSeconds $PdfPreparationDuration
+        DatasetLookupSeconds = Get-DcaElapsedSeconds $DatasetLookupDuration
+        PdfImportSeconds     = Get-DcaElapsedSeconds $PdfImportDuration
+        WorkflowSeconds      = Get-DcaElapsedSeconds $WorkflowDuration
+        SourceFile           = [string]$Document.SelectedPdf.File.FullName
+        NdtPdfFile           = if ($null -ne $Document.NdtPdfFile) {
+            [string]$Document.NdtPdfFile.FullName
+        } else {
+            ""
+        }
+        NdtDrawingFile       = if ($null -ne $Document.NdtDrawingFile) {
+            [string]$Document.NdtDrawingFile.FullName
+        } else {
+            ""
+        }
+        ErrorMessage         = $ErrorMessage
+    }
+}
+
+function New-DcaRetrySelectedDocument {
+    param([Parameter(Mandatory)]$RetryRow)
+
+    $sourcePath = [string]$RetryRow.SourceFile
+    $sheetType = ""
+
+    if ([string]$RetryRow.DocumentType -eq "NDT" -and
+      $sourcePath -match '(?i)\[(?<NdtType>MPI|FPI)\]') {
+        $sheetType = ([string]$Matches.NdtType).ToUpperInvariant()
+    }
+
+    $file = [PSCustomObject]@{
+        Name      = [System.IO.Path]::GetFileName($sourcePath)
+        BaseName  = [System.IO.Path]::GetFileNameWithoutExtension($sourcePath)
+        FullName  = $sourcePath
+        FromVault = $true
+    }
+
+    [PSCustomObject]@{
+        SelectedPdf = [PSCustomObject]@{
+            File               = $file
+            SourceCode         = [string]$RetryRow.ItemCode
+            ClientRevision     = [string]$RetryRow.ClientRevision
+            DocumentTitle      = [string]$RetryRow.ItemName
+            DocumentType       = [string]$RetryRow.DocumentType
+            NdtSheetType       = $sheetType
+            TypeDisplayName    = [string]$RetryRow.DocumentType
+            CodeParsed         = $true
+            PdmState           = [string]$RetryRow.PdmState
+            FolderImport       = $true
+            TeamcenterItem     = $null
+            TeamcenterRevision = $null
+            RetryMode          = if ([string]::IsNullOrWhiteSpace([string]$RetryRow.RetryMode)) {
+                "CreateItem"
+            } else {
+                [string]$RetryRow.RetryMode
+            }
+            Approver           = [string]$RetryRow.Approver
+            ApprovalDate       = [string]$RetryRow.ApprovalDate
+            PreviousError      = [string]$RetryRow.PreviousError
+        }
+    }
+}
+
+function Show-DcaNdtLinkResult {
+    param(
+        [Parameter(Mandatory)]$Result,
+        [Parameter(Mandatory)][string]$ItemCode,
+        [switch]$ProcessJustCreated
+    )
+
+    switch ([string]$Result.Status) {
+        "Vinculado" {
+            Write-Success "NDT vinculado a Pasta NDT do Processo '$ItemCode'."
+        }
+        "JaVinculado" {
+            if ($Details) {
+                Write-Host "  O NDT ja estava vinculado ao Processo '$ItemCode'." -ForegroundColor DarkGray
+            }
+        }
+        "ProcessoNaoEncontrado" {
+            if ($ProcessJustCreated) {
+                Write-Warn "O Processo '$ItemCode' foi criado, mas ainda nao foi localizado para receber o vinculo NDT."
+            }
+            else {
+                Write-Warn "O NDT '$ItemCode' foi importado, mas o Processo ainda nao existe. O NDT permanecera no Teamcenter para vinculacao posterior."
+            }
+        }
+        "NaoConfirmado" {
+            Write-Warn "O vinculo do NDT '$ItemCode' foi solicitado, mas nao foi confirmado."
+        }
+        "Erro" {
+            Write-Warn "O NDT foi importado, mas o vinculo falhou: $($Result.ErrorMessage)"
+        }
+        default {
+            Write-Warn "O vinculo do NDT retornou estado inesperado: '$($Result.Status)'."
+        }
+    }
+}
+
+function Show-DcaDocumentTimes {
+    param(
+        [string]$Title = "Tempo das principais etapas:",
+        $Destination,
+        $PdfPreparation,
+        $DatasetLookup,
+        $PdfImport,
+        $Workflow,
+        [Parameter(Mandatory)]$Total,
+        [bool]$DatasetAlreadyExists,
+        [bool]$DatasetLookupRequired,
+        [bool]$Failure
+    )
+
+    if (-not $Details) { return }
+
+    Write-Host ""
+    Write-Host "  $Title" -ForegroundColor Cyan
+
+    $times = [ordered]@{
+        "Destino Teamcenter" = $Destination
+        "Preparacao do PDF"  = $PdfPreparation
+        "Busca do Dataset"   = $DatasetLookup
+        "Importacao do PDF"  = $PdfImport
+        "Workflow"           = $Workflow
+    }
+
+    foreach ($entry in $times.GetEnumerator()) {
+        if ($null -ne $entry.Value) {
+            Write-Host ("    {0,-22} {1,8:N2} s" -f ($entry.Key + ":"), $entry.Value.TotalSeconds) -ForegroundColor DarkGray
+        }
+        elseif ($entry.Key -eq "Busca do Dataset" -and -not $DatasetLookupRequired) {
+            Write-Host "    Busca do Dataset:       nao necessaria" -ForegroundColor DarkGray
+        }
+        elseif ($entry.Key -eq "Importacao do PDF" -and $DatasetAlreadyExists) {
+            Write-Host "    Importacao do PDF:      Dataset ja existente" -ForegroundColor DarkGray
+        }
+        elseif ($entry.Key -eq "Workflow") {
+            Write-Host "    Workflow:               nao executado" -ForegroundColor DarkGray
+        }
+    }
+
+    $label = if ($Failure) { "Total ate a falha:" } else { "Total do documento:" }
+    $color = if ($Failure) { "Yellow" } else { "Gray" }
+    Write-Host ("    {0,-22} {1,8:N2} s" -f $label, $Total.TotalSeconds) -ForegroundColor $color
+    Write-Host ""
+}
+
+# ============================================================
 # FLUXO PRINCIPAL
 # ============================================================
 function Invoke-DcaMain {
@@ -576,97 +805,7 @@ function Invoke-DcaMain {
       )
 
       foreach ($retryRow in $retryRows) {
-
-        $sourceFilePath =
-        [string]$retryRow.SourceFile
-
-        $sourceFileName =
-        [System.IO.Path]::GetFileName(
-          $sourceFilePath
-        )
-
-        $sourceBaseName =
-        [System.IO.Path]::GetFileNameWithoutExtension(
-          $sourceFilePath
-        )
-
-        $retryFile =
-        [PSCustomObject]@{
-          Name = $sourceFileName
-          BaseName = $sourceBaseName
-          FullName = $sourceFilePath
-          FromVault = $true
-        }
-
-        $retrySelectedPdf =
-        [PSCustomObject]@{
-          File = $retryFile
-          SourceCode = [string]$retryRow.ItemCode
-          ClientRevision = [string]$retryRow.ClientRevision
-          DocumentTitle = [string]$retryRow.ItemName
-          DocumentType = [string]$retryRow.DocumentType
-          NdtSheetType =
-          if (
-            [string]$retryRow.DocumentType -eq "NDT" -and
-            [string]$retryRow.SourceFile -match
-            '(?i)\[(?<NdtType>MPI|FPI)\]'
-          ) {
-
-            ([string]$Matches["NdtType"]).ToUpperInvariant()
-          }
-          else {
-
-            ""
-          }
-          TypeDisplayName = [string]$retryRow.DocumentType
-          CodeParsed = $true
-          PdmState = [string]$retryRow.PdmState
-          FolderImport = $true
-          TeamcenterItem = $null
-          TeamcenterRevision = $null
-          RetryMode =
-          if (
-            -not [string]::IsNullOrWhiteSpace(
-              [string]$retryRow.RetryMode
-            )
-          ) {
-
-            [string]$retryRow.RetryMode
-          }
-          elseif (
-            -not [string]::IsNullOrWhiteSpace(
-              [string]$retryRow.Operation
-            )
-          ) {
-
-            [string]$retryRow.Operation
-          }
-          else {
-
-            "CreateItem"
-          }
-          Approver = [string]$retryRow.Approver
-          ApprovalDate = [string]$retryRow.ApprovalDate
-          PreviousError =
-          if (
-            -not [string]::IsNullOrWhiteSpace(
-              [string]$retryRow.PreviousError
-            )
-          ) {
-
-            [string]$retryRow.PreviousError
-          }
-          else {
-
-            [string]$retryRow.ErrorMessage
-          }
-        }
-
-        $selectedDocuments.Add(
-          [PSCustomObject]@{
-            SelectedPdf = $retrySelectedPdf
-          }
-        )
+        $selectedDocuments.Add((New-DcaRetrySelectedDocument -RetryRow $retryRow))
       }
     }
 
@@ -1027,27 +1166,9 @@ function Invoke-DcaMain {
       # A. LER O APROVADOR
       # ========================================================
 
-      $approverVariableNames =
-      @(
-        $approverEnvValue -split '[|;]' |
-          ForEach-Object {
-          ([string]$_).Trim()
-        } |
-          Where-Object {
-          -not [string]::IsNullOrWhiteSpace(
-            [string]$_
-          )
-        } |
-          Select-Object -Unique
-      )
-
-      if ($approverVariableNames.Count -eq 0) {
-
-        throw (
-          "$approverEnvName nao possui nenhum nome de " +
-          "variavel valido no arquivo .env."
-        )
-      }
+      $approverVariableNames = ConvertTo-DcaVariableNames `
+        -Value $approverEnvValue `
+        -EnvironmentName $approverEnvName
 
       if ($Details) {
 
@@ -1074,27 +1195,9 @@ function Invoke-DcaMain {
       # B. LER A DATA DE APROVACAO
       # ========================================================
 
-      $approvalDateVariableNames =
-      @(
-        $approvalDateEnvValue -split '[|;]' |
-          ForEach-Object {
-          ([string]$_).Trim()
-        } |
-          Where-Object {
-          -not [string]::IsNullOrWhiteSpace(
-            [string]$_
-          )
-        } |
-          Select-Object -Unique
-      )
-
-      if ($approvalDateVariableNames.Count -eq 0) {
-
-        throw (
-          "$approvalDateEnvName nao possui nenhum nome de " +
-          "variavel valido no arquivo .env."
-        )
-      }
+      $approvalDateVariableNames = ConvertTo-DcaVariableNames `
+        -Value $approvalDateEnvValue `
+        -EnvironmentName $approvalDateEnvName
 
       if ($Details) {
 
@@ -1995,71 +2098,19 @@ function Invoke-DcaMain {
     $documentStartedAt =
     Get-Date
 
-    # Tempos das principais etapas do documento atual.
-    $destinationStartedAt =
-    $null
+    # Tempos e estado do documento atual.
+    $destinationStartedAt = $pdfPreparationStartedAt =
+      $datasetLookupStartedAt = $pdfImportStartedAt =
+      $workflowStartedAt = $null
 
-    $pdfPreparationStartedAt =
-    $null
+    $destinationDuration = $pdfPreparationDuration =
+      $datasetLookupDuration = $pdfImportDuration =
+      $workflowDuration = $null
 
-    $datasetLookupStartedAt =
-    $null
-
-    $pdfImportStartedAt =
-    $null
-
-    $workflowStartedAt =
-    $null
-
-    $destinationDuration =
-    $null
-
-    $pdfPreparationDuration =
-    $null
-
-    $datasetLookupDuration =
-    $null
-
-    $pdfImportDuration =
-    $null
-
-    $workflowDuration =
-    $null
-
-    # Estado individual do documento atual.
-    #
-    # Os indicadores abaixo permitem diferenciar:
-    #   - falha durante a criacao do Item;
-    #   - Item criado com falha na importacao do PDF;
-    #   - PDF importado com falha no workflow;
-    #   - processamento totalmente concluido.
-    #
-    # Os valores sao registrados em $batchResults mesmo quando uma
-    # das etapas do documento atual falha.
-    $createdCode =
-    $null
-
-    $itemCreated =
-    $false
-
-    $pdfImported =
-    $false
-
-    $ndtDrawingImported =
-    $false
-
-    # Indica se o Dataset ja estava relacionado a revisao antes
-    # desta execucao.
-    $datasetAlreadyExists =
-    $false
-
-    # Indica se o PDF foi importado especificamente nesta
-    # execucao, diferenciando importacao de Dataset ja existente.
-    $pdfImportedThisRun =
-    $false
-
-    $workflowStarted =
-    $false
+    $createdCode = $null
+    $itemCreated = $pdfImported = $ndtDrawingImported =
+      $datasetAlreadyExists = $pdfImportedThisRun =
+      $workflowStarted = $false
 
     Write-AnimatedLine ""
 
@@ -2096,62 +2147,22 @@ function Invoke-DcaMain {
         $createdCode =
         [string]$document.ItemCode
 
-        $teamcenterItem =
-        $document.TeamcenterItem
-
-        $teamcenterRevision =
-        $document.TeamcenterRevision
+        $teamcenterItem = Get-DcaBaseObject $document.TeamcenterItem
+        $teamcenterRevision = Get-DcaBaseObject $document.TeamcenterRevision
 
         if (
           $document.TeamcenterStatus -ne "Sim" -or
           $null -eq $teamcenterRevision
         ) {
-
-          $statusText =
-          [string]$document.TeamcenterStatus
-
-          if (
-            [string]::IsNullOrWhiteSpace(
-              $statusText
-            )
-          ) {
-
-            $statusText =
-            "nao informado"
+          $statusText = [string]$document.TeamcenterStatus
+          if ([string]::IsNullOrWhiteSpace($statusText)) {
+            $statusText = "nao informado"
           }
 
           throw (
-            "O destino '$createdCode/" +
-            "$($document.ExpectedTeamcenterRevision)' " +
+            "O destino '$createdCode/$($document.ExpectedTeamcenterRevision)' " +
             "nao esta disponivel para receber o Dataset. " +
             "Status da consulta: '$statusText'."
-          )
-        }
-        if ($null -ne $teamcenterItem) {
-
-          $itemBaseObject =
-          $teamcenterItem.PSObject.BaseObject
-
-          if ($null -ne $itemBaseObject) {
-
-            $teamcenterItem =
-            $itemBaseObject
-          }
-        }
-
-        $revisionBaseObject =
-        $teamcenterRevision.PSObject.BaseObject
-
-        if ($null -ne $revisionBaseObject) {
-
-          $teamcenterRevision =
-          $revisionBaseObject
-        }
-
-        if ($null -eq $teamcenterRevision) {
-
-          throw (
-            "A revisao existente ficou NULL para '$createdCode'."
           )
         }
 
@@ -2206,55 +2217,21 @@ function Invoke-DcaMain {
           throw "O codigo criado nao foi retornado."
         }
 
-        $teamcenterItem =
-        $teamcenterDestination.Item
-
-        if ($null -ne $teamcenterItem) {
-
-          $teamcenterItem =
-          $teamcenterItem.PSObject.BaseObject
-        }
-
+        $teamcenterItem = Get-DcaBaseObject $teamcenterDestination.Item
         if ($null -eq $teamcenterItem) {
-
-          throw (
-            "O Item criado nao foi retornado para " +
-            "'$createdCode'."
-          )
+          throw "O Item criado nao foi retornado para '$createdCode'."
         }
 
-        $teamcenterRevision =
-        $teamcenterDestination.Revision
-
-        if ($null -ne $teamcenterRevision) {
-
-          $teamcenterRevision =
-          $teamcenterRevision.PSObject.BaseObject
+        $teamcenterRevision = Get-DcaBaseObject $teamcenterDestination.Revision
+        if ($null -eq $teamcenterRevision) {
+          Write-Info "Localizando a revisao do item..."
+          $teamcenterRevision = Get-DcaBaseObject (
+            Get-TeamcenterRevision -Item $teamcenterItem
+          )
         }
 
         if ($null -eq $teamcenterRevision) {
-
-          Write-Info (
-            "Localizando a revisao do item..."
-          )
-
-          $teamcenterRevision =
-          Get-TeamcenterRevision `
-            -Item $teamcenterItem
-
-          if ($null -ne $teamcenterRevision) {
-
-            $teamcenterRevision =
-            $teamcenterRevision.PSObject.BaseObject
-          }
-        }
-
-        if ($null -eq $teamcenterRevision) {
-
-          throw (
-            "A revisao do Teamcenter nao foi encontrada " +
-            "para '$createdCode'."
-          )
+          throw "A revisao do Teamcenter nao foi encontrada para '$createdCode'."
         }
 
         $itemCreated =
@@ -2313,59 +2290,10 @@ function Invoke-DcaMain {
                 -NdtRevision $existingNdtMatch.Revision `
                 -ProcessItemCode $document.ItemCode
 
-              switch ([string]$linkResult.Status) {
-
-                "Vinculado" {
-
-                  Write-Success (
-                    "NDT existente vinculado a Pasta NDT do Processo " +
-                    "'$($document.ItemCode)'."
-                  )
-                }
-
-                "JaVinculado" {
-
-                  if ($Details) {
-
-                    Write-Host (
-                      "  O NDT existente ja estava vinculado ao Processo " +
-                      "'$($document.ItemCode)'."
-                    ) -ForegroundColor DarkGray
-                  }
-                }
-
-                "ProcessoNaoEncontrado" {
-
-                  Write-Warn (
-                    "O Processo '$($document.ItemCode)' foi criado, mas ainda " +
-                    "nao foi localizado para receber o vinculo NDT."
-                  )
-                }
-
-                "NaoConfirmado" {
-
-                  Write-Warn (
-                    "O vinculo do NDT existente ao Processo " +
-                    "'$($document.ItemCode)' nao foi confirmado."
-                  )
-                }
-
-                "Erro" {
-
-                  Write-Warn (
-                    "O NDT existente foi encontrado, mas o vinculo falhou: " +
-                    $linkResult.ErrorMessage
-                  )
-                }
-
-                default {
-
-                  Write-Warn (
-                    "O vinculo da Folha NDT retornou um estado inesperado: " +
-                    "'$($linkResult.Status)'."
-                  )
-                }
-              }
+              Show-DcaNdtLinkResult `
+                -Result $linkResult `
+                -ItemCode $document.ItemCode `
+                -ProcessJustCreated
             }
           }
         }
@@ -2394,17 +2322,8 @@ function Invoke-DcaMain {
 
       if ($Details) {
         Write-Info "Revisao do Teamcenter localizada."
-      }
-
-      if ($Details) {
-
-        $null =
-        Show-DcaTeamcenterRevisionProperties `
-          -Revision $teamcenterRevision
-
-        Write-Info (
-          "Tipo tecnico: $revisionTypeName"
-        )
+        $null = Show-DcaTeamcenterRevisionProperties -Revision $teamcenterRevision
+        Write-Info "Tipo tecnico: $revisionTypeName"
       }
 
       $destinationDuration =
@@ -2417,78 +2336,14 @@ function Invoke-DcaMain {
       $pdfPreparationStartedAt =
       Get-Date
 
-      $localPdfOutputs =
-      @(
-        Confirm-DcaLocalPdf `
-          -Entry $document.SelectedPdf.File
-      )
-
-      $localPdfCandidates =
-      @(
-        $localPdfOutputs |
-          Where-Object {
-          $_ -is [string]
-        } |
-          ForEach-Object {
-
-          $candidateLocalPath =
-          ([string]$_).Trim()
-
-          if (
-            -not [string]::IsNullOrWhiteSpace(
-              $candidateLocalPath
-            ) -and
-            (
-              Test-Path `
-                -LiteralPath $candidateLocalPath `
-                -PathType Leaf
-            )
-          ) {
-
-            $candidateLocalPath
-          }
-        }
-      )
+      $localPdfOutputs = @(Confirm-DcaLocalPdf -Entry $document.SelectedPdf.File)
+      $localPdfPath = Get-DcaValidFilePathFromOutput `
+        -Outputs $localPdfOutputs `
+        -Operation "Confirm-DcaLocalPdf"
 
       if ($Details) {
-
-        Write-Host (
-          "  Saidas de Confirm-DcaLocalPdf: " +
-          $localPdfOutputs.Count
-        ) -ForegroundColor DarkGray
-
-        foreach ($localPdfOutput in $localPdfOutputs) {
-
-          if ($null -eq $localPdfOutput) {
-            continue
-          }
-
-          Write-Host (
-            "    Tipo:  " +
-            $localPdfOutput.GetType().FullName
-          ) -ForegroundColor DarkGray
-
-          Write-Host (
-            "    Valor: '$([string]$localPdfOutput)'"
-          ) -ForegroundColor DarkGray
-        }
+        Write-Info "PDF localizado no cache: $localPdfPath"
       }
-
-      if ($localPdfCandidates.Count -eq 0) {
-
-        throw (
-          "Confirm-DcaLocalPdf nao retornou um caminho local " +
-          "valido para '$createdCode'."
-        )
-      }
-
-      $localPdfPath =
-      [string]$localPdfCandidates[
-      $localPdfCandidates.Count - 1
-      ]
-
-      $localPdfPath =
-      $localPdfPath.Trim()
 
       # ==================================================
       # D. Preparar uma copia local validada para o importador
@@ -2496,126 +2351,23 @@ function Invoke-DcaMain {
 
       # O Importar GD recebe uma copia local independente do cache
       # do Vault. O arquivo e validado antes da chamada ao importador.
-      $temporaryPdfOutputs =
-      @(
+      $temporaryPdfOutputs = @(
         Copy-PdfToTemporaryFolder `
           -SourcePdfPath $localPdfPath `
           -ItemCode $createdCode
       )
 
-      $temporaryPdfCandidates =
-      @(
-        $temporaryPdfOutputs |
-          Where-Object {
-          $_ -is [string]
-        } |
-          ForEach-Object {
+      $temporaryPdfPath = Get-DcaValidFilePathFromOutput `
+        -Outputs $temporaryPdfOutputs `
+        -Operation "Copy-PdfToTemporaryFolder"
 
-          $candidatePath =
-          ([string]$_).Trim()
-
-          if (
-            -not [string]::IsNullOrWhiteSpace(
-              $candidatePath
-            ) -and
-            (
-              Test-Path `
-                -LiteralPath $candidatePath `
-                -PathType Leaf
-            )
-          ) {
-
-            $candidatePath
-          }
-        }
-      )
-
-      if ($Details) {
-
-        Write-Host (
-          "  Saidas da preparacao do PDF: " +
-          $temporaryPdfOutputs.Count
-        ) -ForegroundColor DarkGray
-
-        foreach ($temporaryPdfOutput in $temporaryPdfOutputs) {
-
-          if ($null -eq $temporaryPdfOutput) {
-            continue
-          }
-
-          Write-Host (
-            "    Tipo: " +
-            $temporaryPdfOutput.GetType().FullName
-          ) -ForegroundColor DarkGray
-
-          Write-Host (
-            "    Valor: '$([string]$temporaryPdfOutput)'"
-          ) -ForegroundColor DarkGray
-        }
-      }
-
-      if ($temporaryPdfCandidates.Count -eq 0) {
-
-        throw (
-          "Copy-PdfToTemporaryFolder nao retornou um caminho " +
-          "de arquivo valido."
-        )
-      }
-
-      $temporaryPdfPath =
-      [string]$temporaryPdfCandidates[
-      $temporaryPdfCandidates.Count - 1
-      ]
-
-      $temporaryPdfPath =
-      $temporaryPdfPath.Trim()
-      if (
-        [string]::IsNullOrWhiteSpace(
-          $temporaryPdfPath
-        )
-      ) {
-
-        throw (
-          "Copy-PdfToTemporaryFolder nao retornou " +
-          "o caminho do PDF temporario."
-        )
-      }
-
-      if (-not (
-          Test-Path `
-            -LiteralPath $temporaryPdfPath `
-            -PathType Leaf
-        )) {
-
-        throw (
-          "O PDF temporario nao existe para '$createdCode': " +
-          "'$temporaryPdfPath'."
-        )
-      }
-
-      $temporaryPdfFile =
-      Get-Item `
-        -LiteralPath $temporaryPdfPath `
-        -ErrorAction Stop
-
+      $temporaryPdfFile = Get-Item -LiteralPath $temporaryPdfPath -ErrorAction Stop
       if ($temporaryPdfFile.Length -le 0) {
-
-        throw (
-          "O PDF temporario de '$createdCode' esta vazio."
-        )
+        throw "O PDF temporario de '$createdCode' esta vazio."
       }
 
       if ($Details) {
-
-        Write-Info (
-          "PDF temporario validado: " +
-          "$($temporaryPdfFile.Length) bytes"
-        )
-
-        Write-Info (
-          "Arquivo temporario: " +
-          $temporaryPdfPath
-        )
+        Write-Info "PDF temporario: '$temporaryPdfPath' ($($temporaryPdfFile.Length) bytes)"
       }
 
       $pdfPreparationDuration =
@@ -2743,69 +2495,8 @@ function Invoke-DcaMain {
           Write-Info "Revisao do Dataset: '$($document.ClientRevision)'"
         }
 
-        if ($null -eq $temporaryPdfPath) {
-
-          throw (
-            "O caminho temporario ficou NULL antes da chamada " +
-            "ao ImportarPDF."
-          )
-        }
-
-        if ($temporaryPdfPath -isnot [string]) {
-
-          throw (
-            "O caminho temporario nao e uma string. " +
-            "Tipo recebido: " +
-            $temporaryPdfPath.GetType().FullName
-          )
-        }
-
-        $temporaryPdfPath =
-        $temporaryPdfPath.Trim()
-
-        if (
-          [string]::IsNullOrWhiteSpace(
-            $temporaryPdfPath
-          )
-        ) {
-
-          throw (
-            "O caminho temporario ficou vazio antes da chamada " +
-            "ao ImportarPDF."
-          )
-        }
-
-        if (-not (
-            Test-Path `
-              -LiteralPath $temporaryPdfPath `
-              -PathType Leaf
-          )) {
-
-          throw (
-            "O caminho temporario nao aponta para um arquivo: " +
-            "'$temporaryPdfPath'."
-          )
-        }
-
         if ($Details) {
-
-          Write-Host (
-            "  Caminho final enviado ao ImportarPDF:"
-          ) -ForegroundColor Cyan
-
-          Write-Host (
-            "    Valor: '$temporaryPdfPath'"
-          ) -ForegroundColor DarkGray
-
-          Write-Host (
-            "    Tipo:  " +
-            $temporaryPdfPath.GetType().FullName
-          ) -ForegroundColor DarkGray
-
-          Write-Host (
-            "    Tamanho do texto: " +
-            $temporaryPdfPath.Length
-          ) -ForegroundColor DarkGray
+          Write-Info "Caminho enviado ao ImportarPDF: '$temporaryPdfPath'"
         }
 
         $pdfImportStartedAt =
@@ -2991,9 +2682,6 @@ function Invoke-DcaMain {
         "Verificado"
       )
 
-      $isObsoleteState =
-      $pdmState -ieq "Obsoleto"
-
       $newContentImported =
       (
         $pdfImportedThisRun -or
@@ -3017,18 +2705,6 @@ function Invoke-DcaMain {
 
         $workflowLabel =
         "aprovacao"
-      }
-      elseif (
-        $document.DocumentType -ne "DatasetOnly" -and
-        $newContentImported -and
-        $isObsoleteState
-      ) {
-
-        $workflowTemplate =
-        [string]$env:DCA_TC_OBSOLETE_WORKFLOW
-
-        $workflowLabel =
-        "obsolescencia"
       }
 
       if ($document.DocumentType -eq "DatasetOnly") {
@@ -3098,193 +2774,44 @@ function Invoke-DcaMain {
         )
       }
       if ($Details) {
-
-        $elapsedDocumentTime =
-        (Get-Date) -
-        $documentStartedAt
-
-        Write-Host ""
-
-        Write-Host (
-          "  Tempo das principais etapas:"
-        ) -ForegroundColor Cyan
-
-        if ($null -ne $destinationDuration) {
-
-          Write-Host (
-            "    Destino Teamcenter: {0,8:N2} s" -f
-            $destinationDuration.TotalSeconds
-          ) -ForegroundColor DarkGray
-        }
-
-        if ($null -ne $pdfPreparationDuration) {
-
-          Write-Host (
-            "    Preparacao do PDF:  {0,8:N2} s" -f
-            $pdfPreparationDuration.TotalSeconds
-          ) -ForegroundColor DarkGray
-        }
-
-        if ($null -ne $datasetLookupDuration) {
-
-          Write-Host (
-            "    Busca do Dataset:   {0,8:N2} s" -f
-            $datasetLookupDuration.TotalSeconds
-          ) -ForegroundColor DarkGray
-        }
-        elseif (-not $shouldCheckExistingDataset) {
-
-          Write-Host (
-            "    Busca do Dataset:      nao necessaria"
-          ) -ForegroundColor DarkGray
-        }
-
-        if ($null -ne $pdfImportDuration) {
-
-          Write-Host (
-            "    Importacao do PDF:  {0,8:N2} s" -f
-            $pdfImportDuration.TotalSeconds
-          ) -ForegroundColor DarkGray
-        }
-        elseif ($datasetAlreadyExists) {
-
-          Write-Host (
-            "    Importacao do PDF:     Dataset ja existente"
-          ) -ForegroundColor DarkGray
-        }
-
-        if ($null -ne $workflowDuration) {
-
-          Write-Host (
-            "    Workflow:           {0,8:N2} s" -f
-            $workflowDuration.TotalSeconds
-          ) -ForegroundColor DarkGray
-        }
-        else {
-
-          Write-Host (
-            "    Workflow:              nao executado"
-          ) -ForegroundColor DarkGray
-        }
-
-        Write-Host (
-          "    Total do documento:  {0,8:N2} s" -f
-          $elapsedDocumentTime.TotalSeconds
-        ) -ForegroundColor Gray
-
-        Write-Host ""
+      Show-DcaDocumentTimes `
+        -Destination $destinationDuration `
+        -PdfPreparation $pdfPreparationDuration `
+        -DatasetLookup $datasetLookupDuration `
+        -PdfImport $pdfImportDuration `
+        -Workflow $workflowDuration `
+        -Total ((Get-Date) - $documentStartedAt) `
+        -DatasetAlreadyExists $datasetAlreadyExists `
+        -DatasetLookupRequired $shouldCheckExistingDataset `
+        -Failure $false
       }
 
       # ==================================================
       # G. Registrar o resultado para o resumo final
       # ==================================================
-      $documentFinishedAt =
-      Get-Date
+      $documentFinishedAt = Get-Date
 
-      $documentDuration =
-      $documentFinishedAt -
-      $documentStartedAt
 
-      $batchResults.Add(
-        [PSCustomObject]@{
-          ItemCode = $document.ItemCode
-          ItemName = $document.ItemName
-          TeamcenterCode = $createdCode
-          ClientRevision = $document.ClientRevision
-          DocumentType = $document.DocumentType
-          PdmState = $document.PdmState
-          Approver = [string]$document.Approver
-          ApprovalDate = [string]$document.ApprovalDate
-          Operation = [string]$document.RequestedMode
-          ItemCreated = $itemCreated
-          PdfImported = $pdfImported
-          NdtDrawingImported = $ndtDrawingImported
-          PdfImportedThisRun = $pdfImportedThisRun
-          DatasetAlreadyExists = $datasetAlreadyExists
-          WorkflowStarted = $workflowStarted
-          Succeeded = $true
-          DocumentStartedAt = $documentStartedAt.ToString(
-            "yyyy-MM-dd HH:mm:ss"
-          )
-          DocumentFinishedAt = $documentFinishedAt.ToString(
-            "yyyy-MM-dd HH:mm:ss"
-          )
-          DurationSeconds =
-          [Math]::Round(
-            $documentDuration.TotalSeconds,
-            2
-          )
-
-          DestinationSeconds =
-          if ($null -ne $destinationDuration) {
-
-            [Math]::Round(
-              $destinationDuration.TotalSeconds,
-              2
-            )
-          }
-          else {
-
-            $null
-          }
-
-          PdfPreparationSeconds =
-          if ($null -ne $pdfPreparationDuration) {
-
-            [Math]::Round(
-              $pdfPreparationDuration.TotalSeconds,
-              2
-            )
-          }
-          else {
-
-            $null
-          }
-
-          DatasetLookupSeconds =
-          if ($null -ne $datasetLookupDuration) {
-
-            [Math]::Round(
-              $datasetLookupDuration.TotalSeconds,
-              2
-            )
-          }
-          else {
-
-            $null
-          }
-
-          PdfImportSeconds =
-          if ($null -ne $pdfImportDuration) {
-
-            [Math]::Round(
-              $pdfImportDuration.TotalSeconds,
-              2
-            )
-          }
-          else {
-
-            $null
-          }
-
-          WorkflowSeconds =
-          if ($null -ne $workflowDuration) {
-
-            [Math]::Round(
-              $workflowDuration.TotalSeconds,
-              2
-            )
-          }
-          else {
-
-            $null
-          }
-
-          SourceFile =
-          [string]$document.SelectedPdf.File.FullName
-          ErrorMessage = $null
-        }
-      )
+      $batchResults.Add((
+        New-DcaBatchResult `
+          -Document $document `
+          -TeamcenterCode $createdCode `
+          -ItemCreated $itemCreated `
+          -PdfImported $pdfImported `
+          -NdtDrawingImported $ndtDrawingImported `
+          -PdfImportedThisRun $pdfImportedThisRun `
+          -DatasetAlreadyExists $datasetAlreadyExists `
+          -WorkflowStarted $workflowStarted `
+          -Succeeded $true `
+          -StartedAt $documentStartedAt `
+          -FinishedAt $documentFinishedAt `
+          -DestinationDuration $destinationDuration `
+          -PdfPreparationDuration $pdfPreparationDuration `
+          -DatasetLookupDuration $datasetLookupDuration `
+          -PdfImportDuration $pdfImportDuration `
+          -WorkflowDuration $workflowDuration `
+          -ErrorMessage $null
+      ))
     }
 
     # Uma falha neste documento e registrada no lote, mas nao
@@ -3402,169 +2929,41 @@ function Invoke-DcaMain {
       }
 
       if ($Details) {
-
-        Write-Host (
-          "  Tempo ate a falha:"
-        ) -ForegroundColor Cyan
-
-        if ($null -ne $destinationDuration) {
-
-          Write-Host (
-            "    Destino Teamcenter: {0,8:N2} s" -f
-            $destinationDuration.TotalSeconds
-          ) -ForegroundColor DarkGray
-        }
-
-        if ($null -ne $pdfPreparationDuration) {
-
-          Write-Host (
-            "    Preparacao do PDF:  {0,8:N2} s" -f
-            $pdfPreparationDuration.TotalSeconds
-          ) -ForegroundColor DarkGray
-        }
-
-        if ($null -ne $datasetLookupDuration) {
-
-          Write-Host (
-            "    Busca do Dataset:   {0,8:N2} s" -f
-            $datasetLookupDuration.TotalSeconds
-          ) -ForegroundColor DarkGray
-        }
-
-        if ($null -ne $pdfImportDuration) {
-
-          Write-Host (
-            "    Importacao do PDF:  {0,8:N2} s" -f
-            $pdfImportDuration.TotalSeconds
-          ) -ForegroundColor DarkGray
-        }
-
-        if ($null -ne $workflowDuration) {
-
-          Write-Host (
-            "    Workflow:           {0,8:N2} s" -f
-            $workflowDuration.TotalSeconds
-          ) -ForegroundColor DarkGray
-        }
-
-        $elapsedUntilFailure =
-        $failureTime -
-        $documentStartedAt
-
-        Write-Host (
-          "    Total ate a falha:   {0,8:N2} s" -f
-          $elapsedUntilFailure.TotalSeconds
-        ) -ForegroundColor Yellow
-
-        Write-Host ""
+      Show-DcaDocumentTimes `
+        -Title "Tempo ate a falha:" `
+        -Destination $destinationDuration `
+        -PdfPreparation $pdfPreparationDuration `
+        -DatasetLookup $datasetLookupDuration `
+        -PdfImport $pdfImportDuration `
+        -Workflow $workflowDuration `
+        -Total ($failureTime - $documentStartedAt) `
+        -DatasetAlreadyExists $datasetAlreadyExists `
+        -DatasetLookupRequired $shouldCheckExistingDataset `
+        -Failure $true
       }
 
-      $documentFinishedAt =
-      Get-Date
+      $documentFinishedAt = Get-Date
 
-      $documentDuration =
-      $documentFinishedAt -
-      $documentStartedAt
-
-      $batchResults.Add(
-        [PSCustomObject]@{
-          ItemCode = $document.ItemCode
-          ItemName = $document.ItemName
-          TeamcenterCode = $createdCode
-          ClientRevision = $document.ClientRevision
-          DocumentType = $document.DocumentType
-          PdmState = $document.PdmState
-          Approver = [string]$document.Approver
-          ApprovalDate = [string]$document.ApprovalDate
-          Operation = [string]$document.RequestedMode
-          ItemCreated = $itemCreated
-          PdfImported = $pdfImported
-          NdtDrawingImported = $ndtDrawingImported
-          PdfImportedThisRun = $pdfImportedThisRun
-          DatasetAlreadyExists = $datasetAlreadyExists
-          WorkflowStarted = $workflowStarted
-          Succeeded = $false
-          DocumentStartedAt = $documentStartedAt.ToString(
-            "yyyy-MM-dd HH:mm:ss"
-          )
-          DocumentFinishedAt = $documentFinishedAt.ToString(
-            "yyyy-MM-dd HH:mm:ss"
-          )
-          DurationSeconds =
-          [Math]::Round(
-            $documentDuration.TotalSeconds,
-            2
-          )
-
-          DestinationSeconds =
-          if ($null -ne $destinationDuration) {
-
-            [Math]::Round(
-              $destinationDuration.TotalSeconds,
-              2
-            )
-          }
-          else {
-
-            $null
-          }
-
-          PdfPreparationSeconds =
-          if ($null -ne $pdfPreparationDuration) {
-
-            [Math]::Round(
-              $pdfPreparationDuration.TotalSeconds,
-              2
-            )
-          }
-          else {
-
-            $null
-          }
-
-          DatasetLookupSeconds =
-          if ($null -ne $datasetLookupDuration) {
-
-            [Math]::Round(
-              $datasetLookupDuration.TotalSeconds,
-              2
-            )
-          }
-          else {
-
-            $null
-          }
-
-          PdfImportSeconds =
-          if ($null -ne $pdfImportDuration) {
-
-            [Math]::Round(
-              $pdfImportDuration.TotalSeconds,
-              2
-            )
-          }
-          else {
-
-            $null
-          }
-
-          WorkflowSeconds =
-          if ($null -ne $workflowDuration) {
-
-            [Math]::Round(
-              $workflowDuration.TotalSeconds,
-              2
-            )
-          }
-          else {
-
-            $null
-          }
-
-          SourceFile = [string]$document.SelectedPdf.File.FullName
-          ErrorMessage = $_.Exception.Message
-        }
-      )
+      $batchResults.Add((
+        New-DcaBatchResult `
+          -Document $document `
+          -TeamcenterCode $createdCode `
+          -ItemCreated $itemCreated `
+          -PdfImported $pdfImported `
+          -NdtDrawingImported $ndtDrawingImported `
+          -PdfImportedThisRun $pdfImportedThisRun `
+          -DatasetAlreadyExists $datasetAlreadyExists `
+          -WorkflowStarted $workflowStarted `
+          -Succeeded $false `
+          -StartedAt $documentStartedAt `
+          -FinishedAt $documentFinishedAt `
+          -DestinationDuration $destinationDuration `
+          -PdfPreparationDuration $pdfPreparationDuration `
+          -DatasetLookupDuration $datasetLookupDuration `
+          -PdfImportDuration $pdfImportDuration `
+          -WorkflowDuration $workflowDuration `
+          -ErrorMessage $_.Exception.Message
+      ))
 
       Write-Failure (
         "$($document.ItemCode): " +
@@ -3591,59 +2990,10 @@ function Invoke-DcaMain {
         -NdtRevision $pendingLink.Revision `
         -ProcessItemCode $pendingLink.ItemCode
 
-      switch ([string]$linkResult.Status) {
 
-        "Vinculado" {
-
-          Write-Success (
-            "NDT vinculado ao Processo '$($pendingLink.ItemCode)'."
-          )
-        }
-
-        "JaVinculado" {
-
-          if ($Details) {
-
-            Write-Host (
-              "  O NDT ja estava vinculado ao Processo " +
-              "'$($pendingLink.ItemCode)'."
-            ) -ForegroundColor DarkGray
-          }
-        }
-
-        "ProcessoNaoEncontrado" {
-
-          Write-Warn (
-            "O NDT '$($pendingLink.ItemCode)' foi importado, mas o " +
-            "Processo ainda nao existe. O NDT permanecera no " +
-            "Teamcenter para vinculacao posterior."
-          )
-        }
-
-        "NaoConfirmado" {
-
-          Write-Warn (
-            "O vinculo do NDT '$($pendingLink.ItemCode)' foi " +
-            "solicitado, mas nao foi confirmado."
-          )
-        }
-
-        "Erro" {
-
-          Write-Warn (
-            "O NDT foi importado, mas o vinculo falhou: " +
-            $linkResult.ErrorMessage
-          )
-        }
-
-        default {
-
-          Write-Warn (
-            "O vinculo do NDT retornou estado inesperado: " +
-            "'$($linkResult.Status)'."
-          )
-        }
-      }
+      Show-DcaNdtLinkResult `
+        -Result $linkResult `
+        -ItemCode $pendingLink.ItemCode
     }
   }
 
@@ -3705,13 +3055,11 @@ function Invoke-DcaMain {
       continue
     }
 
-    if ($result.DatasetAlreadyExists) {
-
+    if ($result.DatasetAlreadyExists -and -not $result.NdtDrawingImported) {
       Write-Success (
         "$($result.ItemCode) -> Dataset ja existente; " +
         "nenhuma nova importacao foi realizada"
       )
-
       continue
     }
 
@@ -3858,98 +3206,14 @@ function Invoke-DcaMain {
       $script:DcaExecutionStartedAt
     }
 
-    $destinationTotalSeconds =
-    @(
-      $batchResults |
-        Where-Object {
-        $null -ne $_.DestinationSeconds
-      } |
-        Measure-Object `
-        -Property DestinationSeconds `
-        -Sum
-    )[0].Sum
+    $resultsArray = $batchResults.ToArray()
 
-    $pdfPreparationTotalSeconds =
-    @(
-      $batchResults |
-        Where-Object {
-        $null -ne $_.PdfPreparationSeconds
-      } |
-        Measure-Object `
-        -Property PdfPreparationSeconds `
-        -Sum
-    )[0].Sum
-
-    $datasetLookupTotalSeconds =
-    @(
-      $batchResults |
-        Where-Object {
-        $null -ne $_.DatasetLookupSeconds
-      } |
-        Measure-Object `
-        -Property DatasetLookupSeconds `
-        -Sum
-    )[0].Sum
-
-    $pdfImportTotalSeconds =
-    @(
-      $batchResults |
-        Where-Object {
-        $null -ne $_.PdfImportSeconds
-      } |
-        Measure-Object `
-        -Property PdfImportSeconds `
-        -Sum
-    )[0].Sum
-
-    $workflowTotalSeconds =
-    @(
-      $batchResults |
-        Where-Object {
-        $null -ne $_.WorkflowSeconds
-      } |
-        Measure-Object `
-        -Property WorkflowSeconds `
-        -Sum
-    )[0].Sum
-
-    $documentTotalSeconds =
-    @(
-      $batchResults |
-        Where-Object {
-        $null -ne $_.DurationSeconds
-      } |
-        Measure-Object `
-        -Property DurationSeconds `
-        -Sum
-    )[0].Sum
-
-    # Measure-Object pode retornar NULL quando nenhuma etapa tiver
-    # sido executada. Os valores sao convertidos para zero para
-    # manter a apresentacao consistente.
-    if ($null -eq $destinationTotalSeconds) {
-      $destinationTotalSeconds = 0
-    }
-
-    if ($null -eq $pdfPreparationTotalSeconds) {
-      $pdfPreparationTotalSeconds = 0
-    }
-
-    if ($null -eq $datasetLookupTotalSeconds) {
-      $datasetLookupTotalSeconds = 0
-    }
-
-    if ($null -eq $pdfImportTotalSeconds) {
-      $pdfImportTotalSeconds = 0
-    }
-
-    if ($null -eq $workflowTotalSeconds) {
-      $workflowTotalSeconds = 0
-    }
-
-    if ($null -eq $documentTotalSeconds) {
-      $documentTotalSeconds = 0
-    }
+    $destinationTotalSeconds = Get-DcaResultSecondsTotal $resultsArray "DestinationSeconds"
+    $pdfPreparationTotalSeconds = Get-DcaResultSecondsTotal $resultsArray "PdfPreparationSeconds"
+    $datasetLookupTotalSeconds = Get-DcaResultSecondsTotal $resultsArray "DatasetLookupSeconds"
+    $pdfImportTotalSeconds = Get-DcaResultSecondsTotal $resultsArray "PdfImportSeconds"
+    $workflowTotalSeconds = Get-DcaResultSecondsTotal $resultsArray "WorkflowSeconds"
+    $documentTotalSeconds = Get-DcaResultSecondsTotal $resultsArray "DurationSeconds"
 
     $measuredStagesTotalSeconds =
     (
@@ -4205,8 +3469,7 @@ function Invoke-DcaMain {
 
 try {
 
-  Initialize-DcaExecutionArtifacts `
-    -ProjectRoot $PSScriptRoot
+  Initialize-DcaExecutionArtifacts -ProjectRoot $PSScriptRoot
 }
 catch {
 

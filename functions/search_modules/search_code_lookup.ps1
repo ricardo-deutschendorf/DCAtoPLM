@@ -1,961 +1,384 @@
 # ============================================================
 # PESQUISA E SELECAO POR CODIGO
 # ============================================================
-#
-# Este arquivo pesquisa PDFs pelo codigo informado nas categorias
-# DCA permitidas.
-#
-# A API do Vault possui prioridade porque pode localizar arquivos
-# que ainda nao estao presentes no cache local.
-#
-# Quando a API estiver indisponivel, a pesquisa utiliza os PDFs
-# encontrados no sistema de arquivos.
-#
-# Para cada resultado, o fluxo:
-#   1. interpreta o nome do arquivo;
-#   2. identifica codigo e revisao;
-#   3. consulta o estado no PDM;
-#   4. complementa revisao e descricao pelo cartao;
-#   5. apresenta os resultados para selecao.
+# Pesquisa PDFs (e SLDDRW de Folhas NDT) pelo codigo informado nas
+# categorias DCA permitidas. A API do Vault tem prioridade (acha
+# arquivos fora do cache local); sem ela, usa o sistema de arquivos.
+# Para cada resultado: interpreta o nome, identifica codigo e revisao,
+# consulta o estado no PDM, complementa revisao/descricao pelo cartao
+# e apresenta os resultados para selecao.
 # ============================================================
 
-function Select-DcaPdfByCode {
+# Verdadeiro quando algum segmento do caminho e igual a $Segment.
+function Test-DcaPathSegment {
+  param([string]$Path, [string]$Segment)
 
-  param(
-    [Parameter(Mandatory = $true)]
-    [ValidateNotNullOrEmpty()]
-    [string]$FolderPath,
+  if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+  return @($Path -split '[\\/]' | Where-Object { $_.Trim() -ieq $Segment }).Count -gt 0
+}
 
-    [Parameter(Mandatory = $true)]
-    [ValidateNotNullOrEmpty()]
-    [string]$Code,
+# Converte a selecao digitada (1,3-5 | T | T-2,5) em numeros ordenados.
+# Retorna $null (apos avisar) quando a selecao e invalida.
+function ConvertFrom-DcaSelectionText {
+  param([string]$Text, [int]$Count)
 
-    [System.Collections.Generic.HashSet[string]]$PreviouslySelectedPaths
-  )
+  $selected = [System.Collections.Generic.SortedSet[int]]::new()
+  $excludeMode = $false
+  $valuesText = $Text
 
-  # ============================================================
-  # 1. VALIDAR A RAIZ E O CODIGO DE PESQUISA
-  # ============================================================
-
-  if (-not (
-      Test-Path `
-        -LiteralPath $FolderPath `
-        -PathType Container
-    )) {
-
-    throw (
-      "Vault DCA nao encontrado em '$FolderPath'."
-    )
+  if ($Text -match '(?i)^(T|TODOS)\s*-\s*(.+)$') {
+    # T-2,5: comeca com todos e remove os informados.
+    $excludeMode = $true
+    $valuesText = $Matches[2].Trim()
+    $selected.UnionWith([int[]](1..$Count))
+  }
+  elseif ($Text -ieq "T" -or $Text -ieq "TODOS") {
+    $selected.UnionWith([int[]](1..$Count))
+    return , $selected
   }
 
-  $searchText = $Code.Trim()
+  $parsed = [System.Collections.Generic.SortedSet[int]]::new()
 
-  if ([string]::IsNullOrWhiteSpace($searchText)) {
-    throw "O codigo de pesquisa ficou vazio."
-  }
+  foreach ($part in ($valuesText -split ",")) {
+    $part = $part.Trim()
+    if (-not $part) { continue }
 
-  # A pesquisa por codigo e parcial. Quando nenhum curinga e
-  # informado, o termo e envolvido automaticamente por asteriscos.
-  if (
-    $searchText.Contains("*") -or
-    $searchText.Contains("?")
-  ) {
+    # Intervalo 1-5 (em T-2-4, significa todos, exceto 2, 3 e 4).
+    if ($part -match '^(?<Start>\d+)\s*-\s*(?<End>\d+)$') {
+      $start = [int]$Matches["Start"]
+      $end = [int]$Matches["End"]
 
-    $searchPattern = $searchText
-
-  }
-  else {
-
-    $searchPattern = "*$searchText*"
-  }
-
-  Write-AnimatedLine ""
-
-  Write-Info (
-    "Pesquisando todas as correspondencias de: " +
-    "[$searchText]"
-  )
-
-  # ============================================================
-  # 2. LOCALIZAR A PASTA DE DOCUMENTACAO
-  # ============================================================
-
-  $rootFolders = @(
-    Get-ChildItem `
-      -LiteralPath $FolderPath `
-      -Directory `
-      -Force `
-      -ErrorAction Stop
-  )
-
-  $documentationFolder = $rootFolders |
-    Where-Object {
-    $_.Name -like "Documenta*"
-  } |
-    Select-Object -First 1
-
-  if ($null -eq $documentationFolder) {
-
-    $visibleFolderNames = @(
-      $rootFolders |
-        ForEach-Object {
-        $_.Name
+      if ($start -lt 1 -or $end -gt $Count -or $start -gt $end) {
+        Write-Warn "Intervalo invalido: '$part'. Use valores entre 1 e $Count."
+        return $null
       }
-    )
-
-    throw (
-      "A pasta de documentacao nao foi encontrada em '$FolderPath'. " +
-      "Pastas visiveis: " + ($visibleFolderNames -join ", ")
-    )
-  }
-
-  Write-Info "Pasta de documentacao localizada."
-
-  # ============================================================
-  # 3. LOCALIZAR AS CATEGORIAS PERMITIDAS
-  # ============================================================
-
-  $categoryDefinitions = @(
-    [PSCustomObject]@{
-      FolderName = "Desenhos Originais"
-      DocumentType = "Original"
-      DisplayName = "DCA Desenho Original"
-    },
-    [PSCustomObject]@{
-      FolderName = "FP - Ficha de Processo (PDF)"
-      DocumentType = "Processo"
-      DisplayName = "DCA Processo"
-    },
-    [PSCustomObject]@{
-      FolderName = "FP - Ficha de Processo"
-      DocumentType = "NDT"
-      DisplayName = "GD5_DCA_NDT"
-      RequiredPathSegment = "Folhas NDT"
-      AllowedExtension = ".slddrw"
-    },
-    [PSCustomObject]@{
-      FolderName = "Normas Externas"
-      DocumentType = "NormaExterna"
-      DisplayName = "DCA Norma Externa"
-    },
-    [PSCustomObject]@{
-      FolderName = "FP - XXRE Dimensional"
-      DocumentType = "DatasetOnly"
-      DisplayName = "XXRE Dimensional - somente Dataset"
-    }
-  )
-
-  $documentationSubfolders = @(
-    Get-ChildItem `
-      -LiteralPath $documentationFolder.FullName `
-      -Directory `
-      -Force `
-      -ErrorAction Stop
-  )
-
-  $searchFolders = [System.Collections.Generic.List[object]]::new()
-
-  foreach ($categoryDefinition in $categoryDefinitions) {
-
-    $categoryFolder = $documentationSubfolders |
-      Where-Object {
-      $_.Name.Trim() -ieq $categoryDefinition.FolderName
-    } |
-      Select-Object -First 1
-
-    if ($null -eq $categoryFolder) {
-
-      if ($Details) {
-
-        Write-Warn (
-          "Pasta nao encontrada: " +
-          $categoryDefinition.FolderName
-        )
-      }
-
+      foreach ($n in $start..$end) { $null = $parsed.Add($n) }
       continue
     }
 
-    $requiredPathSegment = $null
-
-    if (
-      $categoryDefinition.PSObject.Properties.Name -contains
-      "RequiredPathSegment"
-    ) {
-
-      $requiredPathSegment = [string]$categoryDefinition.RequiredPathSegment
+    $number = 0
+    if (-not [int]::TryParse($part, [ref]$number) -or $number -lt 1 -or $number -gt $Count) {
+      Write-Warn "Selecao invalida: '$part'. Digite numeros entre 1 e $Count."
+      return $null
     }
-
-    $allowedExtension = $null
-
-    if (
-      $categoryDefinition.PSObject.Properties.Name -contains
-      "AllowedExtension"
-    ) {
-
-      $allowedExtension = [string]$categoryDefinition.AllowedExtension
-    }
-
-    $searchFolders.Add(
-      [PSCustomObject]@{
-        DirectoryPath = $categoryFolder.FullName
-        DocumentType = $categoryDefinition.DocumentType
-        DisplayName = $categoryDefinition.DisplayName
-        RequiredPathSegment = $requiredPathSegment
-        AllowedExtension = $allowedExtension
-      }
-    )
+    $null = $parsed.Add($number)
   }
 
-  if ($searchFolders.Count -eq 0) {
+  if ($excludeMode) { $selected.ExceptWith($parsed) } else { $selected.UnionWith($parsed) }
+  return , $selected
+}
 
-    $visibleSubfolderNames = @(
-      $documentationSubfolders |
-        ForEach-Object {
-        $_.Name
-      }
-    )
-
-    throw (
-      "Nenhuma pasta permitida foi encontrada em " +
-      "'$($documentationFolder.FullName)'. Pastas visiveis: " +
-      ($visibleSubfolderNames -join ", ")
-    )
-  }
-
-  # ============================================================
-  # 4. PREPARAR A PESQUISA DOS ARQUIVOS
-  # ============================================================
-
-  $matchingFiles = [System.Collections.Generic.List[object]]::new()
-
-  # A mesma busca pode localizar o arquivo em diferentes etapas.
-  # O HashSet garante um unico resultado por caminho completo.
-  $knownMatchingPaths = [System.Collections.Generic.HashSet[string]]::new(
-    [System.StringComparer]::OrdinalIgnoreCase
+function Select-DcaPdfByCode {
+  param(
+    [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$FolderPath,
+    [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Code,
+    [System.Collections.Generic.HashSet[string]]$PreviouslySelectedPaths
   )
 
-  # A API do PDM e priorizada porque pode localizar arquivos que
-  # ainda nao estao presentes no cache local.
-  #
-  # Quando a conexao com o Vault nao estiver disponivel ou a
-  # pesquisa pela API falhar, o fluxo utiliza os arquivos
-  # encontrados no sistema de arquivos.
+  # --- 1. Raiz e codigo de pesquisa ---
+  if (-not (Test-Path -LiteralPath $FolderPath -PathType Container)) {
+    throw "Vault DCA nao encontrado em '$FolderPath'."
+  }
+
+  $searchText = $Code.Trim()
+  if (-not $searchText) { throw "O codigo de pesquisa ficou vazio." }
+
+  # Pesquisa parcial: sem curinga, envolve o termo por asteriscos.
+  $searchPattern = if ($searchText -match '[*?]') { $searchText } else { "*$searchText*" }
+
+  Write-AnimatedLine ""
+  Write-Info "Pesquisando todas as correspondencias de: [$searchText]"
+
+  # --- 2. Pasta de documentacao ---
+  $rootFolders = @(Get-ChildItem -LiteralPath $FolderPath -Directory -Force -ErrorAction Stop)
+  $documentationFolder = $rootFolders | Where-Object { $_.Name -like "Documenta*" } | Select-Object -First 1
+
+  if ($null -eq $documentationFolder) {
+    throw (
+      "A pasta de documentacao nao foi encontrada em '$FolderPath'. " +
+      "Pastas visiveis: " + (($rootFolders | ForEach-Object { $_.Name }) -join ", ")
+    )
+  }
+  Write-Info "Pasta de documentacao localizada."
+
+  # --- 3. Categorias permitidas ---
+  $categoryDefinitions = @(
+    @{ FolderName = "Desenhos Originais";            DocumentType = "Original";     DisplayName = "DCA Desenho Original" }
+    @{ FolderName = "FP - Ficha de Processo (PDF)";  DocumentType = "Processo";     DisplayName = "DCA Processo" }
+    @{ FolderName = "FP - Ficha de Processo";        DocumentType = "NDT";          DisplayName = "GD5_DCA_NDT"
+       RequiredPathSegment = "Folhas NDT"; AllowedExtension = ".slddrw" }
+    @{ FolderName = "Normas Externas";               DocumentType = "NormaExterna"; DisplayName = "DCA Norma Externa" }
+    @{ FolderName = "FP - XXRE Dimensional";         DocumentType = "DatasetOnly";  DisplayName = "XXRE Dimensional - somente Dataset" }
+  )
+
+  $documentationSubfolders = @(Get-ChildItem -LiteralPath $documentationFolder.FullName -Directory -Force -ErrorAction Stop)
+
+  $searchFolders = foreach ($category in $categoryDefinitions) {
+    $categoryFolder = $documentationSubfolders |
+      Where-Object { $_.Name.Trim() -ieq $category.FolderName } |
+      Select-Object -First 1
+
+    if ($null -eq $categoryFolder) {
+      if ($Details) { Write-Warn "Pasta nao encontrada: $($category.FolderName)" }
+      continue
+    }
+
+    [PSCustomObject]@{
+      DirectoryPath       = $categoryFolder.FullName
+      DocumentType        = $category.DocumentType
+      DisplayName         = $category.DisplayName
+      RequiredPathSegment = ([string]$category.RequiredPathSegment).Trim()
+      AllowedExtension    = ([string]$category.AllowedExtension).Trim()
+    }
+  }
+  $searchFolders = @($searchFolders)
+
+  if ($searchFolders.Count -eq 0) {
+    throw (
+      "Nenhuma pasta permitida foi encontrada em '$($documentationFolder.FullName)'. " +
+      "Pastas visiveis: " + (($documentationSubfolders | ForEach-Object { $_.Name }) -join ", ")
+    )
+  }
+
+  # --- 4. API do PDM primeiro (se falhar ou vier vazia, usa o disco) ---
+  $matchingFiles = [System.Collections.Generic.List[object]]::new()
+  $knownPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
   $apiEntries = $null
   $vault = Get-DcaVault
 
   if ($null -ne $vault) {
-
     Write-Info "Consultando o vault..."
-
     try {
-
-      $apiEntries = @(
-        Search-DcaVaultPdfEntries `
-          -Vault $vault `
-          -SearchText $searchPattern
-      )
-
-      Write-Info (
-        "Resultados retornados pelo Vault: " +
-        $apiEntries.Count
-      )
+      $apiEntries = @(Search-DcaVaultPdfEntries -Vault $vault -SearchText $searchPattern)
+      Write-Info "Resultados retornados pelo Vault: $($apiEntries.Count)"
 
       if ($apiEntries.Count -eq 0) {
-
-        Write-Warn (
-          "A API do PDM nao retornou resultados. " +
-          "A pesquisa sera repetida nos arquivos locais."
-        )
-
+        Write-Warn "A API do PDM nao retornou resultados. A pesquisa sera repetida nos arquivos locais."
         $apiEntries = $null
       }
-
     }
     catch {
-
-      Write-Warn (
-        "A busca pela API do PDM falhou: $($_.Exception.Message) " +
-        "Usando o sistema de arquivos."
-      )
-
+      Write-Warn "A busca pela API do PDM falhou: $($_.Exception.Message) Usando o sistema de arquivos."
       $apiEntries = $null
     }
   }
 
   $separator = [string][System.IO.Path]::DirectorySeparatorChar
 
-  # ============================================================
-  # 5. PESQUISAR OS PDFs EM CADA CATEGORIA
-  # ============================================================
-
+  # --- 5. Pesquisar em cada categoria ---
   foreach ($searchFolder in $searchFolders) {
 
     if ($null -ne $apiEntries) {
-
-      $categoryPrefix = $searchFolder.DirectoryPath.TrimEnd(
-        $separator
-      ) + $separator
+      $categoryPrefix = $searchFolder.DirectoryPath.TrimEnd($separator) + $separator
+      $segment = $searchFolder.RequiredPathSegment
+      $extension = $searchFolder.AllowedExtension
 
       $pdfEntries = @(
         $apiEntries |
           Where-Object {
-
-          $entryFullName = [string]$_.FullName
-
-          if ([string]::IsNullOrWhiteSpace($entryFullName)) {
-            return $false
-          }
-
-          if (-not $entryFullName.StartsWith(
-              $categoryPrefix,
-              [System.StringComparison]::OrdinalIgnoreCase
-            )) {
-
-            return $false
-          }
-
-          $requiredPathSegment = (
-            [string]$searchFolder.RequiredPathSegment
-          ).Trim()
-
-          if (-not (
-              [string]::IsNullOrWhiteSpace($requiredPathSegment)
-            )) {
-
-            $entryPathParts = @(
-              $entryFullName -split '[\\/]'
-            )
-
-            $containsRequiredSegment = @(
-              $entryPathParts |
-                Where-Object {
-                ([string]$_).Trim() -ieq $requiredPathSegment
-              }
-            ).Count -gt 0
-
-            if (-not $containsRequiredSegment) {
-              return $false
-            }
-          }
-
-          $allowedExtension = (
-            [string]$searchFolder.AllowedExtension
-          ).Trim()
-
-          if (-not (
-              [string]::IsNullOrWhiteSpace($allowedExtension)
-            )) {
-
-            $entryExtension = [System.IO.Path]::GetExtension(
-              $entryFullName
-            )
-
-            if ($entryExtension -ine $allowedExtension) {
-              return $false
-            }
-          }
-
-          return $true
-        } |
+            $fullName = [string]$_.FullName
+            $fullName -and
+            $fullName.StartsWith($categoryPrefix, [System.StringComparison]::OrdinalIgnoreCase) -and
+            (-not $segment -or (Test-DcaPathSegment $fullName $segment)) -and
+            (-not $extension -or [System.IO.Path]::GetExtension($fullName) -ieq $extension)
+          } |
           Sort-Object FullName
       )
-
     }
     else {
-
-      Write-Info (
-        "Consultando {0}..." -f $searchFolder.DisplayName
-      )
+      Write-Info ("Consultando {0}..." -f $searchFolder.DisplayName)
 
       if ($searchFolder.DocumentType -ieq "NDT") {
-
-        $ndtDrawingFiles = @(
-          Get-ChildItem `
-            -LiteralPath $searchFolder.DirectoryPath `
-            -Filter "*.slddrw" `
-            -File `
-            -Recurse `
-            -Force `
-            -ErrorAction SilentlyContinue |
-            Where-Object {
-
-            $ndtPathParts = @(
-              $_.FullName -split '[\\/]'
-            )
-
-            @(
-              $ndtPathParts |
-                Where-Object {
-                ([string]$_).Trim() -ieq "Folhas NDT"
-              }
-            ).Count -gt 0
-          } |
-            Sort-Object FullName
-        )
-
+        # NDT: desenhos SLDDRW dentro de pastas "Folhas NDT".
         $pdfEntries = @(
-          foreach ($ndtDrawingFile in $ndtDrawingFiles) {
-
-            [PSCustomObject]@{
-              Name = [string]$ndtDrawingFile.Name
-              BaseName = [System.IO.Path]::GetFileNameWithoutExtension(
-                $ndtDrawingFile.Name
-              )
-              FullName = [string]$ndtDrawingFile.FullName
-              Extension = ".slddrw"
-              DocumentType = "NDT"
-              TypeDisplayName = "GD5_DCA_NDT"
-              IsNdt = $true
-              FromVault = $false
+          Get-ChildItem -LiteralPath $searchFolder.DirectoryPath -Filter "*.slddrw" -File -Recurse -Force `
+            -ErrorAction SilentlyContinue |
+            Where-Object { Test-DcaPathSegment $_.FullName "Folhas NDT" } |
+            Sort-Object FullName |
+            ForEach-Object {
+              [PSCustomObject]@{
+                Name            = [string]$_.Name
+                BaseName        = [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
+                FullName        = [string]$_.FullName
+                Extension       = ".slddrw"
+                DocumentType    = "NDT"
+                TypeDisplayName = "GD5_DCA_NDT"
+                IsNdt           = $true
+                FromVault       = $false
+              }
             }
-          }
         )
-
       }
       else {
-
-        $pdfEntries = @(
-          Get-DcaDiskPdfEntries `
-            -FolderPath $searchFolder.DirectoryPath |
-            Sort-Object FullName
-        )
+        $pdfEntries = @(Get-DcaDiskPdfEntries -FolderPath $searchFolder.DirectoryPath | Sort-Object FullName)
       }
     }
 
     if ($pdfEntries.Count -eq 0 -and $null -eq $apiEntries) {
-
-      Write-Warn (
-        "Nenhum documento em disco e a API do PDM nao foi usada. " +
-        "O conteudo pode existir so no servidor do PDM."
-      )
+      Write-Warn "Nenhum documento em disco e a API do PDM nao foi usada. O conteudo pode existir so no servidor do PDM."
     }
 
     foreach ($pdfEntry in $pdfEntries) {
-
-      # ========================================================
-      # IDENTIFICAR FOLHAS NDT PELO CAMINHO
-      # ========================================================
-
       $entryFullName = [string]$pdfEntry.FullName
       $entryDocumentType = [string]$searchFolder.DocumentType
       $entryDisplayName = [string]$searchFolder.DisplayName
-      $isNdtDocument = $false
 
-      if (-not (
-          [string]::IsNullOrWhiteSpace($entryFullName)
-        )) {
-
-        $entryPathParts = @(
-          $entryFullName -split '[\\/]'
-        )
-
-        $isNdtDocument = @(
-          $entryPathParts |
-            Where-Object {
-            ([string]$_).Trim() -ieq "Folhas NDT"
-          }
-        ).Count -gt 0
-      }
-
-      if ($isNdtDocument) {
-
+      # Folha NDT identificada pelo caminho, em qualquer categoria.
+      if (Test-DcaPathSegment $entryFullName "Folhas NDT") {
         $entryDocumentType = "NDT"
         $entryDisplayName = "GD5_DCA_NDT"
-
-        if ($Details) {
-
-          Write-Host (
-            "  Folha NDT identificada pelo caminho: " +
-            $entryFullName
-          ) -ForegroundColor DarkGray
-        }
+        if ($Details) { Write-Host "  Folha NDT identificada pelo caminho: $entryFullName" -ForegroundColor DarkGray }
       }
 
-      $parsedName = ConvertFrom-PdfFileName `
-        -BaseName $pdfEntry.BaseName `
-        -DocumentType $entryDocumentType
+      $parsedName = ConvertFrom-PdfFileName -BaseName $pdfEntry.BaseName -DocumentType $entryDocumentType
 
       $isMatch = Test-DcaCodeMatch `
-        -BaseName $pdfEntry.BaseName `
-        -ParsedCode $parsedName.SourceCode `
-        -Pattern $searchPattern `
-        -UsesWildcard $true
+        -BaseName $pdfEntry.BaseName -ParsedCode $parsedName.SourceCode `
+        -Pattern $searchPattern -UsesWildcard $true
+      if (-not $isMatch) { continue }
 
-      if (-not $isMatch) {
-        continue
-      }
+      # Um resultado por caminho completo.
+      if (-not $entryFullName -or -not $knownPaths.Add($entryFullName)) { continue }
 
-      $pdfFullName = [string]$pdfEntry.FullName
-
-      if ([string]::IsNullOrWhiteSpace($pdfFullName)) {
-        continue
-      }
-
-      if (-not $knownMatchingPaths.Add($pdfFullName)) {
-        continue
-      }
-
-      $clientRevision = [string]$parsedName.ClientRevision
-
-      $pdmState = Get-DcaPdmFileState `
-        -Entry $pdfEntry
-
-      $matchingFiles.Add(
-        [PSCustomObject]@{
-          File = $pdfEntry
-          FileExtension = [System.IO.Path]::GetExtension(
-            [string]$pdfEntry.FullName
-          )
-          SourceCode = $parsedName.SourceCode
-          ClientRevision = $clientRevision
-          DocumentTitle = $parsedName.DocumentTitle
-          DocumentType = $entryDocumentType
-          TypeDisplayName = $entryDisplayName
-          CodeParsed = $parsedName.CodeParsed
-          NdtSheetType = [string]$parsedName.NdtSheetType
-          FolderImport = $false
-          PdmState = $pdmState
-          TeamcenterItem = $null
+      $matchingFiles.Add([PSCustomObject]@{
+          File               = $pdfEntry
+          FileExtension      = [System.IO.Path]::GetExtension($entryFullName)
+          SourceCode         = $parsedName.SourceCode
+          ClientRevision     = [string]$parsedName.ClientRevision
+          DocumentTitle      = $parsedName.DocumentTitle
+          DocumentType       = $entryDocumentType
+          TypeDisplayName    = $entryDisplayName
+          CodeParsed         = $parsedName.CodeParsed
+          NdtSheetType       = [string]$parsedName.NdtSheetType
+          FolderImport       = $false
+          PdmState           = Get-DcaPdmFileState -Entry $pdfEntry
+          TeamcenterItem     = $null
           TeamcenterRevision = $null
-        }
-      )
+        })
     }
   }
 
-  # A revisao e a descricao do cartao substituem os valores
-  # obtidos apenas pelo nome do arquivo quando estiverem preenchidas.
+  # Revisao e descricao do cartao substituem as do nome do arquivo.
   foreach ($matchingFile in $matchingFiles) {
-
-    Update-DcaMatchRevisionFromCard `
-      -Match $matchingFile
-
-    Update-DcaMatchDescriptionFromCard `
-      -Match $matchingFile
+    Update-DcaMatchRevisionFromCard -Match $matchingFile
+    Update-DcaMatchDescriptionFromCard -Match $matchingFile
   }
 
   [int]$matchCount = $matchingFiles.Count
+  if ($matchCount -eq 0) { throw "Nenhum documento foi encontrado para a pesquisa '$searchPattern'." }
 
-  if ($matchCount -eq 0) {
-    throw "Nenhum documento foi encontrado para a pesquisa '$searchPattern'."
-  }
-
-  # Numeros (a partir de 1) dos resultados que ja foram escolhidos
-  # em pesquisas anteriores desta execucao.
-  $previousNumbers =
-  [System.Collections.Generic.HashSet[int]]::new()
-
+  # Numeros (a partir de 1) dos resultados ja escolhidos em pesquisas anteriores.
+  $previousNumbers = [System.Collections.Generic.HashSet[int]]::new()
   if ($null -ne $PreviouslySelectedPaths) {
-
-    for (
-      $previousIndex = 0
-      $previousIndex -lt $matchCount
-      $previousIndex++
-    ) {
-
-      $previousPath =
-      ([string]$matchingFiles[$previousIndex].File.FullName).Trim()
-
-      if (
-        -not [string]::IsNullOrWhiteSpace($previousPath) -and
-        $PreviouslySelectedPaths.Contains($previousPath)
-      ) {
-        $null = $previousNumbers.Add($previousIndex + 1)
-      }
+    for ($i = 0; $i -lt $matchCount; $i++) {
+      $previousPath = ([string]$matchingFiles[$i].File.FullName).Trim()
+      if ($previousPath -and $PreviouslySelectedPaths.Contains($previousPath)) { $null = $previousNumbers.Add($i + 1) }
     }
   }
 
-  $script:SearchResultDelayMilliseconds = 30
-
-  if ($matchCount -gt 3) {
-    $script:SearchResultDelayMilliseconds = 20
-  }
+  # --- 6. Exibir os resultados ---
+  $script:SearchResultDelayMilliseconds = if ($matchCount -gt 3) { 20 } else { 30 }
 
   Write-SearchResultLine ""
-  Write-SearchResultLine (
-    "  Resultados da busca ({0} encontrado(s))" -f $matchCount
-  ) -Color White
+  Write-SearchResultLine ("  Resultados da busca ({0} encontrado(s))" -f $matchCount) -Color White
+  Write-SearchResultLine ("  Pesquisa: {0}" -f $searchPattern) -Color Gray
+  Write-SearchResultLine ("  " + ("-" * 72)) -Color DarkGray
 
-  Write-SearchResultLine (
-    "  Pesquisa: {0}" -f $searchPattern
-  ) -Color Gray
-
-  Write-SearchResultLine (
-    "  " + ("-" * 72)
-  ) -Color DarkGray
-
-  for (
-    $index = 0
-    $index -lt $matchCount
-    $index++
-  ) {
-
+  for ($index = 0; $index -lt $matchCount; $index++) {
     $number = $index + 1
-    $currentMatch = $matchingFiles[$index]
+    $match = $matchingFiles[$index]
     $chosenBefore = $previousNumbers.Contains($number)
-    $revisionDisplay = [string]$currentMatch.ClientRevision
 
-    if ([string]::IsNullOrWhiteSpace($revisionDisplay)) {
-      $revisionDisplay = "nao informada"
+    $revisionDisplay = if ([string]::IsNullOrWhiteSpace([string]$match.ClientRevision)) { "nao informada" } else { [string]$match.ClientRevision }
+    $nameDisplay     = if ([string]::IsNullOrWhiteSpace([string]$match.DocumentTitle))  { "nao informado" } else { [string]$match.DocumentTitle }
+    $stateDisplay    = if ([string]::IsNullOrWhiteSpace([string]$match.PdmState))       { "nao informado" } else { [string]$match.PdmState }
+
+    $stateColor = switch ($stateDisplay) {
+      "Aprovado"   { "Green" }
+      "Obsoleto"   { "Red" }
+      "Verificado" { "Cyan" }
+      default      { "Yellow" }
     }
-
-    $nameDisplay = [string]$currentMatch.DocumentTitle
-
-    if ([string]::IsNullOrWhiteSpace($nameDisplay)) {
-      $nameDisplay = "nao informado"
-    }
-
-    $stateDisplay = [string]$currentMatch.PdmState
-
-    if ([string]::IsNullOrWhiteSpace($stateDisplay)) {
-      $stateDisplay = "nao informado"
-    }
-
-    $stateColor = [System.ConsoleColor]::Yellow
-
-    if ($stateDisplay -ieq "Aprovado") {
-      $stateColor = [System.ConsoleColor]::Green
-    }
-    elseif ($stateDisplay -ieq "Obsoleto") {
-      $stateColor = [System.ConsoleColor]::Red
-    }
-    elseif ($stateDisplay -ieq "Verificado") {
-      $stateColor = [System.ConsoleColor]::Cyan
-    }
-
-    $headerColor = [System.ConsoleColor]::White
-    $textColor = [System.ConsoleColor]::Gray
 
     # O que ja foi escolhido antes aparece todo em cinza.
-    if ($chosenBefore) {
-      $headerColor = [System.ConsoleColor]::DarkGray
-      $textColor = [System.ConsoleColor]::DarkGray
-      $stateColor = [System.ConsoleColor]::DarkGray
-    }
+    $headerColor = "White"
+    $textColor = "Gray"
+    if ($chosenBefore) { $headerColor = $textColor = $stateColor = "DarkGray" }
 
-    $headerText = "  [{0}] {1}" -f $number, $currentMatch.SourceCode
-
-    if ($chosenBefore) {
-      $headerText += "  (escolhido anteriormente)"
-    }
+    $headerText = "  [{0}] {1}" -f $number, $match.SourceCode
+    if ($chosenBefore) { $headerText += "  (escolhido anteriormente)" }
 
     Write-SearchResultLine $headerText -Color $headerColor
-
-    Write-SearchResultLine (
-      "       Nome:    {0}" -f $nameDisplay
-    ) -Color $textColor
-
-    Write-SearchResultLine (
-      "       Tipo:    {0}" -f $currentMatch.TypeDisplayName
-    ) -Color $textColor
-
-    Write-SearchResultLine (
-      "       Revisao: {0}" -f $revisionDisplay
-    ) -Color $textColor
-
-    Write-SearchResultLine (
-      "       Estado:  {0}" -f $stateDisplay
-    ) -Color $stateColor
+    Write-SearchResultLine ("       Nome:    {0}" -f $nameDisplay) -Color $textColor
+    Write-SearchResultLine ("       Tipo:    {0}" -f $match.TypeDisplayName) -Color $textColor
+    Write-SearchResultLine ("       Revisao: {0}" -f $revisionDisplay) -Color $textColor
+    Write-SearchResultLine ("       Estado:  {0}" -f $stateDisplay) -Color $stateColor
 
     if ($Details) {
-
-      Write-SearchResultLine (
-        "       Arquivo: {0}" -f $currentMatch.File.Name
-      ) -Color DarkGray
-
-      if (
-        $currentMatch.DocumentType -ieq "NDT" -and
-        -not [string]::IsNullOrWhiteSpace(
-          [string]$currentMatch.NdtSheetType
-        )
-      ) {
-
-        Write-SearchResultLine (
-          "       Folha:   {0}" -f $currentMatch.NdtSheetType
-        ) -Color DarkGray
+      Write-SearchResultLine ("       Arquivo: {0}" -f $match.File.Name) -Color DarkGray
+      if ($match.DocumentType -ieq "NDT" -and -not [string]::IsNullOrWhiteSpace([string]$match.NdtSheetType)) {
+        Write-SearchResultLine ("       Folha:   {0}" -f $match.NdtSheetType) -Color DarkGray
       }
-
-      Write-SearchResultLine (
-        "       Local:   {0}" -f $currentMatch.File.FullName
-      ) -Color DarkGray
+      Write-SearchResultLine ("       Local:   {0}" -f $match.File.FullName) -Color DarkGray
     }
 
     Write-SearchResultLine ""
   }
 
-  # Um unico resultado dispensa a etapa de selecao manual.
+  # --- 7. Selecao ---
+  # Um unico resultado dispensa a selecao manual.
   if ($matchCount -eq 1) {
-
     if (-not $previousNumbers.Contains(1)) {
-
-      Write-Success (
-        "O unico documento encontrado foi selecionado automaticamente."
-      )
+      Write-Success "O unico documento encontrado foi selecionado automaticamente."
     }
-
     return $matchingFiles[0]
   }
 
-  # Se todos os resultados ja foram escolhidos antes, nao ha o que
-  # perguntar. O fluxo principal ignora cada um com um aviso.
+  # Tudo ja escolhido antes: o fluxo principal ignora cada um com um aviso.
   if ($previousNumbers.Count -eq $matchCount) {
-
-    Write-Warn (
-      "Todos os documentos desta pesquisa ja foram escolhidos " +
-      "anteriormente."
-    )
-
+    Write-Warn "Todos os documentos desta pesquisa ja foram escolhidos anteriormente."
     return $matchingFiles.ToArray()
   }
 
-  # Com mais de um resultado, mantem a pergunta em repeticao ate
-  # que o usuario informe uma selecao valida.
+  # Repete a pergunta ate haver uma selecao valida.
   while ($true) {
+    $selectionText = ([string](Read-Host (
+          "Digite numeros, intervalos, T para todos ou T-2,5 para excluir resultados"
+        ))).Trim()
 
-    $selectionText = Read-Host (
-      "Digite numeros, intervalos, T para todos ou " +
-      "T-2,5 para excluir resultados"
-    )
-
-    if ([string]::IsNullOrWhiteSpace($selectionText)) {
-
+    if (-not $selectionText) {
       Write-Warn "Nenhum numero foi informado."
       continue
     }
 
-    $selectionText = $selectionText.Trim()
+    $selectedNumbers = ConvertFrom-DcaSelectionText -Text $selectionText -Count $matchCount
+    if ($null -eq $selectedNumbers) { continue }
 
-    $selectedNumbers = [System.Collections.Generic.List[int]]::new()
-    $knownNumbers = [System.Collections.Generic.HashSet[int]]::new()
-    $selectionIsValid = $true
-
-    # ==========================================================
-    # INTERPRETAR O MODO DA SELECAO
-    # ==========================================================
-
-    $excludeMode = $false
-    $selectionValuesText = $selectionText
-
-    if ($selectionText -match '(?i)^(T|TODOS)\s*-\s*(.+)$') {
-
-      $excludeMode = $true
-      $selectionValuesText = ([string]$Matches[2]).Trim()
-
-      if ([string]::IsNullOrWhiteSpace($selectionValuesText)) {
-
-        Write-Warn "Informe pelo menos um numero depois de T-."
-        continue
-      }
-
-      # O modo de exclusao comeca com todos os resultados
-      # selecionados. Os numeros informados serao removidos
-      # depois da validacao.
-      for (
-        $number = 1
-        $number -le $matchCount
-        $number++
-      ) {
-
-        if ($knownNumbers.Add($number)) {
-          $selectedNumbers.Add($number)
-        }
-      }
-    }
-    elseif (
-      $selectionText -ieq "T" -or
-      $selectionText -ieq "TODOS"
-    ) {
-
-      for (
-        $number = 1
-        $number -le $matchCount
-        $number++
-      ) {
-
-        if ($knownNumbers.Add($number)) {
-          $selectedNumbers.Add($number)
-        }
-      }
-    }
-
-    # ==========================================================
-    # INTERPRETAR NUMEROS E INTERVALOS
-    # ==========================================================
-
-    if (
-      $selectionText -ine "T" -and
-      $selectionText -ine "TODOS"
-    ) {
-
-      $parsedNumbers = [System.Collections.Generic.List[int]]::new()
-      $knownParsedNumbers = [System.Collections.Generic.HashSet[int]]::new()
-
-      foreach ($selectionPart in ($selectionValuesText -split ",")) {
-
-        $currentPart = ([string]$selectionPart).Trim()
-
-        if ([string]::IsNullOrWhiteSpace($currentPart)) {
-          continue
-        }
-
-        # Permite intervalos como 1-5. No modo de exclusao,
-        # T-2-4 significa selecionar todos, exceto 2, 3 e 4.
-        if ($currentPart -match '^(?<Start>\d+)\s*-\s*(?<End>\d+)$') {
-
-          $rangeStart = [int]$Matches["Start"]
-          $rangeEnd = [int]$Matches["End"]
-
-          if (
-            $rangeStart -lt 1 -or
-            $rangeEnd -gt $matchCount -or
-            $rangeStart -gt $rangeEnd
-          ) {
-
-            Write-Warn (
-              "Intervalo invalido: '$currentPart'. " +
-              "Use valores entre 1 e $matchCount."
-            )
-
-            $selectionIsValid = $false
-            break
-          }
-
-          for (
-            $rangeNumber = $rangeStart
-            $rangeNumber -le $rangeEnd
-            $rangeNumber++
-          ) {
-
-            if ($knownParsedNumbers.Add($rangeNumber)) {
-              $parsedNumbers.Add($rangeNumber)
-            }
-          }
-
-          continue
-        }
-
-        $selectedNumber = 0
-
-        $validNumber = [System.Int32]::TryParse(
-          $currentPart,
-          [ref]$selectedNumber
-        )
-
-        if (
-          -not $validNumber -or
-          $selectedNumber -lt 1 -or
-          $selectedNumber -gt $matchCount
-        ) {
-
-          Write-Warn (
-            "Selecao invalida: '$currentPart'. " +
-            "Digite numeros entre 1 e $matchCount."
-          )
-
-          $selectionIsValid = $false
-          break
-        }
-
-        if ($knownParsedNumbers.Add($selectedNumber)) {
-          $parsedNumbers.Add($selectedNumber)
-        }
-      }
-
-      # ========================================================
-      # APLICAR A INCLUSAO OU EXCLUSAO
-      # ========================================================
-
-      if ($selectionIsValid) {
-
-        if ($excludeMode) {
-
-          foreach ($excludedNumber in $parsedNumbers) {
-
-            $null = $selectedNumbers.Remove($excludedNumber)
-            $null = $knownNumbers.Remove($excludedNumber)
-          }
-
-        }
-        else {
-
-          foreach ($parsedNumber in $parsedNumbers) {
-
-            if ($knownNumbers.Add($parsedNumber)) {
-              $selectedNumbers.Add($parsedNumber)
-            }
-          }
-        }
-      }
-    }
-
-    if (-not $selectionIsValid) {
-      continue
-    }
-
-        # T e T-x pulam o que ja foi escolhido; se o usuario digitar o
-    # numero de um item em cinza, ele tambem e ignorado.
-    if ($previousNumbers.Count -gt 0) {
-
-      $alreadyChosenNumbers =
-      @(
-        $selectedNumbers |
-          Where-Object { $previousNumbers.Contains([int]$_) } |
-          Sort-Object
+    # T e T-x pulam o que ja foi escolhido; numeros em cinza digitados tambem sao ignorados.
+    $alreadyChosen = @($selectedNumbers | Where-Object { $previousNumbers.Contains($_) })
+    if ($alreadyChosen.Count -gt 0) {
+      Write-Warn (
+        "Ja escolhido(s) anteriormente e ignorado(s): " +
+        (($alreadyChosen | ForEach-Object { "[$_]" }) -join ", ")
       )
-
-      if ($alreadyChosenNumbers.Count -gt 0) {
-
-        Write-Warn (
-          "Ja escolhido(s) anteriormente e ignorado(s): " +
-          (
-            ($alreadyChosenNumbers | ForEach-Object { "[$_]" }) -join ", "
-          )
-        )
-
-        $remainingNumbers =
-        [System.Collections.Generic.List[int]]::new()
-
-        foreach ($candidateNumber in $selectedNumbers) {
-
-          if (-not $previousNumbers.Contains($candidateNumber)) {
-            $remainingNumbers.Add($candidateNumber)
-          }
-        }
-
-        $selectedNumbers = $remainingNumbers
-      }
+      $selectedNumbers.ExceptWith([int[]]$alreadyChosen)
     }
 
     if ($selectedNumbers.Count -eq 0) {
-
       Write-Warn "Nenhum resultado valido foi selecionado."
       continue
     }
 
-    $selectedFiles = [System.Collections.Generic.List[object]]::new()
-
     Write-AnimatedLine ""
 
-    foreach ($selectedNumber in ($selectedNumbers | Sort-Object)) {
-
+    $selectedFiles = foreach ($selectedNumber in $selectedNumbers) {
       $selectedFile = $matchingFiles[$selectedNumber - 1]
-
-      $selectedFiles.Add($selectedFile)
-
-      Write-Success (
-        "Documento selecionado [$selectedNumber]: " +
-        $selectedFile.File.Name
-      )
-
-      if ($Details) {
-
-        Write-Info (
-          "Local: " +
-          $selectedFile.File.FullName
-        )
-      }
+      Write-Success "Documento selecionado [$selectedNumber]: $($selectedFile.File.Name)"
+      if ($Details) { Write-Info "Local: $($selectedFile.File.FullName)" }
+      $selectedFile
     }
 
-    return $selectedFiles.ToArray()
+    return @($selectedFiles)
   }
 }

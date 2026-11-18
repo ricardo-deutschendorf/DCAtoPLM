@@ -1,705 +1,330 @@
 # ============================================================
 # LOGS E RELATORIOS DA EXECUCAO
 # ============================================================
-#
-# Este arquivo registra a saida da execucao e exporta o resultado
-# individual dos documentos processados.
-#
-# Responsabilidades:
-#   1. criar as pastas de logs e relatorios;
-#   2. gerar um identificador unico para a execucao;
-#   3. iniciar a captura da saida do console;
-#   4. encerrar o log com seguranca;
-#   5. exportar os resultados do lote em formato CSV.
-#
-# As senhas nao devem ser escritas por nenhuma funcao deste
-# arquivo.
+# Cria logs e relatorios CSV da execucao e carrega falhas para
+# nova tentativa. Nenhuma senha deve ser registrada.
 # ============================================================
 
+# Converte valores textuais comuns em booleano.
+function ConvertTo-DcaReportBoolean {
+    param($Value)
+
+    return ([string]$Value).Trim() -match '^(?i:true|1|sim|yes)$'
+}
+
+# Retorna uma coluna opcional do relatorio ou texto vazio.
+function Get-DcaReportOptionalText {
+    param(
+        [Parameter(Mandatory)]$Row,
+        [Parameter(Mandatory)][string[]]$AvailableColumns,
+        [Parameter(Mandatory)][string]$Column
+    )
+
+    if ($AvailableColumns -notcontains $Column) { return "" }
+    return ([string]$Row.$Column).Trim()
+}
+
+# Prepara os caminhos e inicia o log da execucao.
 function Initialize-DcaExecutionArtifacts {
-
-  param(
-    [Parameter(Mandatory = $true)]
-    [ValidateNotNullOrEmpty()]
-    [string]$ProjectRoot
-  )
-
-  # ============================================================
-  # 1. PREPARAR O IDENTIFICADOR DA EXECUCAO
-  # ============================================================
-
-  $script:DcaExecutionStartedAt =
-  Get-Date
-
-  $script:DcaExecutionId =
-  $script:DcaExecutionStartedAt.ToString(
-    "yyyyMMdd_HHmmss_fff"
-  )
-
-  # ============================================================
-  # 2. DEFINIR AS PASTAS DE SAIDA
-  # ============================================================
-  #
-  # Os logs e relatorios permanecem dentro da pasta temporaria
-  # configurada em DCA_TEMP_FOLDER.
-  $temporaryFolder =
-  ([string]$env:DCA_TEMP_FOLDER).Trim()
-
-  if (
-    [string]::IsNullOrWhiteSpace(
-      $temporaryFolder
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [string]$ProjectRoot
     )
-  ) {
 
-    throw (
-      "DCA_TEMP_FOLDER deve ser configurado no arquivo .env " +
-      "antes da preparacao dos logs e relatorios."
-    )
-  }
+    $script:DcaExecutionStartedAt = Get-Date
+    $script:DcaExecutionId = $script:DcaExecutionStartedAt.ToString("yyyyMMdd_HHmmss_fff")
 
-  # Cria uma pasta especifica para cada tipo de arquivo, evitando
-  # misturar os PDFs temporarios com logs e relatorios do lote.
-  $logFolder =
-  Join-Path `
-    -Path $temporaryFolder `
-    -ChildPath "logs"
-
-  $reportFolder =
-  Join-Path `
-    -Path $temporaryFolder `
-    -ChildPath "reports"
-  # ============================================================
-  # 3. CRIAR AS PASTAS NECESSARIAS
-  # ============================================================
-
-  foreach (
-    $outputFolder in @(
-      $logFolder,
-      $reportFolder
-    )
-  ) {
-
-    if (-not (
-        Test-Path `
-          -LiteralPath $outputFolder `
-          -PathType Container
-      )) {
-
-      $null =
-      New-Item `
-        -Path $outputFolder `
-        -ItemType Directory `
-        -Force `
-        -ErrorAction Stop
+    $temporaryFolder = ([string]$env:DCA_TEMP_FOLDER).Trim()
+    if ([string]::IsNullOrWhiteSpace($temporaryFolder)) {
+        throw "DCA_TEMP_FOLDER deve ser configurado no arquivo .env antes da preparacao dos logs e relatorios."
     }
-  }
 
-  # ============================================================
-  # 4. PREPARAR OS CAMINHOS DOS ARQUIVOS
-  # ============================================================
+    $logFolder = Join-Path $temporaryFolder "logs"
+    $reportFolder = Join-Path $temporaryFolder "reports"
 
-  $script:DcaLogFilePath =
-  Join-Path `
-    -Path $logFolder `
-    -ChildPath (
-    "DCAtoPLM_{0}.log" -f
-    $script:DcaExecutionId
-  )
+    foreach ($folder in @($logFolder, $reportFolder)) {
+        if (-not (Test-Path -LiteralPath $folder -PathType Container)) {
+            $null = New-Item -Path $folder -ItemType Directory -Force -ErrorAction Stop
+        }
+    }
 
-  $script:DcaReportFilePath =
-  Join-Path `
-    -Path $reportFolder `
-    -ChildPath (
-    "DCAtoPLM_{0}.csv" -f
-    $script:DcaExecutionId
-  )
+    $script:DcaLogFilePath = Join-Path $logFolder "DCAtoPLM_$($script:DcaExecutionId).log"
+    $script:DcaReportFilePath = Join-Path $reportFolder "DCAtoPLM_$($script:DcaExecutionId).csv"
+    $script:DcaTranscriptStarted = $false
 
-  # ============================================================
-  # 5. INICIAR A CAPTURA DA SAIDA
-  # ============================================================
-
-  $script:DcaTranscriptStarted =
-  $false
-
-  try {
-
-    Start-Transcript `
-      -LiteralPath $script:DcaLogFilePath `
-      -Force `
-      -ErrorAction Stop |
-      Out-Null
-
-    $script:DcaTranscriptStarted =
-    $true
-  }
-  catch {
-
-    $script:DcaTranscriptStarted =
-    $false
-
-    Write-Warn (
-      "Nao foi possivel iniciar o arquivo de log: " +
-      $_.Exception.Message
-    )
-  }
-
-  if ($script:DcaTranscriptStarted) {
-
-    Write-Info (
-      "Log da execucao: " +
-      $script:DcaLogFilePath
-    )
-  }
+    try {
+        Start-Transcript -LiteralPath $script:DcaLogFilePath -Force -ErrorAction Stop | Out-Null
+        $script:DcaTranscriptStarted = $true
+        Write-Info "Log da execucao: $script:DcaLogFilePath"
+    }
+    catch {
+        Write-Warn "Nao foi possivel iniciar o arquivo de log: $($_.Exception.Message)"
+    }
 }
 
+# Encerra o log somente quando o transcript foi iniciado.
 function Stop-DcaExecutionLog {
+    if ($script:DcaTranscriptStarted -ne $true) { return }
 
-  # ============================================================
-  # 1. VERIFICAR SE O LOG FOI INICIADO
-  # ============================================================
-
-  if (
-    $script:DcaTranscriptStarted -ne $true
-  ) {
-
-    return
-  }
-
-  # ============================================================
-  # 2. ENCERRAR A CAPTURA DA SAIDA
-  # ============================================================
-
-  try {
-
-    Write-Info (
-      "Encerrando o log da execucao."
-    )
-
-    Stop-Transcript `
-      -ErrorAction Stop |
-      Out-Null
-  }
-  catch {
-
-    Write-Warn (
-      "Nao foi possivel encerrar corretamente o log: " +
-      $_.Exception.Message
-    )
-  }
-  finally {
-
-    $script:DcaTranscriptStarted =
-    $false
-  }
+    try {
+        Write-Info "Encerrando o log da execucao."
+        Stop-Transcript -ErrorAction Stop | Out-Null
+    }
+    catch {
+        Write-Warn "Nao foi possivel encerrar corretamente o log: $($_.Exception.Message)"
+    }
+    finally {
+        $script:DcaTranscriptStarted = $false
+    }
 }
 
+# Exporta os resultados individuais do lote em CSV.
 function Export-DcaBatchReport {
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNull()]
+        [object[]]$Results,
 
-  param(
-    [Parameter(Mandatory = $true)]
-    [ValidateNotNull()]
-    [object[]]$Results,
-
-    [string]$Environment,
-
-    [datetime]$ExecutionStartedAt
-  )
-
-  # ============================================================
-  # 1. VALIDAR OS RESULTADOS RECEBIDOS
-  # ============================================================
-
-  if ($ExecutionStartedAt -eq [datetime]::MinValue) {
-
-    if (
-      $script:DcaExecutionStartedAt -is [datetime]
-    ) {
-
-      $ExecutionStartedAt =
-      $script:DcaExecutionStartedAt
-    }
-    else {
-
-      $ExecutionStartedAt =
-      Get-Date
-    }
-  }
-
-  if ($Results.Count -eq 0) {
-
-    Write-Warn (
-      "O relatorio CSV nao foi criado porque o lote nao possui " +
-      "resultados."
+        [string]$Environment,
+        [datetime]$ExecutionStartedAt
     )
 
-    return $null
-  }
-
-  if (
-    [string]::IsNullOrWhiteSpace(
-      [string]$script:DcaReportFilePath
-    )
-  ) {
-
-    throw (
-      "O caminho do relatorio CSV nao foi preparado."
-    )
-  }
-
-  # ============================================================
-  # 2. PREPARAR AS LINHAS DO RELATORIO
-  # ============================================================
-
-  $executionFinishedAt =
-  Get-Date
-
-  $reportRows =
-  foreach ($result in $Results) {
-
-    $resultStatus =
-    if ($result.Succeeded) {
-      "Sucesso"
-    }
-    else {
-      "Falha"
-    }
-
-    $operationText =
-    switch ([string]$result.Operation) {
-
-      "DatasetOnly" {
-
-        "Importar Dataset em revisao existente"
-      }
-
-      "RecoverExisting" {
-
-        if (
-          [string]$result.DocumentType -eq
-          "NDT"
-        ) {
-
-          "Recuperar Item NDT e completar PDF ou SLDDRW"
+    if ($ExecutionStartedAt -eq [datetime]::MinValue) {
+        $ExecutionStartedAt = if ($script:DcaExecutionStartedAt -is [datetime]) {
+            $script:DcaExecutionStartedAt
         }
         else {
-
-          "Recuperar Item existente e importar Dataset"
+            Get-Date
         }
-      }
-
-      "CreateItem" {
-
-        if (
-          [string]$result.DocumentType -eq
-          "NDT"
-        ) {
-
-          "Criar Item NDT e importar PDF e SLDDRW"
-        }
-        else {
-
-          "Criar Item e importar Dataset"
-        }
-      }
-
-      default {
-
-        "Operacao nao identificada"
-      }
     }
 
-    [PSCustomObject][ordered]@{
-      ExecutionId = [string]$script:DcaExecutionId
-      ExecutionStartedAt = $ExecutionStartedAt.ToString(
-        "yyyy-MM-dd HH:mm:ss"
-      )
-      ExecutionFinishedAt = $executionFinishedAt.ToString(
-        "yyyy-MM-dd HH:mm:ss"
-      )
-      Environment = [string]$Environment
-      ItemCode = [string]$result.ItemCode
-      ItemName = [string]$result.ItemName
-      TeamcenterCode = [string]$result.TeamcenterCode
-      ClientRevision = [string]$result.ClientRevision
-      DocumentType = [string]$result.DocumentType
-      PdmState = [string]$result.PdmState
-      Approver = [string]$result.Approver
-      ApprovalDate = [string]$result.ApprovalDate
-      Operation = [string]$result.Operation
-      OperationDescription = $operationText
-      ItemCreated = [bool]$result.ItemCreated
-      PdfImported = [bool]$result.PdfImported
-      NdtDrawingImported = [bool]$result.NdtDrawingImported
-      PdfImportedThisRun = [bool]$result.PdfImportedThisRun
-      DatasetAlreadyExists = [bool]$result.DatasetAlreadyExists
-      WorkflowStarted = [bool]$result.WorkflowStarted
-      Succeeded = [bool]$result.Succeeded
-      Status = $resultStatus
-      DocumentStartedAt = [string]$result.DocumentStartedAt
-      DocumentFinishedAt = [string]$result.DocumentFinishedAt
-      DurationSeconds = $result.DurationSeconds
-      DestinationSeconds =
-      $result.DestinationSeconds
-
-      PdfPreparationSeconds =
-      $result.PdfPreparationSeconds
-
-      DatasetLookupSeconds =
-      $result.DatasetLookupSeconds
-
-      PdfImportSeconds =
-      $result.PdfImportSeconds
-
-      WorkflowSeconds =
-      $result.WorkflowSeconds
-      SourceFile = [string]$result.SourceFile
-      NdtPdfFile = [string]$result.NdtPdfFile
-      NdtDrawingFile = [string]$result.NdtDrawingFile
-      ErrorMessage = [string]$result.ErrorMessage
+    if ($Results.Count -eq 0) {
+        Write-Warn "O relatorio CSV nao foi criado porque o lote nao possui resultados."
+        return $null
     }
-  }
 
-  # ============================================================
-  # 3. EXPORTAR O ARQUIVO CSV
-  # ============================================================
+    if ([string]::IsNullOrWhiteSpace([string]$script:DcaReportFilePath)) {
+        throw "O caminho do relatorio CSV nao foi preparado."
+    }
 
-  $reportRows |
-    Export-Csv `
-    -LiteralPath $script:DcaReportFilePath `
-    -NoTypeInformation `
-    -Encoding UTF8 `
-    -Delimiter ";" `
-    -Force
+    $finishedAt = Get-Date
+    $startedText = $ExecutionStartedAt.ToString("yyyy-MM-dd HH:mm:ss")
+    $finishedText = $finishedAt.ToString("yyyy-MM-dd HH:mm:ss")
 
-  if (-not (
-      Test-Path `
+    $reportRows = foreach ($result in $Results) {
+        $operationText = switch ([string]$result.Operation) {
+            "DatasetOnly" {
+                "Importar Dataset em revisao existente"
+            }
+            "RecoverExisting" {
+                if ([string]$result.DocumentType -eq "NDT") {
+                    "Recuperar Item NDT e completar PDF ou SLDDRW"
+                }
+                else {
+                    "Recuperar Item existente e importar Dataset"
+                }
+            }
+            "CreateItem" {
+                if ([string]$result.DocumentType -eq "NDT") {
+                    "Criar Item NDT e importar PDF e SLDDRW"
+                }
+                else {
+                    "Criar Item e importar Dataset"
+                }
+            }
+            default {
+                "Operacao nao identificada"
+            }
+        }
+
+        [PSCustomObject][ordered]@{
+            ExecutionId          = [string]$script:DcaExecutionId
+            ExecutionStartedAt   = $startedText
+            ExecutionFinishedAt  = $finishedText
+            Environment          = [string]$Environment
+            ItemCode             = [string]$result.ItemCode
+            ItemName             = [string]$result.ItemName
+            TeamcenterCode       = [string]$result.TeamcenterCode
+            ClientRevision       = [string]$result.ClientRevision
+            DocumentType         = [string]$result.DocumentType
+            PdmState             = [string]$result.PdmState
+            Approver             = [string]$result.Approver
+            ApprovalDate         = [string]$result.ApprovalDate
+            Operation            = [string]$result.Operation
+            OperationDescription = $operationText
+            ItemCreated          = [bool]$result.ItemCreated
+            PdfImported          = [bool]$result.PdfImported
+            NdtDrawingImported   = [bool]$result.NdtDrawingImported
+            PdfImportedThisRun   = [bool]$result.PdfImportedThisRun
+            DatasetAlreadyExists = [bool]$result.DatasetAlreadyExists
+            WorkflowStarted      = [bool]$result.WorkflowStarted
+            Succeeded            = [bool]$result.Succeeded
+            Status               = if ($result.Succeeded) { "Sucesso" } else { "Falha" }
+            DocumentStartedAt    = [string]$result.DocumentStartedAt
+            DocumentFinishedAt   = [string]$result.DocumentFinishedAt
+            DurationSeconds      = $result.DurationSeconds
+            DestinationSeconds   = $result.DestinationSeconds
+            PdfPreparationSeconds = $result.PdfPreparationSeconds
+            DatasetLookupSeconds = $result.DatasetLookupSeconds
+            PdfImportSeconds     = $result.PdfImportSeconds
+            WorkflowSeconds      = $result.WorkflowSeconds
+            SourceFile           = [string]$result.SourceFile
+            NdtPdfFile           = [string]$result.NdtPdfFile
+            NdtDrawingFile       = [string]$result.NdtDrawingFile
+            ErrorMessage         = [string]$result.ErrorMessage
+        }
+    }
+
+    $reportRows | Export-Csv `
         -LiteralPath $script:DcaReportFilePath `
-        -PathType Leaf
-    )) {
+        -NoTypeInformation `
+        -Encoding UTF8 `
+        -Delimiter ";" `
+        -Force
 
-    throw (
-      "O relatorio CSV nao foi criado no caminho esperado."
-    )
-  }
+    if (-not (Test-Path -LiteralPath $script:DcaReportFilePath -PathType Leaf)) {
+        throw "O relatorio CSV nao foi criado no caminho esperado."
+    }
 
-  $reportFile =
-  Get-Item `
-    -LiteralPath $script:DcaReportFilePath `
-    -ErrorAction Stop
+    $reportFile = Get-Item `
+        -LiteralPath $script:DcaReportFilePath `
+        -ErrorAction Stop
 
-  if ($reportFile.Length -le 0) {
+    if ($reportFile.Length -le 0) {
+        throw "O relatorio CSV foi criado, mas ficou vazio."
+    }
 
-    throw (
-      "O relatorio CSV foi criado, mas ficou vazio."
-    )
-  }
-
-  Write-Success (
-    "Relatorio CSV criado: " +
-    $script:DcaReportFilePath
-  )
-
-  return $script:DcaReportFilePath
+    Write-Success "Relatorio CSV criado: $script:DcaReportFilePath"
+    return $script:DcaReportFilePath
 }
 
+# Carrega falhas de um relatorio CSV para nova tentativa.
 function Import-DcaRetryReport {
-
-  param(
-    [Parameter(Mandatory = $true)]
-    [ValidateNotNullOrEmpty()]
-    [string]$FilePath
-  )
-
-  # ============================================================
-  # 1. VALIDAR O ARQUIVO DO RELATORIO
-  # ============================================================
-
-  if (-not (
-      Test-Path `
-        -LiteralPath $FilePath `
-        -PathType Leaf
-    )) {
-
-    throw (
-      "O relatorio informado para nova tentativa nao foi " +
-      "encontrado: '$FilePath'."
-    )
-  }
-
-  if (
-    [System.IO.Path]::GetExtension(
-      $FilePath
-    ) -ine ".csv"
-  ) {
-
-    throw (
-      "O arquivo informado em -RetryReport deve possuir " +
-      "extensao CSV."
-    )
-  }
-
-  # ============================================================
-  # 2. CARREGAR AS LINHAS DO RELATORIO
-  # ============================================================
-
-  $reportRows =
-  @(
-    Import-Csv `
-      -LiteralPath $FilePath `
-      -Delimiter ";" `
-      -Encoding UTF8 `
-      -ErrorAction Stop
-  )
-
-  if ($reportRows.Count -eq 0) {
-
-    throw (
-      "O relatorio informado nao possui resultados."
-    )
-  }
-
-  # ============================================================
-  # 3. VALIDAR AS COLUNAS OBRIGATORIAS
-  # ============================================================
-
-  $requiredColumns =
-  @(
-    "ItemCode",
-    "ItemName",
-    "ClientRevision",
-    "DocumentType",
-    "PdmState",
-    "Operation",
-    "ItemCreated",
-    "PdfImported",
-    "WorkflowStarted",
-    "Succeeded",
-    "SourceFile",
-    "ErrorMessage"
-  )
-
-  $availableColumns =
-  @(
-    $reportRows[0].PSObject.Properties.Name
-  )
-
-  $missingColumns =
-  @(
-    $requiredColumns |
-      Where-Object {
-      $_ -notin $availableColumns
-    }
-  )
-
-  if ($missingColumns.Count -gt 0) {
-
-    throw (
-      "O relatorio nao possui todas as colunas obrigatorias: " +
-      ($missingColumns -join ", ")
-    )
-  }
-
-  # ============================================================
-  # 4. SELECIONAR SOMENTE FALHAS REPROCESSAVEIS
-  # ============================================================
-  # Falhas sao reprocessadas quando algum arquivo obrigatorio
-  # ainda estiver ausente.
-  #
-  # Para NDT, um PDF ja importado nao impede a nova tentativa
-  # quando o desenho SLDDRW ainda nao foi confirmado.
-
-  $retryRows =
-  [System.Collections.Generic.List[object]]::new()
-
-  foreach ($reportRow in $reportRows) {
-
-    $succeeded =
-    ([string]$reportRow.Succeeded).Trim() -match
-    '^(?i:true|1|sim|yes)$'
-
-    $pdfImported =
-    ([string]$reportRow.PdfImported).Trim() -match
-    '^(?i:true|1|sim|yes)$'
-
-    $itemCreated =
-    ([string]$reportRow.ItemCreated).Trim() -match
-    '^(?i:true|1|sim|yes)$'
-
-    $ndtDrawingImported =
-    $false
-
-    if (
-      $availableColumns -contains
-      "NdtDrawingImported"
-    ) {
-
-      $ndtDrawingImported =
-      ([string]$reportRow.NdtDrawingImported).Trim() -match
-      '^(?i:true|1|sim|yes)$'
-    }
-
-    if ($succeeded) {
-      continue
-    }
-
-    $documentType =
-    ([string]$reportRow.DocumentType).Trim()
-
-    $needsNdtDrawingRecovery =
-    (
-      $documentType -eq "NDT" -and
-      -not $ndtDrawingImported
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [string]$FilePath
     )
 
-    if (
-      $pdfImported -and
-      -not $needsNdtDrawingRecovery
-    ) {
-
-      Write-Warn (
-        "O documento '$($reportRow.ItemCode)' nao sera " +
-        "reprocessado porque todos os arquivos esperados ja " +
-        "foram importados."
-      )
-
-      continue
+    if (-not (Test-Path -LiteralPath $FilePath -PathType Leaf)) {
+        throw "O relatorio informado para nova tentativa nao foi encontrado: '$FilePath'."
     }
 
-    if ($needsNdtDrawingRecovery) {
-
-      Write-Info (
-        "O NDT '$($reportRow.ItemCode)' sera reprocessado " +
-        "porque o desenho SLDDRW ainda nao foi confirmado."
-      )
+    if ([System.IO.Path]::GetExtension($FilePath) -ine ".csv") {
+        throw "O arquivo informado em -RetryReport deve possuir extensao CSV."
     }
 
-    $itemCode =
-    ([string]$reportRow.ItemCode).Trim()
-
-    $clientRevision =
-    ([string]$reportRow.ClientRevision).Trim()
-
-    $sourceFile =
-    ([string]$reportRow.SourceFile).Trim()
-
-    if (
-      $documentType -eq "NDT" -and
-      $availableColumns -contains
-      "NdtDrawingFile" -and
-      -not [string]::IsNullOrWhiteSpace(
-        [string]$reportRow.NdtDrawingFile
-      )
-    ) {
-
-      $sourceFile =
-      ([string]$reportRow.NdtDrawingFile).Trim()
-    }
-
-    if (
-      [string]::IsNullOrWhiteSpace(
-        $itemCode
-      ) -or
-      [string]::IsNullOrWhiteSpace(
-        $clientRevision
-      ) -or
-      [string]::IsNullOrWhiteSpace(
-        $documentType
-      ) -or
-      [string]::IsNullOrWhiteSpace(
-        $sourceFile
-      )
-    ) {
-
-      Write-Warn (
-        "Uma linha do relatorio foi ignorada porque nao possui " +
-        "codigo, revisao, tipo ou caminho do arquivo."
-      )
-
-      continue
-    }
-
-    if (-not (
-        Test-Path `
-          -LiteralPath $sourceFile `
-          -PathType Leaf
-      )) {
-
-      Write-Warn (
-        "O documento '$itemCode' foi ignorado porque o arquivo " +
-        "de origem nao foi encontrado: '$sourceFile'."
-      )
-
-      continue
-    }
-
-    $retryMode =
-    if ($documentType -eq "DatasetOnly") {
-      "DatasetOnly"
-    }
-    elseif ($itemCreated) {
-      "RecoverExisting"
-    }
-    else {
-      "CreateItem"
-    }
-
-    $retryApprover =
-    if (
-      $availableColumns -contains "Approver"
-    ) {
-
-      ([string]$reportRow.Approver).Trim()
-    }
-    else {
-
-      ""
-    }
-
-    $retryApprovalDate =
-    if (
-      $availableColumns -contains "ApprovalDate"
-    ) {
-
-      ([string]$reportRow.ApprovalDate).Trim()
-    }
-    else {
-
-      ""
-    }
-
-    $retryRows.Add(
-      [PSCustomObject]@{
-        ItemCode = $itemCode
-        ItemName = ([string]$reportRow.ItemName).Trim()
-        ClientRevision = $clientRevision.ToUpperInvariant()
-        DocumentType = $documentType
-        PdmState = ([string]$reportRow.PdmState).Trim()
-        SourceFile = $sourceFile
-        NdtDrawingImported = $ndtDrawingImported
-        RetryMode = $retryMode
-        Approver = $retryApprover
-        ApprovalDate = $retryApprovalDate
-        PreviousError = [string]$reportRow.ErrorMessage
-      }
+    $rows = @(
+        Import-Csv `
+            -LiteralPath $FilePath `
+            -Delimiter ";" `
+            -Encoding UTF8 `
+            -ErrorAction Stop
     )
-  }
 
-  if ($retryRows.Count -eq 0) {
+    if ($rows.Count -eq 0) {
+        throw "O relatorio informado nao possui resultados."
+    }
 
-    throw (
-      "O relatorio nao possui falhas que possam ser " +
-      "reprocessadas com seguranca."
+    $requiredColumns = @(
+        "ItemCode"
+        "ItemName"
+        "ClientRevision"
+        "DocumentType"
+        "PdmState"
+        "Operation"
+        "ItemCreated"
+        "PdfImported"
+        "WorkflowStarted"
+        "Succeeded"
+        "SourceFile"
+        "ErrorMessage"
     )
-  }
 
-  # ============================================================
-  # 5. RETORNAR AS FALHAS SELECIONADAS
-  # ============================================================
+    $columns = @($rows[0].PSObject.Properties.Name)
+    $missingColumns = @($requiredColumns | Where-Object { $_ -notin $columns })
 
-  Write-Info (
-    "Falhas carregadas para nova tentativa: " +
-    $retryRows.Count
-  )
+    if ($missingColumns.Count -gt 0) {
+        throw "O relatorio nao possui todas as colunas obrigatorias: $($missingColumns -join ', ')"
+    }
 
-  return $retryRows.ToArray()
+    $retryRows = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($row in $rows) {
+        if (ConvertTo-DcaReportBoolean $row.Succeeded) { continue }
+
+        $pdfImported = ConvertTo-DcaReportBoolean $row.PdfImported
+        $itemCreated = ConvertTo-DcaReportBoolean $row.ItemCreated
+        $drawingImported = if ($columns -contains "NdtDrawingImported") {
+            ConvertTo-DcaReportBoolean $row.NdtDrawingImported
+        }
+        else {
+            $false
+        }
+
+        $documentType = ([string]$row.DocumentType).Trim()
+        $needsDrawing = $documentType -eq "NDT" -and -not $drawingImported
+
+        if ($pdfImported -and -not $needsDrawing) {
+            Write-Warn "O documento '$($row.ItemCode)' nao sera reprocessado porque todos os arquivos esperados ja foram importados."
+            continue
+        }
+
+        if ($needsDrawing) {
+            Write-Info "O NDT '$($row.ItemCode)' sera reprocessado porque o desenho SLDDRW ainda nao foi confirmado."
+        }
+
+        $itemCode = ([string]$row.ItemCode).Trim()
+        $clientRevision = ([string]$row.ClientRevision).Trim()
+        $sourceFile = ([string]$row.SourceFile).Trim()
+
+        if ($documentType -eq "NDT" -and
+            $columns -contains "NdtDrawingFile" -and
+            -not [string]::IsNullOrWhiteSpace([string]$row.NdtDrawingFile)) {
+            $sourceFile = ([string]$row.NdtDrawingFile).Trim()
+        }
+
+        if (@($itemCode, $clientRevision, $documentType, $sourceFile) |
+            Where-Object {[string]::IsNullOrWhiteSpace([string]$_) }) {
+            Write-Warn "Uma linha do relatorio foi ignorada porque nao possui codigo, revisao, tipo ou caminho do arquivo."
+            continue
+        }
+
+        if (-not (Test-Path -LiteralPath $sourceFile -PathType Leaf)) {
+            Write-Warn "O documento '$itemCode' foi ignorado porque o arquivo de origem nao foi encontrado: '$sourceFile'."
+            continue
+        }
+
+        $retryMode = if ($documentType -eq "DatasetOnly") {
+            "DatasetOnly"
+        }
+        elseif ($itemCreated) {
+            "RecoverExisting"
+        }
+        else {
+            "CreateItem"
+        }
+
+        $retryRows.Add([PSCustomObject]@{
+            ItemCode           = $itemCode
+            ItemName           = ([string]$row.ItemName).Trim()
+            ClientRevision     = $clientRevision.ToUpperInvariant()
+            DocumentType       = $documentType
+            PdmState           = ([string]$row.PdmState).Trim()
+            SourceFile         = $sourceFile
+            NdtDrawingImported = $drawingImported
+            RetryMode          = $retryMode
+            Approver           = Get-DcaReportOptionalText $row $columns "Approver"
+            ApprovalDate       = Get-DcaReportOptionalText $row $columns "ApprovalDate"
+            PreviousError      = [string]$row.ErrorMessage
+        })
+    }
+
+    if ($retryRows.Count -eq 0) {
+        throw "O relatorio nao possui falhas que possam ser reprocessadas com seguranca."
+    }
+
+    Write-Info "Falhas carregadas para nova tentativa: $($retryRows.Count)"
+    return $retryRows.ToArray()
 }

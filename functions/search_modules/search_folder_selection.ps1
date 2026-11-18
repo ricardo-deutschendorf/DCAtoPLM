@@ -1,541 +1,138 @@
 # ============================================================
 # SELECAO DOS DOCUMENTOS DE UMA PASTA
 # ============================================================
-#
-# Este arquivo apresenta os documentos previamente preparados
-# para uma pasta e permite selecionar os PDFs do lote.
-#
-# Formas de selecao aceitas:
-#   1. numero individual;
-#   2. numeros separados por virgula;
-#   3. intervalo numerico;
-#   4. todos os documentos;
-#   5. retorno para a lista de pastas, quando permitido.
-#
-# O fluxo:
-#   1. ordena os documentos;
-#   2. apresenta codigo, nome, revisao e estado;
-#   3. recebe e interpreta a entrada do usuario;
-#   4. valida numeros e intervalos;
-#   5. remove selecoes repetidas;
-#   6. retorna os documentos selecionados.
-#
-# Nenhum arquivo e alterado ou importado por esta funcao.
+# Apresenta os documentos ja preparados para uma pasta e permite
+# selecionar os PDFs do lote.
+#   1. ordena os documentos e apresenta codigo, nome, revisao e estado;
+#   2. aceita: 1 | 1,3,5 | 1-5 | T | *  (e V para voltar, se AllowBack);
+#   3. valida numeros e intervalos, sem repetir selecoes;
+#   4. retorna os documentos selecionados.
+# Com AllowBack, V devolve $null para a lista de pastas.
+# Nenhum arquivo e alterado ou importado aqui.
 # ============================================================
 
 function Select-DcaDocumentsFromFolder {
-
-  # Exibe os documentos encontrados na pasta e permite selecionar
-  # resultados individuais, listas, intervalos ou todos os PDFs.
-  #
-  # Quando AllowBack estiver ativo, o usuario tambem pode retornar
-  # para a selecao de pastas sem escolher nenhum documento.
-  param(
-    [Parameter(Mandatory = $true)]
-    [ValidateNotNull()]
-    $FolderOption,
-
-    [switch]$AllowBack
-  )
-
-  # ============================================================
-  # 1. ORDENAR E VALIDAR OS DOCUMENTOS
-  # ============================================================
-  #
-  # A ordenacao mantem os resultados previsiveis entre execucoes:
-  # primeiro pelo codigo e depois pelo nome fisico do PDF.
-
-  if (
-    -not $FolderOption.PSObject.Properties["Documents"]
-  ) {
-
-    throw (
-      "A opcao de pasta nao possui a colecao Documents."
-    )
-  }
-
-  $documents =
-  @(
-    $FolderOption.Documents |
-      Sort-Object {
-      [string]$_.SourceCode
-    }, {
-      [string]$_.File.Name
-    }
-  )
-
-  foreach ($document in $documents) {
-
-    if (
-      $null -eq $document -or
-      $null -eq $document.File
-    ) {
-
-      throw (
-        "Foi encontrado um documento sem arquivo fisico " +
-        "na pasta '$($FolderOption.RelativePath)'."
-      )
-    }
-  }
-
-  # Uma pasta sem PDFs nao abre a tela de selecao.
-  if ($documents.Count -eq 0) {
-
-    Write-Warn (
-      "A pasta '$($FolderOption.RelativePath)' nao possui PDFs."
+    param(
+        [Parameter(Mandatory)][ValidateNotNull()]$FolderOption,
+        [switch]$AllowBack
     )
 
-    if ($AllowBack) {
-      return $null
+    # --- 1. Ordenar e validar os documentos ---
+    if (-not $FolderOption.PSObject.Properties["Documents"]) { throw "A opcao de pasta nao possui a colecao Documents." }
+
+    # Ordem previsivel entre execucoes: codigo e depois nome fisico do PDF.
+    $documents = @($FolderOption.Documents | Sort-Object { [string]$_.SourceCode }, { [string]$_.File.Name })
+
+    if (@($documents | Where-Object { $null -eq $_ -or $null -eq $_.File }).Count -gt 0) {
+        throw "Foi encontrado um documento sem arquivo fisico na pasta '$($FolderOption.RelativePath)'."
     }
 
-    return @()
-  }
-
-  # ============================================================
-  # 2. APRESENTAR E VALIDAR A SELECAO
-  # ============================================================
-  #
-  # O ciclo permanece ativo ate que o usuario:
-  #   1. selecione documentos validos;
-  #   2. solicite o retorno para a lista de pastas.
-  while ($true) {
-
-    # ============================================================
-    # 3. APRESENTAR A PASTA ATUAL
-    # ============================================================
-    Write-AnimatedLine ""
-
-    Write-Host (
-      "  Pasta selecionada: \$($FolderOption.RelativePath)"
-    ) -ForegroundColor Cyan
-
-    Write-Host (
-      "  Tipo: $($FolderOption.DisplayName)"
-    ) -ForegroundColor Gray
-
-    Write-Host (
-      "  Documentos encontrados: $($documents.Count)"
-    ) -ForegroundColor Gray
-
-    Write-Host (
-      "  " + ("-" * 72)
-    ) -ForegroundColor DarkGray
-
-    # ============================================================
-    # 4. APRESENTAR OS DOCUMENTOS DISPONIVEIS
-    # ============================================================
-    for (
-      $index = 0
-      $index -lt $documents.Count
-      $index++
-    ) {
-
-      $document =
-      $documents[$index]
-
-      $number =
-      $index + 1
-
-      # Prepara os valores apresentados no console.
-      #
-      # Quando uma informacao nao estiver preenchida, utiliza um
-      # texto alternativo para evitar linhas vazias na listagem.
-      $sourceCode = [string]$document.SourceCode
-
-      if (
-        [string]::IsNullOrWhiteSpace(
-          $sourceCode
-        )
-      ) {
-        $sourceCode =
-        [string]$document.File.BaseName
-      }
-
-      $documentTitle =
-      [string]$document.DocumentTitle
-
-      if (
-        [string]::IsNullOrWhiteSpace(
-          $documentTitle
-        )
-      ) {
-        $documentTitle =
-        "sem titulo"
-      }
-
-      $revisionDisplay =
-      [string]$document.ClientRevision
-
-      if (
-        [string]::IsNullOrWhiteSpace(
-          $revisionDisplay
-        )
-      ) {
-        $revisionDisplay =
-        "nao informada"
-      }
-
-      $stateDisplay =
-      [string]$document.PdmState
-
-      if (
-        [string]::IsNullOrWhiteSpace(
-          $stateDisplay
-        )
-      ) {
-        $stateDisplay =
-        "nao informado"
-      }
-
-      # A cor serve somente para destacar visualmente o estado.
-      # A decisao sobre workflow ocorre posteriormente no fluxo
-      # principal e nao e alterada por essa apresentacao.
-      $stateColor =
-      [System.ConsoleColor]::Yellow
-
-      if ($stateDisplay -ieq "Aprovado") {
-        $stateColor =
-        [System.ConsoleColor]::Green
-      }
-      elseif ($stateDisplay -ieq "Obsoleto") {
-        $stateColor =
-        [System.ConsoleColor]::Red
-      }
-      elseif ($stateDisplay -ieq "Verificado") {
-
-        $stateColor =
-        [System.ConsoleColor]::Cyan
-      }
-      elseif ($stateDisplay -ieq "Corrigir") {
-
-        $stateColor =
-        [System.ConsoleColor]::Magenta
-      }
-      elseif (
-        $stateDisplay -ieq "Em verificacao" -or
-        $stateDisplay -ieq "Em verificação"
-      ) {
-
-        $stateColor =
-        [System.ConsoleColor]::DarkCyan
-      }
-      elseif (
-        $stateDisplay -ieq "Em elaboracao" -or
-        $stateDisplay -ieq "Em elaboração"
-      ) {
-
-        $stateColor =
-        [System.ConsoleColor]::DarkYellow
-      }
-      elseif (
-        $stateDisplay -ieq "Em revisao" -or
-        $stateDisplay -ieq "Em revisão"
-      ) {
-
-        $stateColor =
-        [System.ConsoleColor]::Blue
-      }
-
-      Write-Host (
-        "  [{0}] {1}" -f
-        $number,
-        $sourceCode
-      ) -ForegroundColor White
-
-      Write-Host (
-        "       Nome:    {0}" -f
-        $documentTitle
-      ) -ForegroundColor Gray
-
-      Write-Host (
-        "       Revisao: {0}" -f
-        $revisionDisplay
-      ) -ForegroundColor Gray
-
-      if ($Details) {
-
-        $revisionSourceDisplay =
-        [string]$document.RevisionSource
-
-        if (
-          [string]::IsNullOrWhiteSpace(
-            $revisionSourceDisplay
-          )
-        ) {
-
-          $revisionSourceDisplay =
-          "nome do arquivo"
-        }
-
-        Write-Host (
-          "       Fonte:   {0}" -f
-          $revisionSourceDisplay
-        ) -ForegroundColor DarkGray
-      }
-
-      Write-Host (
-        "       Estado:  {0}" -f
-        $stateDisplay
-      ) -ForegroundColor $stateColor
-
-      if ($Details) {
-
-        Write-Host (
-          "       PDF:     {0}" -f
-          $document.File.Name
-        ) -ForegroundColor DarkGray
-
-        Write-Host (
-          "       Local:   {0}" -f
-          $document.File.FullName
-        ) -ForegroundColor DarkGray
-      }
-
-      Write-Host ""
+    # Pasta sem PDFs nao abre a tela de selecao.
+    if ($documents.Count -eq 0) {
+        Write-Warn "A pasta '$($FolderOption.RelativePath)' nao possui PDFs."
+        if ($AllowBack) { return $null }
+        return @()
     }
 
-    # ============================================================
-    # 5. APRESENTAR AS OPCOES DE SELECAO
-    # ============================================================
-    Write-Host (
-      "  Selecione os documentos que deseja importar."
-    ) -ForegroundColor Cyan
-
-    Write-Host (
-      "  Exemplos: 1 | 1,3,5 | 1-5 | T | *"
-    ) -ForegroundColor DarkGray
-
-    if ($AllowBack) {
-      Write-Host (
-        "  Digite V para voltar para a lista de pastas"
-      ) -ForegroundColor DarkGray
+    # A cor so destaca o estado; a decisao sobre workflow fica no fluxo principal.
+    $stateColors = @{
+        "Aprovado" = "Green"; "Obsoleto" = "Red"; "Verificado" = "Cyan"; "Corrigir" = "Magenta"
+        "Em verificacao" = "DarkCyan"; "Em verificação" = "DarkCyan"
+        "Em elaboracao"  = "DarkYellow"; "Em elaboração" = "DarkYellow"
+        "Em revisao"     = "Blue"; "Em revisão" = "Blue"
     }
 
-    # ============================================================
-    # 6. RECEBER A ENTRADA DO USUARIO
-    # ============================================================
-    $selectionText =
-    Read-Host (
-      "Digite os numeros dos documentos"
-    )
+    # --- 2. Apresentar e validar a selecao (repete ate selecionar ou voltar) ---
+    while ($true) {
+        Write-AnimatedLine ""
+        Write-Host "  Pasta selecionada: \$($FolderOption.RelativePath)" -ForegroundColor Cyan
+        Write-Host "  Tipo: $($FolderOption.DisplayName)" -ForegroundColor Gray
+        Write-Host "  Documentos encontrados: $($documents.Count)" -ForegroundColor Gray
+        Write-Host ("  " + ("-" * 72)) -ForegroundColor DarkGray
 
-    if (
-      [string]::IsNullOrWhiteSpace(
-        $selectionText
-      )
-    ) {
-      Write-Warn "Nenhum documento foi selecionado."
-      continue
-    }
+        for ($i = 0; $i -lt $documents.Count; $i++) {
+            $document = $documents[$i]
 
-    $selectionText =
-    $selectionText.Trim()
+            # Texto alternativo evita linhas vazias na listagem.
+            $code = [string]$document.SourceCode
+            if ([string]::IsNullOrWhiteSpace($code)) { $code = [string]$document.File.BaseName }
+            $title = [string]$document.DocumentTitle
+            if ([string]::IsNullOrWhiteSpace($title)) { $title = "sem titulo" }
+            $revision = [string]$document.ClientRevision
+            if ([string]::IsNullOrWhiteSpace($revision)) { $revision = "nao informada" }
+            $state = [string]$document.PdmState
+            if ([string]::IsNullOrWhiteSpace($state)) { $state = "nao informado" }
+            $stateColor = if ($stateColors.ContainsKey($state)) { $stateColors[$state] } else { "Yellow" }
 
-    # Quando o retorno estiver permitido, V ou VOLTAR devolve
-    # NULL para que a funcao chamadora reapresente as pastas.
-    if (
-      $AllowBack -and
-      (
-        $selectionText -ieq "V" -or
-        $selectionText -ieq "VOLTAR"
-      )
-    ) {
-      return $null
-    }
-
-    # ============================================================
-    # 7. INTERPRETAR A SELECAO INFORMADA
-    # ============================================================
-    #
-    # A selecao aceita:
-    #   1. um numero;
-    #   2. numeros separados por virgula;
-    #   3. intervalos;
-    #   4. T ou TODOS;
-    #   5. o caractere curinga usado para selecionar todos.
-    $selectedNumbers =
-    [System.Collections.Generic.List[int]]::new()
-
-    # O HashSet impede que o mesmo numero seja adicionado duas
-    # vezes quando a entrada combinar selecoes sobrepostas.
-    #
-    # Exemplo:
-    #   1,2,1-5
-    $knownNumbers =
-    [System.Collections.Generic.HashSet[int]]::new()
-
-    $selectionIsValid =
-    $true
-
-    if (
-      $selectionText -ieq "T" -or
-      $selectionText -ieq "TODOS" -or
-      $selectionText -eq "*"
-    ) {
-
-      for (
-        $number = 1
-        $number -le $documents.Count
-        $number++
-      ) {
-
-        if ($knownNumbers.Add($number)) {
-          $selectedNumbers.Add($number)
-        }
-      }
-    }
-    else {
-
-      foreach (
-        $selectionPart in (
-          $selectionText -split ","
-        )
-      ) {
-
-        $currentPart =
-        ([string]$selectionPart).Trim()
-
-        if (
-          [string]::IsNullOrWhiteSpace(
-            $currentPart
-          )
-        ) {
-
-          Write-Warn (
-            "Selecao invalida: existem valores vazios na entrada."
-          )
-
-          $selectionIsValid = $false
-          break
-        }
-        # Verifica primeiro se a parte atual representa um
-        # intervalo numerico, por exemplo 1-5.
-        if (
-          $currentPart -match
-          '^(?<Start>\d+)\s*-\s*(?<End>\d+)$'
-        ) {
-
-          $rangeStart =
-          [int]$Matches["Start"]
-
-          $rangeEnd =
-          [int]$Matches["End"]
-
-          if (
-            $rangeStart -lt 1 -or
-            $rangeEnd -gt $documents.Count -or
-            $rangeStart -gt $rangeEnd
-          ) {
-
-            Write-Warn (
-              "Intervalo invalido: '$currentPart'. " +
-              "Use valores entre 1 e $($documents.Count)."
-            )
-
-            $selectionIsValid =
-            $false
-
-            break
-          }
-
-          for (
-            $rangeNumber = $rangeStart
-            $rangeNumber -le $rangeEnd
-            $rangeNumber++
-          ) {
-
-            if ($knownNumbers.Add($rangeNumber)) {
-              $selectedNumbers.Add($rangeNumber)
+            Write-Host ("  [{0}] {1}" -f ($i + 1), $code) -ForegroundColor White
+            Write-Host "       Nome:    $title" -ForegroundColor Gray
+            Write-Host "       Revisao: $revision" -ForegroundColor Gray
+            if ($Details) {
+                $revisionSource = [string]$document.RevisionSource
+                if ([string]::IsNullOrWhiteSpace($revisionSource)) { $revisionSource = "nome do arquivo" }
+                Write-Host "       Fonte:   $revisionSource" -ForegroundColor DarkGray
             }
-          }
-
-          continue
+            Write-Host "       Estado:  $state" -ForegroundColor $stateColor
+            if ($Details) {
+                Write-Host "       PDF:     $($document.File.Name)" -ForegroundColor DarkGray
+                Write-Host "       Local:   $($document.File.FullName)" -ForegroundColor DarkGray
+            }
+            Write-Host ""
         }
 
-        # Quando a entrada nao e um intervalo, tenta interpretar
-        # a parte atual como um numero individual.
-        $selectedNumber =
-        0
+        Write-Host "  Selecione os documentos que deseja importar." -ForegroundColor Cyan
+        Write-Host "  Exemplos: 1 | 1,3,5 | 1-5 | T | *" -ForegroundColor DarkGray
+        if ($AllowBack) { Write-Host "  Digite V para voltar para a lista de pastas" -ForegroundColor DarkGray }
 
-        $validNumber =
-        [System.Int32]::TryParse(
-          $currentPart,
-          [ref]$selectedNumber
-        )
+        # --- 3. Receber e interpretar a entrada ---
+        $text = ([string](Read-Host "Digite os numeros dos documentos")).Trim()
+        if ($text -eq "") { Write-Warn "Nenhum documento foi selecionado."; continue }
 
-        if (
-          -not $validNumber -or
-          $selectedNumber -lt 1 -or
-          $selectedNumber -gt $documents.Count
-        ) {
+        if ($AllowBack -and ($text -ieq "V" -or $text -ieq "VOLTAR")) { return $null }   # chamador reapresenta as pastas
 
-          Write-Warn (
-            "Selecao invalida: '$currentPart'. " +
-            "Digite numeros entre 1 e $($documents.Count)."
-          )
+        # Numeros validos, na ordem lida e sem repeticao (ex.: 1,2,1-5).
+        $selected = [System.Collections.Generic.List[int]]::new()
+        $valid = $true
 
-          $selectionIsValid =
-          $false
+        if ($text -ieq "T" -or $text -ieq "TODOS" -or $text -eq "*") { 1..$documents.Count | ForEach-Object { $selected.Add($_) } }
+        else {
+            foreach ($part in ($text -split ",")) {
+                $part = ([string]$part).Trim()
 
-          break
+                if ($part -eq "") { Write-Warn "Selecao invalida: existem valores vazios na entrada."; $valid = $false; break }
+
+                if ($part -match '^(?<Start>\d+)\s*-\s*(?<End>\d+)$') {   # intervalo, ex.: 1-5
+                    $a = [int]$Matches["Start"]; $b = [int]$Matches["End"]
+                    if ($a -lt 1 -or $b -gt $documents.Count -or $a -gt $b) {
+                        Write-Warn "Intervalo invalido: '$part'. Use valores entre 1 e $($documents.Count)."
+                        $valid = $false; break
+                    }
+                    $a..$b | ForEach-Object { if (-not $selected.Contains($_)) { $selected.Add($_) } }
+                    continue
+                }
+
+                $n = 0
+                if (-not [int]::TryParse($part, [ref]$n) -or $n -lt 1 -or $n -gt $documents.Count) {
+                    Write-Warn "Selecao invalida: '$part'. Digite numeros entre 1 e $($documents.Count)."
+                    $valid = $false; break
+                }
+                if (-not $selected.Contains($n)) { $selected.Add($n) }
+            }
         }
+        if (-not $valid) { continue }
+        if ($selected.Count -eq 0) { Write-Warn "Nenhum documento valido foi selecionado."; continue }
 
-        if ($knownNumbers.Add($selectedNumber)) {
-          $selectedNumbers.Add($selectedNumber)
+        # --- 4. Montar o retorno na mesma ordem apresentada ao usuario ---
+        $selectedDocuments = [System.Collections.Generic.List[object]]::new()
+
+        Write-AnimatedLine ""
+        foreach ($n in ($selected | Sort-Object)) {
+            $selectedDocuments.Add($documents[$n - 1])
+            Write-Success "PDF selecionado [$n]: $($documents[$n - 1].File.Name)"
         }
-      }
+        Write-AnimatedLine ""
+        Write-Host "  Documentos selecionados: $($selectedDocuments.Count)" -ForegroundColor Cyan
+
+        return $selectedDocuments.ToArray()
     }
-
-    if (-not $selectionIsValid) {
-      continue
-    }
-
-    if ($selectedNumbers.Count -eq 0) {
-      Write-Warn "Nenhum documento valido foi selecionado."
-      continue
-    }
-
-    # ============================================================
-    # 8. MONTAR A LISTA DE DOCUMENTOS SELECIONADOS
-    # ============================================================
-    $selectedDocuments =
-    [System.Collections.Generic.List[object]]::new()
-
-    Write-AnimatedLine ""
-
-    # Os numeros sao ordenados antes da montagem do retorno para
-    # manter a mesma ordem visual apresentada ao usuario.
-    foreach (
-      $selectedNumber in (
-        $selectedNumbers |
-          Sort-Object
-      )
-    ) {
-
-      $selectedDocument =
-      $documents[$selectedNumber - 1]
-
-      $selectedDocuments.Add(
-        $selectedDocument
-      )
-
-      Write-Success (
-        "PDF selecionado [$selectedNumber]: " +
-        $selectedDocument.File.Name
-      )
-    }
-
-    Write-AnimatedLine ""
-
-    Write-Host (
-      "  Documentos selecionados: " +
-      $selectedDocuments.Count
-    ) -ForegroundColor Cyan
-
-    # ============================================================
-    # 9. RETORNAR OS DOCUMENTOS SELECIONADOS
-    # ============================================================
-    return $selectedDocuments.ToArray()
-  }
 }

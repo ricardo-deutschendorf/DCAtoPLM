@@ -1,383 +1,181 @@
 # ============================================================
 # DIAGNOSTICO DAS CONSULTAS DO TEAMCENTER
 # ============================================================
-#
-# Este arquivo apresenta informacoes tecnicas sobre os metodos,
-# servicos e tipos utilizados pelas consultas do Teamcenter.
-#
-# Responsabilidades:
-#   1. listar os metodos de consulta do Importar GD;
-#   2. localizar tipos SavedQueryService carregados;
-#   3. listar os metodos disponiveis nos servicos de consulta;
-#   4. apresentar construtores, campos e propriedades dos tipos
-#      utilizados pelas Saved Queries;
-#   5. auxiliar o diagnostico de diferencas entre versoes das
-#      bibliotecas SOA.
-#
-# As funcoes deste arquivo nao pesquisam Items e nao alteram
-# objetos no Teamcenter.
+# Exibe metodos, servicos e tipos usados nas consultas do Teamcenter.
+# Auxilia na comparacao entre versoes das bibliotecas SOA.
+# Nao pesquisa Items nem altera objetos no Teamcenter.
 # ============================================================
+
+# Retorna os tipos carregaveis de um assembly.
 function Get-DcaAssemblyTypesSafe {
-
-  param(
-    [Parameter(Mandatory = $true)]
-    [ValidateNotNull()]
-    $Assembly
-  )
-
-  try {
-
-    return @(
-      $Assembly.GetTypes()
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNull()]
+        $Assembly
     )
-  }
-  catch [System.Reflection.ReflectionTypeLoadException] {
 
-    if ($Details) {
-
-      foreach (
-        $loaderException in
-        $_.Exception.LoaderExceptions
-      ) {
-
-        if ($null -eq $loaderException) {
-          continue
+    try {
+        return @($Assembly.GetTypes())
+    }
+    catch [System.Reflection.ReflectionTypeLoadException] {
+        if ($Details) {
+            foreach ($error in @($_.Exception.LoaderExceptions | Where-Object { $null -ne $_ })) {
+                Write-Warn "Falha parcial ao carregar tipo do assembly '$($Assembly.GetName().Name)': $($error.Message)"
+            }
         }
 
-        Write-Warn (
-          "Falha parcial ao carregar tipo do assembly " +
-          "'$($Assembly.GetName().Name)': " +
-          $loaderException.Message
-        )
-      }
+        return @($_.Exception.Types | Where-Object { $null -ne $_ })
     }
+    catch {
+        if ($Details) {
+            Write-Warn "Nao foi possivel ler os tipos do assembly '$($Assembly.GetName().Name)': $($_.Exception.Message)"
+        }
 
-    return @(
-      $_.Exception.Types |
-        Where-Object {
-        $null -ne $_
-      }
-    )
-  }
-  catch {
-
-    if ($Details) {
-
-      Write-Warn (
-        "Nao foi possivel ler os tipos do assembly " +
-        "'$($Assembly.GetName().Name)': " +
-        $_.Exception.Message
-      )
+        return @()
     }
-
-    return @()
-  }
 }
 
-function Show-DcaTeamcenterLookupMethods {
+# Formata a assinatura de um metodo ou construtor.
+function Get-DcaMethodParameterText {
+    param(
+        [Parameter(Mandatory)]
+        $Method
+    )
 
-  if ($null -eq $script:TeamcenterFunctions) {
-    return
-  }
-
-  Write-Host ""
-
-  Write-Host (
-    "  Metodos de consulta disponiveis:"
-  ) -ForegroundColor Cyan
-
-  $lookupMethods =
-  @(
-    $script:TeamcenterFunctions.GetMethods() |
-      Where-Object {
-      $_.Name -match
-      "(?i)item|revision|load|find|search"
-    } |
-      Sort-Object Name
-  )
-
-  foreach ($lookupMethod in $lookupMethods) {
-
-    $parameterText =
-    @(
-      $lookupMethod.GetParameters() |
-        ForEach-Object {
-
-        "{0} {1}" -f
-        $_.ParameterType.FullName,
-        $_.Name
-      }
+    return @(
+        $Method.GetParameters() | ForEach-Object {
+            "{0} {1}" -f $_.ParameterType.FullName, $_.Name
+        }
     ) -join ", "
-
-    Write-Host (
-      "    {0}({1}) -> {2}" -f
-      $lookupMethod.Name,
-      $parameterText,
-      $lookupMethod.ReturnType.FullName
-    ) -ForegroundColor DarkGray
-  }
-
-  Write-Host ""
 }
-function Show-TeamcenterQueryServiceTypes {
 
-  Write-Host ""
-
-  Write-Host (
-    "  Tipos de servico de consulta carregados:"
-  ) -ForegroundColor Cyan
-
-  $queryAssemblies =
-  @(
-    $script:TeamcenterQueryAssemblies
-  )
-
-  $queryServiceTypes =
-  [System.Collections.Generic.List[type]]::new()
-
-  foreach ($queryAssembly in $queryAssemblies) {
-
-    $assemblyTypes =
-    @(
-      Get-DcaAssemblyTypesSafe `
-        -Assembly $queryAssembly
-    )
-
-    foreach ($assemblyType in $assemblyTypes) {
-
-      if (
-        $null -ne $assemblyType -and
-        $assemblyType.FullName -match
-        "(?i)SavedQueryService$"
-      ) {
-
-        $queryServiceTypes.Add(
-          $assemblyType
-        )
-      }
-    }
-  }
-
-  $queryServiceTypes =
-  @(
-    $queryServiceTypes |
-      Sort-Object FullName -Unique
-  )
-
-  if ($queryServiceTypes.Count -eq 0) {
-
-    Write-Warn (
-      "Nenhum tipo SavedQueryService foi encontrado."
-    )
-
-    return
-  }
-
-  foreach ($queryServiceType in $queryServiceTypes) {
-
-    Write-Host (
-      "    Tipo: {0}" -f
-      $queryServiceType.FullName
-    ) -ForegroundColor Gray
-
-    foreach (
-      $queryMethod in (
-        $queryServiceType.GetMethods() |
-          Where-Object {
-          $_.Name -match
-          "(?i)execute|query|search|getservice"
-        } |
-          Sort-Object Name
-      )
-    ) {
-
-      $parameterText =
-      @(
-        $queryMethod.GetParameters() |
-          ForEach-Object {
-
-          "{0} {1}" -f
-          $_.ParameterType.FullName,
-          $_.Name
-        }
-      ) -join ", "
-
-      Write-Host (
-        "      {0}({1}) -> {2}" -f
-        $queryMethod.Name,
-        $parameterText,
-        $queryMethod.ReturnType.FullName
-      ) -ForegroundColor DarkGray
-    }
-  }
-
-  Write-Host ""
-}
-function Show-TeamcenterSavedQueryTypeDetails {
-
-  Write-Host ""
-
-  Write-Host (
-    "  Estrutura dos tipos de Saved Query:"
-  ) -ForegroundColor Cyan
-
-  $queryAssemblies =
-  @(
-    $script:TeamcenterQueryAssemblies
-  )
-
-  if ($Details) {
-
-    foreach ($queryAssembly in $queryAssemblies) {
-
-      Write-Host (
-        "  Assembly de consulta encontrado: " +
-        "$($queryAssembly.GetName().Name)"
-      ) -ForegroundColor Green
-
-      Write-Host (
-        "    Arquivo: " +
-        $queryAssembly.Location
-      ) -ForegroundColor DarkGray
-    }
-  }
-
-  if ($queryAssemblies.Count -eq 0) {
-
-    Write-Warn (
-      "As bibliotecas de consulta nao foram localizadas " +
-      "entre os assemblies carregados."
-    )
-
-    return
-  }
-
-  $queryTypes =
-  [System.Collections.Generic.List[type]]::new()
-
-  foreach ($queryAssembly in $queryAssemblies) {
-
-    Write-Host (
-      "  Analisando biblioteca: " +
-      $queryAssembly.GetName().Name
-    ) -ForegroundColor DarkGray
-
-    $assemblyTypes =
-    @(
-      Get-DcaAssemblyTypesSafe `
-        -Assembly $queryAssembly
-    )
-
-    foreach ($assemblyType in $assemblyTypes) {
-
-      if (
-        $null -ne $assemblyType -and
-        -not [string]::IsNullOrWhiteSpace(
-          [string]$assemblyType.FullName
-        ) -and
-        $assemblyType.FullName -match
-        "(?i)QueryInput|" +
-        "SavedQueryInput|" +
-        "SavedQueriesResponse|" +
-        "ExecuteSavedQueryResponse|" +
-        "SavedQueryObject|" +
-        "BusinessObjectQueryClause|" +
-        "QueryResults|" +
-        "SavedQueryResults"
-      ) {
-
-        $queryTypes.Add(
-          $assemblyType
-        )
-      }
-    }
-  }
-
-  $queryTypes =
-  @(
-    $queryTypes |
-      Sort-Object FullName -Unique
-  )
-
-  if ($queryTypes.Count -eq 0) {
-
-    Write-Warn (
-      "Nenhum tipo de entrada ou resposta de Saved Query " +
-      "foi encontrado nas bibliotecas carregadas."
-    )
-
-    return
-  }
-
-  $bindingFlags =
-  [System.Reflection.BindingFlags]::Public -bor
-  [System.Reflection.BindingFlags]::Instance
-
-  foreach ($queryType in $queryTypes) {
+# Lista os metodos de consulta disponiveis no Importar GD.
+function Show-DcaTeamcenterLookupMethods {
+    if ($null -eq $script:TeamcenterFunctions) { return }
 
     Write-Host ""
+    Write-Host "  Metodos de consulta disponiveis:" -ForegroundColor Cyan
 
-    Write-Host (
-      "  TIPO: $($queryType.FullName)"
-    ) -ForegroundColor Green
+    foreach ($method in @(
+        $script:TeamcenterFunctions.GetMethods() |
+            Where-Object { $_.Name -match '(?i)item|revision|load|find|search' } |
+            Sort-Object Name
+    )) {
+        $parameters = Get-DcaMethodParameterText -Method $method
 
-    foreach (
-      $constructor in
-      $queryType.GetConstructors(
-        $bindingFlags
-      )
-    ) {
+        Write-Host (
+            "    {0}({1}) -> {2}" -f
+            $method.Name, $parameters, $method.ReturnType.FullName
+        ) -ForegroundColor DarkGray
+    }
 
-      $parameterText =
-      @(
-        $constructor.GetParameters() |
-          ForEach-Object {
+    Write-Host ""
+}
 
-          "{0} {1}" -f
-          $_.ParameterType.FullName,
-          $_.Name
+# Lista os tipos SavedQueryService e os respectivos metodos.
+function Show-TeamcenterQueryServiceTypes {
+    Write-Host ""
+    Write-Host "  Tipos de servico de consulta carregados:" -ForegroundColor Cyan
+
+    $serviceTypes = @(
+        foreach ($assembly in @($script:TeamcenterQueryAssemblies)) {
+            Get-DcaAssemblyTypesSafe -Assembly $assembly |
+                Where-Object { $_.FullName -match '(?i)SavedQueryService$' }
         }
-      ) -join ", "
+    ) | Sort-Object FullName -Unique
 
-      Write-Host (
-        "    CONSTRUTOR: ({0})" -f
-        $parameterText
-      ) -ForegroundColor DarkGray
+    if ($serviceTypes.Count -eq 0) {
+        Write-Warn "Nenhum tipo SavedQueryService foi encontrado."
+        return
     }
 
-    foreach (
-      $field in (
-        $queryType.GetFields(
-          $bindingFlags
-        ) |
-          Sort-Object Name
-      )
-    ) {
+    foreach ($type in $serviceTypes) {
+        Write-Host "    Tipo: $($type.FullName)" -ForegroundColor Gray
 
-      Write-Host (
-        "    CAMPO: {0} = {1}" -f
-        $field.Name,
-        $field.FieldType.FullName
-      ) -ForegroundColor Gray
+        foreach ($method in @(
+            $type.GetMethods() |
+                Where-Object { $_.Name -match '(?i)execute|query|search|getservice' } |
+                Sort-Object Name
+        )) {
+            $parameters = Get-DcaMethodParameterText -Method $method
+
+            Write-Host (
+                "      {0}({1}) -> {2}" -f
+                $method.Name, $parameters, $method.ReturnType.FullName
+            ) -ForegroundColor DarkGray
+        }
     }
 
-    foreach (
-      $property in (
-        $queryType.GetProperties(
-          $bindingFlags
-        ) |
-          Sort-Object Name
-      )
-    ) {
+    Write-Host ""
+}
 
-      Write-Host (
-        "    PROPRIEDADE: {0} = {1} | escrita={2}" -f
-        $property.Name,
-        $property.PropertyType.FullName,
-        $property.CanWrite
-      ) -ForegroundColor Gray
+# Exibe construtores, campos e propriedades dos tipos de Saved Query.
+function Show-TeamcenterSavedQueryTypeDetails {
+    Write-Host ""
+    Write-Host "  Estrutura dos tipos de Saved Query:" -ForegroundColor Cyan
+
+    $assemblies = @($script:TeamcenterQueryAssemblies)
+
+    if ($assemblies.Count -eq 0) {
+        Write-Warn "As bibliotecas de consulta nao foram localizadas entre os assemblies carregados."
+        return
     }
-  }
 
-  Write-Host ""
+    if ($Details) {
+        foreach ($assembly in $assemblies) {
+            Write-Host "  Assembly de consulta encontrado: $($assembly.GetName().Name)" -ForegroundColor Green
+            Write-Host "    Arquivo: $($assembly.Location)" -ForegroundColor DarkGray
+        }
+    }
+
+    $typePattern = '(?i)QueryInput|SavedQueryInput|SavedQueriesResponse|' +
+        'ExecuteSavedQueryResponse|SavedQueryObject|' +
+        'BusinessObjectQueryClause|QueryResults|SavedQueryResults'
+
+    $queryTypes = @(
+        foreach ($assembly in $assemblies) {
+            Write-Host "  Analisando biblioteca: $($assembly.GetName().Name)" -ForegroundColor DarkGray
+
+            Get-DcaAssemblyTypesSafe -Assembly $assembly |
+                Where-Object {
+                    $null -ne $_ -and
+                    -not [string]::IsNullOrWhiteSpace([string]$_.FullName) -and
+                    $_.FullName -match $typePattern
+                }
+        }
+    ) | Sort-Object FullName -Unique
+
+    if ($queryTypes.Count -eq 0) {
+        Write-Warn "Nenhum tipo de entrada ou resposta de Saved Query foi encontrado nas bibliotecas carregadas."
+        return
+    }
+
+    $flags = [System.Reflection.BindingFlags]::Public -bor
+        [System.Reflection.BindingFlags]::Instance
+
+    foreach ($type in $queryTypes) {
+        Write-Host ""
+        Write-Host "  TIPO: $($type.FullName)" -ForegroundColor Green
+
+        foreach ($constructor in $type.GetConstructors($flags)) {
+            $parameters = Get-DcaMethodParameterText -Method $constructor
+            Write-Host "    CONSTRUTOR: ($parameters)" -ForegroundColor DarkGray
+        }
+
+        foreach ($field in @($type.GetFields($flags) | Sort-Object Name)) {
+            Write-Host (
+                "    CAMPO: {0} = {1}" -f
+                $field.Name, $field.FieldType.FullName
+            ) -ForegroundColor Gray
+        }
+
+        foreach ($property in @($type.GetProperties($flags) | Sort-Object Name)) {
+            Write-Host (
+                "    PROPRIEDADE: {0} = {1} | escrita={2}" -f
+                $property.Name, $property.PropertyType.FullName, $property.CanWrite
+            ) -ForegroundColor Gray
+        }
+    }
+
+    Write-Host ""
 }

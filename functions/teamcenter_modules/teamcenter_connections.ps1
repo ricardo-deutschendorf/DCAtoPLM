@@ -1,1408 +1,408 @@
 # ============================================================
 # CONEXAO, SESSAO E SERVICOS DO TEAMCENTER
 # ============================================================
-#
-# Este arquivo concentra os recursos compartilhados necessários
-# para acessar os servicos SOA do Teamcenter.
-#
-# Responsabilidades:
-#   1. validar o executavel Importar GD;
-#   2. ler e validar a configuracao do ambiente;
-#   3. autenticar e reutilizar a sessao do Teamcenter;
-#   4. localizar metodos expostos pelo Importar GD;
-#   5. recuperar a conexao SOA da sessao;
-#   6. carregar os assemblies utilizados pelas Saved Queries;
-#   7. fornecer o DataManagementService;
-#   8. converter erros parciais SOA em mensagens legiveis.
-#
-# Nenhuma funcao deste arquivo cria Items, revisoes ou Datasets
-# diretamente. As funcoes apenas preparam e fornecem os recursos
-# compartilhados utilizados pelos demais modulos.
+# Recursos compartilhados para acessar os servicos SOA do Teamcenter.
+#   1. valida o executavel Importar GD;
+#   2. le e valida a configuracao do ambiente;
+#   3. autentica e reutiliza a sessao do Teamcenter;
+#   4. localiza metodos do Importar GD e recupera a conexao SOA;
+#   5. carrega os assemblies das Saved Queries e fornece o
+#      DataManagementService;
+#   6. converte erros parciais SOA em mensagens legiveis.
+# Nenhuma funcao daqui cria Items, revisoes ou Datasets; elas apenas
+# preparam e fornecem os recursos usados pelos demais modulos.
 # ============================================================
 
-# ============================================================
-# VALIDACAO DO IMPORTADOR
-# ============================================================
+# Valida o executavel Importar GD configurado no .env. Se nao existir
+# no destino local, copia todos os arquivos da origem de rede.
 function Confirm-TeamcenterImporter {
 
-  # Valida o executavel Importar GD configurado no .env.
-  #
-  # Se o executavel nao existir no destino local, copia
-  # automaticamente todos os arquivos da origem de rede.
-
-  # ============================================================
-  # 1. LER AS CONFIGURACOES DO IMPORTAR GD
-  # ============================================================
-
-  $importerExecutablePath =
-  ([string]$env:DCA_IMPORTER_PATH).Trim()
-
-  $importerSourcePath =
-  ([string]$env:DCA_IMPORTER_SOURCE).Trim()
-
-  $importerDestinationPath =
-  ([string]$env:DCA_IMPORTER_DESTINATION).Trim()
-
-  if ($Details) {
-
-    Write-Host (
-      "  DCA_IMPORTER_SOURCE: '{0}'" -f
-      $importerSourcePath
-    ) -ForegroundColor DarkGray
-
-    Write-Host (
-      "  DCA_IMPORTER_DESTINATION: '{0}'" -f
-      $importerDestinationPath
-    ) -ForegroundColor DarkGray
-
-    Write-Host (
-      "  DCA_IMPORTER_PATH: '{0}'" -f
-      $importerExecutablePath
-    ) -ForegroundColor DarkGray
-  }
-
-  if (
-    [string]::IsNullOrWhiteSpace(
-      $importerExecutablePath
-    )
-  ) {
-
-    throw (
-      "DCA_IMPORTER_PATH deve ser configurado no arquivo .env."
-    )
-  }
-
-  # ============================================================
-  # 2. RETORNAR SE O EXECUTAVEL JA EXISTIR
-  # ============================================================
-
-  if (
-    Test-Path `
-      -LiteralPath $importerExecutablePath `
-      -PathType Leaf
-  ) {
+    # --- 1. Ler as configuracoes do Importar GD ---
+    $exePath    = ([string]$env:DCA_IMPORTER_PATH).Trim()
+    $sourcePath = ([string]$env:DCA_IMPORTER_SOURCE).Trim()
+    $destPath   = ([string]$env:DCA_IMPORTER_DESTINATION).Trim()
 
     if ($Details) {
-
-      Write-Host (
-        "  Importar GD disponivel: " +
-        $importerExecutablePath
-      ) -ForegroundColor DarkGray
+        Write-Host "  DCA_IMPORTER_SOURCE: '$sourcePath'" -ForegroundColor DarkGray
+        Write-Host "  DCA_IMPORTER_DESTINATION: '$destPath'" -ForegroundColor DarkGray
+        Write-Host "  DCA_IMPORTER_PATH: '$exePath'" -ForegroundColor DarkGray
     }
 
-    return $importerExecutablePath
-  }
-
-  # ============================================================
-  # 3. VALIDAR AS CONFIGURACOES DA COPIA AUTOMATICA
-  # ============================================================
-
-  Write-Warn (
-    (
-      "Importar GD nao encontrado em '{0}'. " +
-      "Iniciando copia automatica."
-    ) -f $importerExecutablePath
-  )
-
-  if (
-    [string]::IsNullOrWhiteSpace(
-      $importerSourcePath
-    )
-  ) {
-
-    throw (
-      "O Importar GD nao existe no destino e " +
-      "DCA_IMPORTER_SOURCE nao foi configurado no .env."
-    )
-  }
-
-  if (
-    [string]::IsNullOrWhiteSpace(
-      $importerDestinationPath
-    )
-  ) {
-
-    throw (
-      "O Importar GD nao existe no destino e " +
-      "DCA_IMPORTER_DESTINATION nao foi configurado no .env."
-    )
-  }
-
-  # ============================================================
-  # 4. VALIDAR A ORIGEM DE REDE
-  # ============================================================
-
-  if (-not (
-      Test-Path `
-        -LiteralPath $importerSourcePath `
-        -PathType Container
-    )) {
-
-    throw (
-      "A origem do Importar GD nao foi encontrada ou nao esta " +
-      "acessivel: '{0}'. Verifique a conexao com a rede." -f
-      $importerSourcePath
-    )
-  }
-
-  $sourceExecutablePath =
-  Join-Path `
-    -Path $importerSourcePath `
-    -ChildPath "Importar GD.exe"
-
-  if (-not (
-      Test-Path `
-        -LiteralPath $sourceExecutablePath `
-        -PathType Leaf
-    )) {
-
-    throw (
-      "A origem do Importar GD foi encontrada, mas nao contem " +
-      "o executavel esperado: '{0}'." -f
-      $sourceExecutablePath
-    )
-  }
-
-  # ============================================================
-  # 5. VALIDAR A COERENCIA DO DESTINO
-  # ============================================================
-
-  $configuredExecutableFolder =
-  [System.IO.Path]::GetDirectoryName(
-    $importerExecutablePath
-  )
-
-  if (
-    [string]::IsNullOrWhiteSpace(
-      $configuredExecutableFolder
-    )
-  ) {
-
-    throw (
-      "Nao foi possivel identificar a pasta de destino a partir " +
-      "de DCA_IMPORTER_PATH: '$importerExecutablePath'."
-    )
-  }
-
-  $normalizedConfiguredFolder =
-  [System.IO.Path]::GetFullPath(
-    $configuredExecutableFolder
-  ).TrimEnd(
-  [char[]]@(
-    '\',
-    '/'
-  )
-)
-
-$normalizedDestinationFolder =
-[System.IO.Path]::GetFullPath(
-  $importerDestinationPath
-).TrimEnd(
-[char[]]@(
-  '\',
-  '/'
-)
-)
-
-if (
-  $normalizedConfiguredFolder -ine
-  $normalizedDestinationFolder
-) {
-
-  throw (
-    "DCA_IMPORTER_PATH e DCA_IMPORTER_DESTINATION apontam " +
-    "para pastas diferentes. Caminho do executavel: '{0}'. " +
-    "Destino configurado: '{1}'." -f
-    $configuredExecutableFolder,
-    $importerDestinationPath
-  )
-}
-
-# ============================================================
-# 6. PREPARAR O DESTINO LOCAL
-# ============================================================
-
-try {
-
-  $normalizedSourceFolder = [System.IO.Path]::GetFullPath(
-    $importerSourcePath
-  ).TrimEnd([char[]]@('\', '/'))
-
-  $normalizedDestinationFolder = [System.IO.Path]::GetFullPath(
-    $importerDestinationPath
-  ).TrimEnd([char[]]@('\', '/'))
-
-  if (
-    $normalizedSourceFolder -ieq $normalizedDestinationFolder -or
-    $normalizedSourceFolder.StartsWith(
-      $normalizedDestinationFolder + [System.IO.Path]::DirectorySeparatorChar,
-      [System.StringComparison]::OrdinalIgnoreCase
-    )
-  ) {
-
-    throw (
-      "O destino do Importar GD nao pode ser igual ou conter " +
-      "a pasta de origem. Origem: '{0}'. Destino: '{1}'." -f
-      $normalizedSourceFolder,
-      $normalizedDestinationFolder
-    )
-  }
-
-  if (
-    Test-Path `
-      -LiteralPath $importerDestinationPath
-  ) {
-
-    Write-Host (
-      "  Removendo copia local incompleta do Importar GD..."
-    ) -ForegroundColor DarkGray
-
-    Remove-Item `
-      -LiteralPath $importerDestinationPath `
-      -Recurse `
-      -Force `
-      -ErrorAction Stop
-  }
-
-  New-Item `
-    -ItemType Directory `
-    -Path $importerDestinationPath `
-    -Force `
-    -ErrorAction Stop |
-    Out-Null
-}
-catch {
-
-  $realException =
-  $_.Exception
-
-  while (
-    $null -ne $realException.InnerException
-  ) {
-
-    $realException =
-    $realException.InnerException
-  }
-
-  throw (
-    "Nao foi possivel preparar o destino local do " +
-    "Importar GD em '{0}': {1}" -f
-    $importerDestinationPath,
-    $realException.Message
-  )
-}
-
-# ============================================================
-# 7. COPIAR O IMPORTAR GD
-# ============================================================
-
-Write-Host (
-  "  Copiando Importar GD da rede..."
-) -ForegroundColor Cyan
-
-if ($Details) {
-
-  Write-Host (
-    "  Origem:  $importerSourcePath"
-  ) -ForegroundColor DarkGray
-
-  Write-Host (
-    "  Destino: $importerDestinationPath"
-  ) -ForegroundColor DarkGray
-}
-
-try {
-
-  Get-ChildItem `
-    -LiteralPath $importerSourcePath `
-    -Force `
-    -ErrorAction Stop |
-    Copy-Item `
-    -Destination $importerDestinationPath `
-    -Recurse `
-    -Force `
-    -ErrorAction Stop
-}
-catch {
-
-  $realException =
-  $_.Exception
-
-  while (
-    $null -ne $realException.InnerException
-  ) {
-
-    $realException =
-    $realException.InnerException
-  }
-
-  throw (
-    "Falha ao copiar o Importar GD de '{0}' para '{1}': {2}" -f
-    $importerSourcePath,
-    $importerDestinationPath,
-    $realException.Message
-  )
-}
-
-# ============================================================
-# 8. DESBLOQUEAR OS ARQUIVOS COPIADOS
-# ============================================================
-
-Get-ChildItem `
-  -LiteralPath $importerDestinationPath `
-  -File `
-  -Recurse `
-  -ErrorAction SilentlyContinue |
-  Unblock-File `
-  -ErrorAction SilentlyContinue
-
-# ============================================================
-# 9. CONFIRMAR A COPIA
-# ============================================================
-
-if (-not (
-    Test-Path `
-      -LiteralPath $importerExecutablePath `
-      -PathType Leaf
-  )) {
-
-  throw (
-    "A copia do Importar GD foi concluida, mas o executavel " +
-    "nao foi encontrado no destino esperado: '{0}'." -f
-    $importerExecutablePath
-  )
-}
-
-Write-Success (
-  "Importar GD copiado com sucesso: {0}" -f
-  $importerExecutablePath
-)
-
-return $importerExecutablePath
-}
-
-# ============================================================
-# CONFIGURACAO DO AMBIENTE E DAS CREDENCIAIS
-# ============================================================
-function Get-TeamcenterSettings {
-
-  # Le a configuracao do ambiente selecionado e retorna a URL,
-  # o servidor, o usuario e a senha utilizados na autenticacao.
-  #
-  # A funcao tambem:
-  #   1. valida o valor de DCA_TC_ENV;
-  #   2. escolhe as variaveis de Teste ou Processo;
-  #   3. solicita a senha quando ela estiver vazia;
-  #   4. valida o formato da URL;
-  #   5. confirma que o servidor corresponde ao ambiente.
-
-  # ============================================================
-  # 1. LER E VALIDAR O AMBIENTE CONFIGURADO
-  # ============================================================
-  $teamcenterEnvironment =
-  [string]$env:DCA_TC_ENV
-
-  if (
-    [string]::IsNullOrWhiteSpace(
-      $teamcenterEnvironment
-    )
-  ) {
-
-    throw (
-      "DCA_TC_ENV nao foi configurado. " +
-      "Use Teste ou Processo."
-    )
-  }
-
-  $teamcenterEnvironment =
-  $teamcenterEnvironment.Trim()
-
-  $teamcenterServerUrl = $null
-  $teamcenterUser = $null
-  $teamcenterPassword = $null
-
-  # ============================================================
-  # 2. SELECIONAR A CONFIGURACAO DO AMBIENTE
-  # ============================================================
-  #
-  # Cada ambiente possui URL, usuario e senha independentes.
-  switch ($teamcenterEnvironment.ToLowerInvariant()) {
-
-    "teste" {
-
-      $teamcenterEnvironment =
-      "Teste"
-
-      $teamcenterServerUrl =
-      [string]$env:DCA_TC_TEST_URL
-
-      $teamcenterUser =
-      [string]$env:DCA_TC_TEST_USER
-
-      $teamcenterPassword =
-      [string]$env:DCA_TC_TEST_PASSWORD
+    if ([string]::IsNullOrWhiteSpace($exePath)) { throw "DCA_IMPORTER_PATH deve ser configurado no arquivo .env." }
+
+    # --- 2. Retornar se o executavel ja existir ---
+    if (Test-Path -LiteralPath $exePath -PathType Leaf) {
+        if ($Details) { Write-Host "  Importar GD disponivel: $exePath" -ForegroundColor DarkGray }
+        return $exePath
     }
 
-    "processo" {
+    # --- 3. Validar as configuracoes da copia automatica ---
+    Write-Warn "Importar GD nao encontrado em '$exePath'. Iniciando copia automatica."
 
-      $teamcenterEnvironment =
-      "Processo"
+    if ([string]::IsNullOrWhiteSpace($sourcePath)) { throw "O Importar GD nao existe no destino e DCA_IMPORTER_SOURCE nao foi configurado no .env." }
+    if ([string]::IsNullOrWhiteSpace($destPath))   { throw "O Importar GD nao existe no destino e DCA_IMPORTER_DESTINATION nao foi configurado no .env." }
 
-      $teamcenterServerUrl =
-      [string]$env:DCA_TC_PROCESS_URL
-
-      $teamcenterUser =
-      [string]$env:DCA_TC_PROCESS_USER
-
-      $teamcenterPassword =
-      [string]$env:DCA_TC_PROCESS_PASSWORD
+    # --- 4. Validar a origem de rede ---
+    if (-not (Test-Path -LiteralPath $sourcePath -PathType Container)) {
+        throw "A origem do Importar GD nao foi encontrada ou nao esta acessivel: '$sourcePath'. Verifique a conexao com a rede."
     }
 
-    default {
-
-      throw (
-        "Ambiente Teamcenter invalido: " +
-        "'$teamcenterEnvironment'. " +
-        "Use Teste ou Processo."
-      )
-    }
-  }
-
-  # ============================================================
-  # 3. VALIDAR URL E USUARIO
-  # ============================================================
-  if (
-    [string]::IsNullOrWhiteSpace(
-      $teamcenterServerUrl
-    )
-  ) {
-
-    throw (
-      "A URL do Teamcenter nao foi configurada para " +
-      "o ambiente '$teamcenterEnvironment'."
-    )
-  }
-
-  if (
-    [string]::IsNullOrWhiteSpace(
-      $teamcenterUser
-    )
-  ) {
-
-    throw (
-      "O usuario do Teamcenter nao foi configurado para " +
-      "o ambiente '$teamcenterEnvironment'."
-    )
-  }
-  # Remove espacos acidentais da URL e do usuario. A senha nao
-  # deve ser normalizada porque espacos podem fazer parte dela.
-  $teamcenterServerUrl =
-  $teamcenterServerUrl.Trim()
-
-  $teamcenterUser =
-  $teamcenterUser.Trim()
-  # ============================================================
-  # 4. OBTER A SENHA DO USUARIO
-  # ============================================================
-  #
-  # Quando a senha nao estiver preenchida no .env, solicita uma
-  # SecureString no console e converte o valor somente para a
-  # autenticacao realizada durante a execucao atual.
-  if (
-    [string]::IsNullOrWhiteSpace(
-      $teamcenterPassword
-    )
-  ) {
-
-    $securePassword =
-    Read-Host (
-      "Senha do Teamcenter para '$teamcenterUser'"
-    ) -AsSecureString
-
-    $credential =
-    [System.Net.NetworkCredential]::new(
-      "",
-      $securePassword
-    )
-
-    $teamcenterPassword =
-    $credential.Password
-
-    if (
-      [string]::IsNullOrWhiteSpace(
-        [string]$teamcenterPassword
-      )
-    ) {
-
-      throw (
-        "Nenhuma senha foi informada para o usuario " +
-        "'$teamcenterUser'."
-      )
-    }
-  }
-
-  # ============================================================
-  # 5. VALIDAR O FORMATO DA URL
-  # ============================================================
-  $parsedUri =
-  $null
-
-  $validUrl =
-  [System.Uri]::TryCreate(
-    $teamcenterServerUrl,
-    [System.UriKind]::Absolute,
-    [ref]$parsedUri
-  )
-
-  if (
-    -not $validUrl -or
-    $null -eq $parsedUri
-  ) {
-
-    throw (
-      "URL invalida para o ambiente " +
-      "'$teamcenterEnvironment': " +
-      "'$teamcenterServerUrl'."
-    )
-  }
-
-  if (
-    $parsedUri.Scheme -ine "http" -and
-    $parsedUri.Scheme -ine "https"
-  ) {
-
-    throw (
-      "A URL do Teamcenter deve utilizar HTTP ou HTTPS. " +
-      "Protocolo recebido: '$($parsedUri.Scheme)'."
-    )
-  }
-
-  # ============================================================
-  # 6. CONFIRMAR O SERVIDOR DO AMBIENTE
-  # ============================================================
-  #
-  # Essa verificacao impede uma conexao acidental ao servidor
-  # de Processo quando o ambiente selecionado for Teste, ou o
-  # caminho inverso.
-  $expectedHost =
-  if ($teamcenterEnvironment -eq "Teste") {
-    "perto30-novo.perto.com.br"
-  }
-  else {
-    "perto37-novo.perto.com.br"
-  }
-
-  if (
-    $parsedUri.Host -ine $expectedHost
-  ) {
-
-    throw (
-      "A URL configurada nao corresponde ao ambiente. " +
-      "Ambiente: '$teamcenterEnvironment'. " +
-      "Servidor esperado: '$expectedHost'. " +
-      "Servidor recebido: '$($parsedUri.Host)'."
-    )
-  }
-
-  # ============================================================
-  # 7. RETORNAR A CONFIGURACAO VALIDADA
-  # ============================================================
-  return [PSCustomObject]@{
-    Url = $teamcenterServerUrl
-    Host = $parsedUri.Host
-    Environment = $teamcenterEnvironment
-    User = $teamcenterUser
-    Password = $teamcenterPassword
-  }
-}
-
-# ============================================================
-# CONEXAO E AUTENTICACAO
-# ============================================================
-function Connect-Teamcenter {
-
-  # Reutiliza a sessao autenticada durante a mesma execucao.
-  #
-  # A sessao somente e criada novamente quando ainda nao existe
-  # uma sessao valida ou quando o tipo de funcoes nao foi carregado.
-  if (
-    $null -ne $script:TeamcenterSession -and
-    $null -ne $script:TeamcenterFunctions
-  ) {
-
-    return $script:TeamcenterSession
-  }
-
-  # Carrega o assembly do importador, cria a sessao e autentica
-  # o usuario no ambiente configurado.
-
-  # ============================================================
-  # 1. VALIDAR O IMPORTADOR E OBTER AS CONFIGURACOES
-  # ============================================================
-  $importerExecutablePath = Confirm-TeamcenterImporter
-  $settings = Get-TeamcenterSettings
-  $script:TeamcenterEnvironment = $settings.Environment
-
-  # ============================================================
-  # 2. APRESENTAR O AMBIENTE SELECIONADO
-  # ============================================================
-  Write-Host ""
-
-  if ($settings.Environment -eq "Teste") {
-
-    Write-Host (
-      "  [AMBIENTE] Teamcenter de TESTES"
-    ) -ForegroundColor Cyan
-  }
-  else {
-
-    Write-Host (
-      "  [AMBIENTE] Teamcenter de PROCESSO"
-    ) -ForegroundColor Yellow
-  }
-  if ($Details) {
-
-    Write-Host (
-      "  Servidor: $($settings.Url)"
-    ) -ForegroundColor Gray
-
-    Write-Host (
-      "  Usuario:  $($settings.User)"
-    ) -ForegroundColor Gray
-  }
-
-  Write-Host ""
-
-  # ============================================================
-  # 3. CARREGAR O ASSEMBLY DO IMPORTAR GD
-  # ============================================================
-  try {
-
-    $script:ImporterAssembly =
-    [System.Reflection.Assembly]::LoadFrom(
-      $importerExecutablePath
-    )
-  }
-  catch {
-
-    $realException =
-    $_.Exception
-
-    while (
-      $null -ne $realException.InnerException
-    ) {
-
-      $realException =
-      $realException.InnerException
+    $sourceExe = Join-Path -Path $sourcePath -ChildPath "Importar GD.exe"
+    if (-not (Test-Path -LiteralPath $sourceExe -PathType Leaf)) {
+        throw "A origem do Importar GD foi encontrada, mas nao contem o executavel esperado: '$sourceExe'."
     }
 
-    throw (
-      "Nao foi possivel carregar o Importar GD em " +
-      "'$importerExecutablePath': " +
-      $realException.Message
-    )
-  }
+    # --- 5. Validar a coerencia do destino ---
+    $exeFolder = [System.IO.Path]::GetDirectoryName($exePath)
+    if ([string]::IsNullOrWhiteSpace($exeFolder)) { throw "Nao foi possivel identificar a pasta de destino a partir de DCA_IMPORTER_PATH: '$exePath'." }
 
-  if ($null -eq $script:ImporterAssembly) {
+    $separators = [char[]]@('\', '/')
+    $normalizedExeFolder = [System.IO.Path]::GetFullPath($exeFolder).TrimEnd($separators)
+    $normalizedDest      = [System.IO.Path]::GetFullPath($destPath).TrimEnd($separators)
 
-    throw (
-      "O carregamento do Importar GD retornou NULL para " +
-      "'$importerExecutablePath'."
-    )
-  }
-
-  # ============================================================
-  # 4. CRIAR A SESSAO DO TEAMCENTER
-  # ============================================================
-  #
-  # Localiza no assembly do Importar GD o tipo responsavel pela
-  # sessao utilizada para autenticar e acessar os servicos SOA.
-  $sessionType =
-  $script:ImporterAssembly.GetType(
-    "Teamcenter.ClientX.Session"
-  )
-
-  # O tipo precisa ser localizado antes da chamada ao Activator.
-  # Uma falha nesta etapa normalmente indica incompatibilidade
-  # com o assembly configurado em DCA_IMPORTER_PATH.
-  if ($null -eq $sessionType) {
-
-    throw (
-      "O tipo Teamcenter.ClientX.Session nao foi encontrado " +
-      "no assembly do Importar GD."
-    )
-  }
-
-  $script:TeamcenterSession =
-  [System.Activator]::CreateInstance(
-    $sessionType,
-    @($settings.Url)
-  )
-
-  if ($null -eq $script:TeamcenterSession) {
-
-    throw (
-      "A sessao do Teamcenter retornou NULL."
-    )
-  }
-  # ============================================================
-  # 5. AUTENTICAR O USUARIO
-  # ============================================================
-  #
-  # A senha e mantida somente durante a execucao atual. O
-  # conteudo nao deve ser apresentado em mensagens ou diagnosticos.
-  if (
-    [string]::IsNullOrWhiteSpace(
-      [string]$settings.Password
-    )
-  ) {
-
-    throw (
-      "A senha do Teamcenter ficou vazia antes da autenticacao."
-    )
-  }
-
-  try {
-
-    $authenticatedUser =
-    $script:TeamcenterSession.login(
-      $settings.User,
-      $settings.Password,
-      "",
-      "",
-      "SoaAppX"
-    )
-  }
-  catch {
-
-    # As chamadas realizadas pelo assembly podem encapsular a
-    # mensagem real em uma ou mais excecoes internas.
-    $realException =
-    $_.Exception
-
-    while (
-      $null -ne $realException.InnerException
-    ) {
-
-      $realException =
-      $realException.InnerException
+    if ($normalizedExeFolder -ine $normalizedDest) {
+        throw "DCA_IMPORTER_PATH e DCA_IMPORTER_DESTINATION apontam para pastas diferentes. Caminho do executavel: '$exeFolder'. Destino configurado: '$destPath'."
     }
 
-    throw (
-      "Falha ao autenticar o usuario '$($settings.User)' no " +
-      "Teamcenter de $($settings.Environment). " +
-      "Servidor: '$($settings.Host)'. " +
-      "Detalhe retornado pelo Teamcenter: " +
-      $realException.Message
-    )
-  }
+    # --- 6. Preparar o destino local (remove copia incompleta e recria a pasta) ---
+    try {
+        $normalizedSource = [System.IO.Path]::GetFullPath($sourcePath).TrimEnd($separators)
 
-  if ($null -eq $authenticatedUser) {
+        if ($normalizedSource -ieq $normalizedDest -or
+            $normalizedSource.StartsWith($normalizedDest + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "O destino do Importar GD nao pode ser igual ou conter a pasta de origem. Origem: '$normalizedSource'. Destino: '$normalizedDest'."
+        }
 
-    throw (
-      "O login do Teamcenter foi executado, mas retornou NULL."
-    )
-  }
+        if (Test-Path -LiteralPath $destPath) {
+            Write-Host "  Removendo copia local incompleta do Importar GD..." -ForegroundColor DarkGray
+            Remove-Item -LiteralPath $destPath -Recurse -Force -ErrorAction Stop
+        }
 
-  if ($Details) {
-
-    Write-Host (
-      "  Usuario autenticado no Teamcenter."
-    ) -ForegroundColor Green
-  }
-  # ============================================================
-  # 6. CARREGAR AS FUNCOES AUXILIARES DO IMPORTADOR
-  # ============================================================
-  $script:TeamcenterFunctions =
-  $script:ImporterAssembly.GetType(
-    "ImportarGD.Controller.Functions"
-  )
-
-  if ($null -eq $script:TeamcenterFunctions) {
-    throw "ImportarGD.Controller.Functions nao encontrado."
-  }
-
-  # ============================================================
-  # 7. CARREGAR AS BIBLIOTECAS DE SAVED QUERY
-  # ============================================================
-  Import-TeamcenterQueryAssemblies
-
-  if ($Details) {
-
-    Write-Host (
-      "  Bibliotecas de consulta do Teamcenter carregadas."
-    ) -ForegroundColor DarkGray
-  }
-
-  # ============================================================
-  # 8. RETORNAR A SESSAO AUTENTICADA
-  # ============================================================
-  return $script:TeamcenterSession
-}
-
-# ============================================================
-# DIAGNOSTICO DOS METODOS DE IMPORTACAO DO IMPORTAR GD
-# ============================================================
-function Show-TeamcenterImporterFileMethods {
-
-  if ($null -eq $script:TeamcenterFunctions) {
-
-    throw (
-      "As funcoes do Importar GD nao foram carregadas. " +
-      "Execute Connect-Teamcenter primeiro."
-    )
-  }
-
-  Write-Host ""
-  Write-Host (
-    "  Metodos do Importar GD relacionados a arquivos:"
-  ) -ForegroundColor Cyan
-
-  Write-Host (
-    "  " + ("-" * 68)
-  ) -ForegroundColor DarkGray
-
-  $candidateMethods =
-  @(
-    $script:TeamcenterFunctions.GetMethods() |
-      Where-Object {
-      $_.Name -match
-      '(?i)(import|dataset|solid|sld|arquivo|file|document)'
-    } |
-      Sort-Object Name, {
-      $_.GetParameters().Count
+        New-Item -ItemType Directory -Path $destPath -Force -ErrorAction Stop | Out-Null
     }
-  )
-
-  if ($candidateMethods.Count -eq 0) {
-
-    Write-Warn (
-      "Nenhum metodo relacionado a arquivos foi encontrado " +
-      "no Importar GD."
-    )
-
-    return
-  }
-
-  foreach ($candidateMethod in $candidateMethods) {
-
-    Write-Host (
-      "  Metodo: {0}" -f
-      $candidateMethod.Name
-    ) -ForegroundColor White
-
-    Write-Host (
-      "    Estatico: {0}" -f
-      $candidateMethod.IsStatic
-    ) -ForegroundColor DarkGray
-
-    Write-Host (
-      "    Retorno: {0}" -f
-      $candidateMethod.ReturnType.FullName
-    ) -ForegroundColor DarkGray
-
-    $methodParameters =
-    $candidateMethod.GetParameters()
-
-    if ($methodParameters.Count -eq 0) {
-
-      Write-Host (
-        "    Parametros: nenhum"
-      ) -ForegroundColor DarkGray
-    }
-    else {
-
-      for (
-        $parameterIndex = 0
-        $parameterIndex -lt $methodParameters.Count
-        $parameterIndex++
-      ) {
-
-        $methodParameter =
-        $methodParameters[$parameterIndex]
-
-        Write-Host (
-          "    [{0}] {1} {2}" -f
-          $parameterIndex,
-          $methodParameter.ParameterType.FullName,
-          $methodParameter.Name
-        ) -ForegroundColor Gray
-      }
+    catch {
+        $root = $_.Exception; while ($null -ne $root.InnerException) { $root = $root.InnerException }
+        throw "Nao foi possivel preparar o destino local do Importar GD em '$destPath': $($root.Message)"
     }
 
-    Write-Host ""
-  }
-}
-
-# ============================================================
-# LOCALIZACAO DOS METODOS DO IMPORTADOR
-# ============================================================
-function Get-TeamcenterMethod {
-  # Localiza um metodo do tipo ImportarGD.Controller.Functions
-  # utilizando o nome e a quantidade esperada de parametros.
-  #
-  # A quantidade de parametros ajuda a diferenciar sobrecargas
-  # que possuam o mesmo nome.
-  param(
-    [Parameter(Mandatory = $true)]
-    [ValidateNotNullOrEmpty()]
-    [string]$MethodName,
-
-    [Parameter(Mandatory = $true)]
-    [ValidateRange(0, 100)]
-    [int]$ParameterCount
-  )
-
-  if ($null -eq $script:TeamcenterFunctions) {
-    throw (
-      "As funcoes do Teamcenter nao foram carregadas. " +
-      "Execute Connect-Teamcenter primeiro."
-    )
-  }
-
-  # Pesquisa somente os metodos que correspondem ao nome e a
-  # quantidade de parametros solicitados.
-  $method = $script:TeamcenterFunctions.GetMethods() |
-    Where-Object {
-    $_.Name -eq $MethodName -and
-    $_.GetParameters().Count -eq $ParameterCount
-  } |
-    Select-Object -First 1
-
-  if ($null -eq $method) {
-    throw (
-      "Metodo '$MethodName' com $ParameterCount parametro(s) " +
-      "nao foi encontrado no Importar GD."
-    )
-  }
-
-  return $method
-}
-
-# ============================================================
-# RECUPERACAO DA CONEXAO SOA
-# ============================================================
-function Get-TeamcenterConnection {
-
-  # Recupera a conexao SOA mantida pela sessao autenticada.
-  if ($null -eq $script:ImporterAssembly) {
-    throw (
-      "O assembly do Importar GD nao foi carregado. " +
-      "Execute Connect-Teamcenter primeiro."
-    )
-  }
-
-  # Localiza novamente o tipo Session no assembly carregado.
-  $sessionType =
-  $script:ImporterAssembly.GetType(
-    "Teamcenter.ClientX.Session"
-  )
-  if ($null -eq $sessionType) {
-    throw "Tipo Teamcenter.ClientX.Session nao encontrado."
-  }
-
-  # getConnection e um metodo estatico que fornece a conexao SOA
-  # mantida pela sessao autenticada.
-  $getConnectionMethod =
-  $sessionType.GetMethod(
-    "getConnection"
-  )
-
-  if ($null -eq $getConnectionMethod) {
-    throw "Metodo Session.getConnection nao encontrado."
-  }
-
-  $connection =
-  $getConnectionMethod.Invoke(
-    $null,
-    @()
-  )
-
-  if ($null -eq $connection) {
-    throw "A conexao SOA do Teamcenter retornou NULL."
-  }
-
-  return $connection
-}
-
-# ============================================================
-# CARREGAMENTO DOS ASSEMBLIES DE SAVED QUERY
-# ============================================================
-function Import-TeamcenterQueryAssemblies {
-
-  # Carrega os assemblies utilizados pelas Saved Queries.
-  #
-  # Os arquivos sao procurados na mesma pasta do Importar GD:
-  #   - TcSoaQueryTypes.dll;
-  #   - TcSoaQueryStrong.dll.
-  #
-  # Os objetos Assembly retornados por LoadFrom sao armazenados
-  # em $script:TeamcenterQueryAssemblies.
-
-  if ($Details) {
-
-    Write-Host (
-      "  Iniciando carregamento das bibliotecas de consulta..."
-    ) -ForegroundColor Cyan
-  }
-
-  # Reinicializa a lista para impedir que assemblies de uma carga
-  # anterior permaneçam armazenados na execucao atual.
-  $script:TeamcenterQueryAssemblies =
-  [System.Collections.Generic.List[object]]::new()
-
-  # ============================================================
-  # 1. LOCALIZAR A PASTA DO IMPORTADOR
-  # ============================================================
-  $importerExecutablePath =
-  Confirm-TeamcenterImporter
-
-  $importerFolder =
-  [System.IO.Path]::GetDirectoryName(
-    $importerExecutablePath
-  )
-
-  # ============================================================
-  # 2. DEFINIR AS BIBLIOTECAS OBRIGATORIAS
-  # ============================================================
-  $queryAssemblyNames =
-  @(
-    "TcSoaQueryTypes.dll",
-    "TcSoaQueryStrong.dll"
-  )
-
-  # ============================================================
-  # 3. VALIDAR E CARREGAR CADA ASSEMBLY
-  # ============================================================
-  foreach ($queryAssemblyName in $queryAssemblyNames) {
-
-    $queryAssemblyPath =
-    Join-Path `
-      -Path $importerFolder `
-      -ChildPath $queryAssemblyName
-
-    if (-not (
-        Test-Path `
-          -LiteralPath $queryAssemblyPath `
-          -PathType Leaf
-      )) {
-
-      throw (
-        "Biblioteca de consulta nao encontrada: " +
-        "'$queryAssemblyPath'."
-      )
+    # --- 7. Copiar o Importar GD ---
+    Write-Host "  Copiando Importar GD da rede..." -ForegroundColor Cyan
+    if ($Details) {
+        Write-Host "  Origem:  $sourcePath" -ForegroundColor DarkGray
+        Write-Host "  Destino: $destPath" -ForegroundColor DarkGray
     }
 
     try {
-
-      $queryAssembly =
-      [System.Reflection.Assembly]::LoadFrom(
-        $queryAssemblyPath
-      )
-
-      if ($null -eq $queryAssembly) {
-
-        throw (
-          "Assembly.LoadFrom retornou NULL para " +
-          "'$queryAssemblyName'."
-        )
-      }
-
-      $script:TeamcenterQueryAssemblies.Add(
-        $queryAssembly
-      )
-
-      if ($Details) {
-
-        Write-Host (
-          "  Biblioteca de consulta carregada: " +
-          $queryAssemblyName
-        ) -ForegroundColor Green
-
-        Write-Host (
-          "    Nome interno: " +
-          $queryAssembly.GetName().Name
-        ) -ForegroundColor DarkGray
-
-        Write-Host (
-          "    Local: " +
-          $queryAssembly.Location
-        ) -ForegroundColor DarkGray
-      }
+        Get-ChildItem -LiteralPath $sourcePath -Force -ErrorAction Stop |
+            Copy-Item -Destination $destPath -Recurse -Force -ErrorAction Stop
     }
     catch {
-
-      $realException =
-      $_.Exception
-
-      while (
-        $null -ne $realException.InnerException
-      ) {
-
-        $realException =
-        $realException.InnerException
-      }
-
-      throw (
-        "Falha ao carregar '$queryAssemblyName': " +
-        $realException.Message
-      )
+        $root = $_.Exception; while ($null -ne $root.InnerException) { $root = $root.InnerException }
+        throw "Falha ao copiar o Importar GD de '$sourcePath' para '$destPath': $($root.Message)"
     }
-  }
 
-  # ============================================================
-  # 4. CONFIRMAR O CARREGAMENTO COMPLETO
-  # ============================================================
-  if (
-    $script:TeamcenterQueryAssemblies.Count -ne
-    $queryAssemblyNames.Count
-  ) {
+    # --- 8. Desbloquear os arquivos copiados e confirmar a copia ---
+    Get-ChildItem -LiteralPath $destPath -File -Recurse -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue
 
-    throw (
-      "Nem todas as bibliotecas de consulta foram carregadas."
+    if (-not (Test-Path -LiteralPath $exePath -PathType Leaf)) {
+        throw "A copia do Importar GD foi concluida, mas o executavel nao foi encontrado no destino esperado: '$exePath'."
+    }
+
+    Write-Success "Importar GD copiado com sucesso: $exePath"
+    return $exePath
+}
+
+# Le a configuracao do ambiente (Teste ou Processo) e retorna URL, servidor,
+# usuario e senha. Valida DCA_TC_ENV, pede a senha quando vazia, valida a URL
+# e confirma que o servidor corresponde ao ambiente.
+function Get-TeamcenterSettings {
+
+    # --- 1. Ler o ambiente e escolher as variaveis (URL, usuario e senha independentes) ---
+    $environment = ([string]$env:DCA_TC_ENV).Trim()
+    if ($environment -eq "") { throw "DCA_TC_ENV nao foi configurado. Use Teste ou Processo." }
+
+    switch ($environment.ToLowerInvariant()) {
+        "teste" {
+            $environment = "Teste"
+            $url = [string]$env:DCA_TC_TEST_URL; $user = [string]$env:DCA_TC_TEST_USER; $password = [string]$env:DCA_TC_TEST_PASSWORD
+        }
+        "processo" {
+            $environment = "Processo"
+            $url = [string]$env:DCA_TC_PROCESS_URL; $user = [string]$env:DCA_TC_PROCESS_USER; $password = [string]$env:DCA_TC_PROCESS_PASSWORD
+        }
+        default { throw "Ambiente Teamcenter invalido: '$environment'. Use Teste ou Processo." }
+    }
+
+    # --- 2. Validar URL e usuario ---
+    if ([string]::IsNullOrWhiteSpace($url))  { throw "A URL do Teamcenter nao foi configurada para o ambiente '$environment'." }
+    if ([string]::IsNullOrWhiteSpace($user)) { throw "O usuario do Teamcenter nao foi configurado para o ambiente '$environment'." }
+
+    # Espacos acidentais saem da URL e do usuario; a senha nao e normalizada porque espacos podem fazer parte dela.
+    $url  = $url.Trim()
+    $user = $user.Trim()
+
+    # --- 3. Obter a senha (sem senha no .env, pede uma SecureString no console) ---
+    if ([string]::IsNullOrWhiteSpace($password)) {
+        $securePassword = Read-Host "Senha do Teamcenter para '$user'" -AsSecureString
+        $password = [System.Net.NetworkCredential]::new("", $securePassword).Password
+        if ([string]::IsNullOrWhiteSpace([string]$password)) { throw "Nenhuma senha foi informada para o usuario '$user'." }
+    }
+
+    # --- 4. Validar o formato da URL ---
+    $parsedUri = $null
+    if (-not [System.Uri]::TryCreate($url, [System.UriKind]::Absolute, [ref]$parsedUri) -or $null -eq $parsedUri) {
+        throw "URL invalida para o ambiente '$environment': '$url'."
+    }
+    if ($parsedUri.Scheme -ine "http" -and $parsedUri.Scheme -ine "https") {
+        throw "A URL do Teamcenter deve utilizar HTTP ou HTTPS. Protocolo recebido: '$($parsedUri.Scheme)'."
+    }
+
+    # --- 5. Confirmar o servidor (evita conectar em Processo estando em Teste, ou o inverso) ---
+    $expectedHost = if ($environment -eq "Teste") { "perto30-novo.perto.com.br" } else { "perto37-novo.perto.com.br" }
+
+    if ($parsedUri.Host -ine $expectedHost) {
+        throw "A URL configurada nao corresponde ao ambiente. Ambiente: '$environment'. Servidor esperado: '$expectedHost'. Servidor recebido: '$($parsedUri.Host)'."
+    }
+
+    return [PSCustomObject]@{
+        Url         = $url
+        Host        = $parsedUri.Host
+        Environment = $environment
+        User        = $user
+        Password    = $password
+    }
+}
+
+# Carrega o assembly do importador, cria a sessao e autentica o usuario.
+# A sessao e reutilizada durante a execucao enquanto estiver valida.
+function Connect-Teamcenter {
+    if ($null -ne $script:TeamcenterSession -and $null -ne $script:TeamcenterFunctions) { return $script:TeamcenterSession }
+
+    # --- 1. Validar o importador e obter as configuracoes ---
+    $importerExecutablePath = Confirm-TeamcenterImporter
+    $settings = Get-TeamcenterSettings
+    $script:TeamcenterEnvironment = $settings.Environment
+
+    # --- 2. Apresentar o ambiente selecionado ---
+    Write-Host ""
+    if ($settings.Environment -eq "Teste") { Write-Host "  [AMBIENTE] Teamcenter de TESTES" -ForegroundColor Cyan }
+    else { Write-Host "  [AMBIENTE] Teamcenter de PROCESSO" -ForegroundColor Yellow }
+
+    if ($Details) {
+        Write-Host "  Servidor: $($settings.Url)" -ForegroundColor Gray
+        Write-Host "  Usuario:  $($settings.User)" -ForegroundColor Gray
+    }
+    Write-Host ""
+
+    # --- 3. Carregar o assembly do Importar GD ---
+    try { $script:ImporterAssembly = [System.Reflection.Assembly]::LoadFrom($importerExecutablePath) }
+    catch {
+        $root = $_.Exception; while ($null -ne $root.InnerException) { $root = $root.InnerException }
+        throw "Nao foi possivel carregar o Importar GD em '$importerExecutablePath': $($root.Message)"
+    }
+    if ($null -eq $script:ImporterAssembly) { throw "O carregamento do Importar GD retornou NULL para '$importerExecutablePath'." }
+
+    # --- 4. Criar a sessao (o tipo ausente indica assembly incompativel com DCA_IMPORTER_PATH) ---
+    $sessionType = $script:ImporterAssembly.GetType("Teamcenter.ClientX.Session")
+    if ($null -eq $sessionType) { throw "O tipo Teamcenter.ClientX.Session nao foi encontrado no assembly do Importar GD." }
+
+    $script:TeamcenterSession = [System.Activator]::CreateInstance($sessionType, @($settings.Url))
+    if ($null -eq $script:TeamcenterSession) { throw "A sessao do Teamcenter retornou NULL." }
+
+    # --- 5. Autenticar (a senha nunca aparece em mensagens ou diagnosticos) ---
+    if ([string]::IsNullOrWhiteSpace([string]$settings.Password)) { throw "A senha do Teamcenter ficou vazia antes da autenticacao." }
+
+    try { $authenticatedUser = $script:TeamcenterSession.login($settings.User, $settings.Password, "", "", "SoaAppX") }
+    catch {
+        # A mensagem real pode estar em excecoes internas do assembly.
+        $root = $_.Exception; while ($null -ne $root.InnerException) { $root = $root.InnerException }
+        throw "Falha ao autenticar o usuario '$($settings.User)' no Teamcenter de $($settings.Environment). Servidor: '$($settings.Host)'. Detalhe retornado pelo Teamcenter: $($root.Message)"
+    }
+    if ($null -eq $authenticatedUser) { throw "O login do Teamcenter foi executado, mas retornou NULL." }
+    if ($Details) { Write-Host "  Usuario autenticado no Teamcenter." -ForegroundColor Green }
+
+    # --- 6. Carregar as funcoes auxiliares e as bibliotecas de Saved Query ---
+    $script:TeamcenterFunctions = $script:ImporterAssembly.GetType("ImportarGD.Controller.Functions")
+    if ($null -eq $script:TeamcenterFunctions) { throw "ImportarGD.Controller.Functions nao encontrado." }
+
+    Import-TeamcenterQueryAssemblies
+    if ($Details) { Write-Host "  Bibliotecas de consulta do Teamcenter carregadas." -ForegroundColor DarkGray }
+
+    return $script:TeamcenterSession
+}
+
+# Diagnostico: lista os metodos do Importar GD relacionados a arquivos.
+function Show-TeamcenterImporterFileMethods {
+    if ($null -eq $script:TeamcenterFunctions) { throw "As funcoes do Importar GD nao foram carregadas. Execute Connect-Teamcenter primeiro." }
+
+    Write-Host ""
+    Write-Host "  Metodos do Importar GD relacionados a arquivos:" -ForegroundColor Cyan
+    Write-Host ("  " + ("-" * 68)) -ForegroundColor DarkGray
+
+    $candidateMethods = @(
+        $script:TeamcenterFunctions.GetMethods() |
+            Where-Object { $_.Name -match '(?i)(import|dataset|solid|sld|arquivo|file|document)' } |
+            Sort-Object Name, { $_.GetParameters().Count }
     )
-  }
+
+    if ($candidateMethods.Count -eq 0) { Write-Warn "Nenhum metodo relacionado a arquivos foi encontrado no Importar GD."; return }
+
+    foreach ($method in $candidateMethods) {
+        Write-Host "  Metodo: $($method.Name)" -ForegroundColor White
+        Write-Host "    Estatico: $($method.IsStatic)" -ForegroundColor DarkGray
+        Write-Host "    Retorno: $($method.ReturnType.FullName)" -ForegroundColor DarkGray
+
+        $parameters = $method.GetParameters()
+        if ($parameters.Count -eq 0) { Write-Host "    Parametros: nenhum" -ForegroundColor DarkGray }
+        else {
+            for ($i = 0; $i -lt $parameters.Count; $i++) {
+                Write-Host ("    [{0}] {1} {2}" -f $i, $parameters[$i].ParameterType.FullName, $parameters[$i].Name) -ForegroundColor Gray
+            }
+        }
+        Write-Host ""
+    }
+}
+
+# Localiza um metodo de ImportarGD.Controller.Functions pelo nome e pela
+# quantidade de parametros (diferencia sobrecargas de mesmo nome).
+function Get-TeamcenterMethod {
+    param(
+        [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$MethodName,
+        [Parameter(Mandatory)][ValidateRange(0, 100)][int]$ParameterCount
+    )
+
+    if ($null -eq $script:TeamcenterFunctions) { throw "As funcoes do Teamcenter nao foram carregadas. Execute Connect-Teamcenter primeiro." }
+
+    $method = $script:TeamcenterFunctions.GetMethods() |
+        Where-Object { $_.Name -eq $MethodName -and $_.GetParameters().Count -eq $ParameterCount } |
+        Select-Object -First 1
+
+    if ($null -eq $method) { throw "Metodo '$MethodName' com $ParameterCount parametro(s) nao foi encontrado no Importar GD." }
+
+    return $method
+}
+
+# Recupera a conexao SOA mantida pela sessao autenticada.
+function Get-TeamcenterConnection {
+    if ($null -eq $script:ImporterAssembly) { throw "O assembly do Importar GD nao foi carregado. Execute Connect-Teamcenter primeiro." }
+
+    $sessionType = $script:ImporterAssembly.GetType("Teamcenter.ClientX.Session")
+    if ($null -eq $sessionType) { throw "Tipo Teamcenter.ClientX.Session nao encontrado." }
+
+    # getConnection e estatico e fornece a conexao SOA da sessao.
+    $getConnectionMethod = $sessionType.GetMethod("getConnection")
+    if ($null -eq $getConnectionMethod) { throw "Metodo Session.getConnection nao encontrado." }
+
+    $connection = $getConnectionMethod.Invoke($null, @())
+    if ($null -eq $connection) { throw "A conexao SOA do Teamcenter retornou NULL." }
+
+    return $connection
+}
+
+# Carrega TcSoaQueryTypes.dll e TcSoaQueryStrong.dll (pasta do Importar GD)
+# em $script:TeamcenterQueryAssemblies.
+function Import-TeamcenterQueryAssemblies {
+    if ($Details) { Write-Host "  Iniciando carregamento das bibliotecas de consulta..." -ForegroundColor Cyan }
+
+    # Reinicia a lista para nao acumular assemblies de uma carga anterior.
+    $script:TeamcenterQueryAssemblies = [System.Collections.Generic.List[object]]::new()
+
+    $importerFolder = [System.IO.Path]::GetDirectoryName((Confirm-TeamcenterImporter))
+    $queryAssemblyNames = @("TcSoaQueryTypes.dll", "TcSoaQueryStrong.dll")
+
+    foreach ($name in $queryAssemblyNames) {
+        $path = Join-Path -Path $importerFolder -ChildPath $name
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Biblioteca de consulta nao encontrada: '$path'." }
+
+        try {
+            $assembly = [System.Reflection.Assembly]::LoadFrom($path)
+            if ($null -eq $assembly) { throw "Assembly.LoadFrom retornou NULL para '$name'." }
+
+            $script:TeamcenterQueryAssemblies.Add($assembly)
+
+            if ($Details) {
+                Write-Host "  Biblioteca de consulta carregada: $name" -ForegroundColor Green
+                Write-Host "    Nome interno: $($assembly.GetName().Name)" -ForegroundColor DarkGray
+                Write-Host "    Local: $($assembly.Location)" -ForegroundColor DarkGray
+            }
+        }
+        catch {
+            $root = $_.Exception; while ($null -ne $root.InnerException) { $root = $root.InnerException }
+            throw "Falha ao carregar '$name': $($root.Message)"
+        }
+    }
+
+    if ($script:TeamcenterQueryAssemblies.Count -ne $queryAssemblyNames.Count) { throw "Nem todas as bibliotecas de consulta foram carregadas." }
 }
 
 function Get-TeamcenterDataManagementService {
+    $connection = Get-TeamcenterConnection
 
-  # ============================================================
-  # 1. RECUPERAR A CONEXAO SOA
-  # ============================================================
+    # O tipo e procurado em todos os assemblies do AppDomain, sem depender de um assembly fixo.
+    $serviceType = [System.AppDomain]::CurrentDomain.GetAssemblies() |
+        ForEach-Object {
+            try { $_.GetType("Teamcenter.Services.Strong.Core.DataManagementService", $false, $false) }
+            catch { $null }
+        } |
+        Where-Object { $null -ne $_ } | Select-Object -First 1
+    if ($null -eq $serviceType) { throw "Tipo DataManagementService nao encontrado." }
 
-  $connection =
-  Get-TeamcenterConnection
+    $getServiceMethod = $serviceType.GetMethods() |
+        Where-Object { $_.Name -eq "getService" -and $_.GetParameters().Count -eq 1 } | Select-Object -First 1
+    if ($null -eq $getServiceMethod) { throw "Metodo DataManagementService.getService nao encontrado." }
 
-  # ============================================================
-  # 2. LOCALIZAR O TIPO DATAMANAGEMENTSERVICE
-  # ============================================================
-  #
-  # O tipo e pesquisado entre todos os assemblies carregados no
-  # AppDomain para evitar dependencia direta de um assembly fixo.
-  $serviceType = [System.AppDomain]::CurrentDomain.GetAssemblies() |
-    ForEach-Object {
-    try {
-      $_.GetType(
-        "Teamcenter.Services.Strong.Core.DataManagementService",
-        $false,
-        $false
-      )
-    }
-    catch {
-      $null
-    }
-  } |
-    Where-Object { $null -ne $_ } |
-    Select-Object -First 1
+    $service = $getServiceMethod.Invoke($null, @($connection))
+    if ($null -eq $service) { throw "DataManagementService retornou NULL." }
 
-  if ($null -eq $serviceType) {
-    throw "Tipo DataManagementService nao encontrado."
-  }
-
-  # ============================================================
-  # 3. LOCALIZAR O METODO GETSERVICE
-  # ============================================================
-  $getServiceMethod = $serviceType.GetMethods() |
-    Where-Object {
-    $_.Name -eq "getService" -and
-    $_.GetParameters().Count -eq 1
-  } |
-    Select-Object -First 1
-
-  if ($null -eq $getServiceMethod) {
-    throw "Metodo DataManagementService.getService nao encontrado."
-  }
-
-  # ============================================================
-  # 4. INSTANCIAR O SERVICO
-  # ============================================================
-  $service = $getServiceMethod.Invoke($null, @($connection))
-
-  if ($null -eq $service) {
-    throw "DataManagementService retornou NULL."
-  }
-
-  return $service
+    return $service
 }
 
-# ============================================================
-# INTERPRETACAO DOS ERROS PARCIAIS SOA
-# ============================================================
+# Converte os erros parciais do ServiceData em mensagens de texto para log e
+# excecoes. Se o objeto nao tiver os metodos esperados, retorna lista vazia
+# (compatibilidade entre versoes das bibliotecas SOA).
 function Get-TeamcenterServiceErrors {
+    param([Parameter(Mandatory)][AllowNull()]$ServiceData)
 
-  # Converte os erros parciais do ServiceData em mensagens de
-  # texto que podem ser utilizadas pelo log e pelas excecoes.
-  #
-  # Quando o objeto nao disponibiliza os metodos esperados, uma
-  # lista vazia e retornada para manter compatibilidade entre
-  # diferentes versoes das bibliotecas SOA.
-  param(
-    [Parameter(Mandatory = $true)]
-    [AllowNull()]
-    $ServiceData
-  )
+    $errorMessages = [System.Collections.Generic.List[string]]::new()
+    if ($null -eq $ServiceData) { return $errorMessages.ToArray() }
 
-  # ============================================================
-  # 1. PREPARAR A COLECAO DE MENSAGENS
-  # ============================================================
-  $errorMessages =
-  [System.Collections.Generic.List[string]]::new()
+    $methods = $ServiceData.GetType().GetMethods()
+    $sizeMethod = $methods | Where-Object { $_.Name -ieq "SizeOfPartialErrors" -and $_.GetParameters().Count -eq 0 } | Select-Object -First 1
+    $getErrorMethod = $methods | Where-Object { $_.Name -ieq "GetPartialError" -and $_.GetParameters().Count -eq 1 } | Select-Object -First 1
+    if ($null -eq $sizeMethod -or $null -eq $getErrorMethod) { return $errorMessages.ToArray() }
 
-  if ($null -eq $ServiceData) {
+    try {
+        $errorCount = [int]$sizeMethod.Invoke($ServiceData, @())
 
-    return $errorMessages.ToArray()
-  }
+        for ($i = 0; $i -lt $errorCount; $i++) {
+            $partialError = $getErrorMethod.Invoke($ServiceData, @([int]$i))
+            if ($null -eq $partialError) { continue }
 
-  # ============================================================
-  # 2. LOCALIZAR OS METODOS DE ERRO
-  # ============================================================
-  $serviceDataType =
-  $ServiceData.GetType()
+            $errorValuesProperty = $partialError.GetType().GetProperty("ErrorValues")
 
-  $sizeMethod =
-  $serviceDataType.GetMethods() |
-    Where-Object {
-    $_.Name -ieq "SizeOfPartialErrors" -and
-    $_.GetParameters().Count -eq 0
-  } |
-    Select-Object -First 1
+            if ($null -ne $errorValuesProperty) {
+                foreach ($errorValue in @($errorValuesProperty.GetValue($partialError, $null))) {
+                    if ($null -eq $errorValue) { continue }
 
-  $getErrorMethod =
-  $serviceDataType.GetMethods() |
-    Where-Object {
-    $_.Name -ieq "GetPartialError" -and
-    $_.GetParameters().Count -eq 1
-  } |
-    Select-Object -First 1
+                    $messageProperty = $errorValue.GetType().GetProperty("Message")
+                    if ($null -eq $messageProperty) { continue }
 
-  if (
-    $null -eq $sizeMethod -or
-    $null -eq $getErrorMethod
-  ) {
-
-    return $errorMessages.ToArray()
-  }
-
-  # ============================================================
-  # 3. LER OS ERROS PARCIAIS
-  # ============================================================
-  try {
-
-    $errorCount =
-    [int]$sizeMethod.Invoke(
-      $ServiceData,
-      @()
-    )
-
-    for (
-      $errorIndex = 0
-      $errorIndex -lt $errorCount
-      $errorIndex++
-    ) {
-
-      $partialError =
-      $getErrorMethod.Invoke(
-        $ServiceData,
-        @([int]$errorIndex)
-      )
-
-      if ($null -eq $partialError) {
-        continue
-      }
-
-      $errorValuesProperty =
-      $partialError.GetType().GetProperty(
-        "ErrorValues"
-      )
-
-      if ($null -ne $errorValuesProperty) {
-
-        $errorValues =
-        @(
-          $errorValuesProperty.GetValue(
-            $partialError,
-            $null
-          )
-        )
-
-        foreach ($errorValue in $errorValues) {
-
-          if ($null -eq $errorValue) {
-            continue
-          }
-
-          $messageProperty =
-          $errorValue.GetType().GetProperty(
-            "Message"
-          )
-
-          if ($null -eq $messageProperty) {
-            continue
-          }
-
-          $messageText =
-          [string]$messageProperty.GetValue(
-            $errorValue,
-            $null
-          )
-
-          if (
-            -not [string]::IsNullOrWhiteSpace(
-              $messageText
-            )
-          ) {
-
-            $errorMessages.Add(
-              $messageText.Trim()
-            )
-          }
+                    $messageText = [string]$messageProperty.GetValue($errorValue, $null)
+                    if (-not [string]::IsNullOrWhiteSpace($messageText)) { $errorMessages.Add($messageText.Trim()) }
+                }
+            }
+            else {
+                $partialErrorText = ([string]$partialError).Trim()
+                if ($partialErrorText -ne "") { $errorMessages.Add($partialErrorText) }
+            }
         }
-      }
-      else {
-
-        $partialErrorText =
-        ([string]$partialError).Trim()
-
-        if (
-          -not [string]::IsNullOrWhiteSpace(
-            $partialErrorText
-          )
-        ) {
-
-          $errorMessages.Add(
-            $partialErrorText
-          )
+    }
+    catch {
+        if ($Details) {
+            $root = $_.Exception; while ($null -ne $root.InnerException) { $root = $root.InnerException }
+            Write-Warn "Nao foi possivel interpretar os erros SOA: $($root.Message)"
         }
-      }
     }
-  }
-  catch {
 
-    if ($Details) {
-
-      $realException =
-      $_.Exception
-
-      while (
-        $null -ne $realException.InnerException
-      ) {
-
-        $realException =
-        $realException.InnerException
-      }
-
-      Write-Warn (
-        "Nao foi possivel interpretar os erros SOA: " +
-        $realException.Message
-      )
-    }
-  }
-
-  # ============================================================
-  # 4. RETORNAR AS MENSAGENS ENCONTRADAS
-  # ============================================================
-  return @(
-    $errorMessages |
-      Select-Object -Unique
-  )
+    return @($errorMessages | Select-Object -Unique)
 }

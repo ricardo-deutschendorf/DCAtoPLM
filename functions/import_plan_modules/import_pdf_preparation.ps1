@@ -1,380 +1,84 @@
-
 # ============================================================
 # PREPARACAO DO PDF PARA IMPORTACAO
 # ============================================================
-#
-# Este arquivo prepara uma copia local e validada do PDF antes
-# da chamada ao importador do Teamcenter.
-#
-# Responsabilidades:
-#   1. validar o caminho e a extensao do arquivo de origem;
-#   2. rejeitar arquivos vazios;
-#   3. criar a pasta temporaria quando necessario;
-#   4. normalizar o codigo usado no nome do arquivo;
-#   5. remover copias temporarias anteriores;
-#   6. copiar e validar o tamanho do PDF;
-#   7. confirmar que o arquivo pode ser aberto para leitura.
-#
-# Nenhuma alteracao e realizada no arquivo PDF original.
+# Cria uma copia local validada do PDF antes do importador do
+# Teamcenter. O PDF original nunca e alterado.
+#   1. valida origem (caminho, extensao, tamanho);
+#   2. garante a pasta DCA_TEMP_FOLDER;
+#   3. normaliza o codigo usado no nome do arquivo;
+#   4. substitui copias anteriores e copia o PDF;
+#   5. valida tamanho e assinatura "%PDF-" da copia.
 # ============================================================
+
 function Copy-PdfToTemporaryFolder {
-
-    # Cria uma copia controlada do PDF para o importador.
-    # A copia e validada por extensao, tamanho e leitura antes
-    # de ser enviada ao Teamcenter.
     param(
-        [Parameter(Mandatory = $true)]
-        [ValidateNotNullOrEmpty()]
-        [string]$SourcePdfPath,
-
-        [Parameter(Mandatory = $true)]
-        [ValidateNotNullOrEmpty()]
-        [string]$ItemCode
+        [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$SourcePdfPath,
+        [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$ItemCode
     )
 
-    # ============================================================
-    # 1. VALIDAR O PDF DE ORIGEM
-    # ============================================================
-    #
-    # Confirma que o caminho recebido aponta para um arquivo antes
-    # de verificar sua extensao e seu tamanho.
+    # --- 1. PDF de origem ---
+    $sourcePath = $SourcePdfPath.Trim()
+    if ([string]::IsNullOrWhiteSpace($sourcePath)) { throw "O caminho do PDF de origem ficou vazio." }
+    if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) { throw "PDF de origem nao encontrado: '$sourcePath'." }
 
-    $sourcePdfPathClean =
-        $SourcePdfPath.Trim()
+    $sourceFile = Get-Item -LiteralPath $sourcePath -ErrorAction Stop
+    if ($sourceFile.Extension -ine ".pdf") { throw "O arquivo de origem nao possui extensao PDF." }
+    if ($sourceFile.Length -le 0) { throw "O PDF de origem esta vazio." }
 
-    if (
-        [string]::IsNullOrWhiteSpace(
-            $sourcePdfPathClean
-        )
-    ) {
+    # --- 2. Pasta temporaria (DCA_TEMP_FOLDER, definida no .env) ---
+    $temporaryFolder = ([string]$env:DCA_TEMP_FOLDER).Trim()
+    if ([string]::IsNullOrWhiteSpace($temporaryFolder)) { throw "DCA_TEMP_FOLDER deve ser configurado no arquivo .env." }
+    $null = New-Item -Path $temporaryFolder -ItemType Directory -Force -ErrorAction Stop
 
-        throw (
-            "O caminho do PDF de origem ficou vazio."
-        )
+    # --- 3. Nome seguro: remove caracteres invalidos no Windows ---
+    $safeItemCode = ($ItemCode.Trim() -replace '[\\/:*?"<>|]', '_').Trim().TrimEnd(".", " ")
+    if ([string]::IsNullOrWhiteSpace($safeItemCode)) {
+        throw "O codigo do Item ficou vazio depois da normalizacao do nome do arquivo."
     }
 
-    if (-not (
-        Test-Path `
-            -LiteralPath $sourcePdfPathClean `
-            -PathType Leaf
-    )) {
+    # --- 4. Copia independente (substitui qualquer copia antiga) ---
+    $temporaryFullPath = [System.IO.Path]::GetFullPath((Join-Path $temporaryFolder "$safeItemCode.pdf"))
+    $sourceFullPath    = [System.IO.Path]::GetFullPath($sourceFile.FullName)
 
-        throw (
-            "PDF de origem nao encontrado: " +
-            "'$sourcePdfPathClean'."
-        )
+    if ($sourceFullPath -ieq $temporaryFullPath) {
+        throw "O PDF de origem ja corresponde ao caminho temporario: '$temporaryFullPath'."
     }
-
-    # Recupera as informacoes do arquivo utilizadas para validar
-    # sua extensao e comparar posteriormente o tamanho da copia.
-    $sourceFile =
-        Get-Item `
-            -LiteralPath $sourcePdfPathClean `
-            -ErrorAction Stop
-
-    # Somente arquivos com extensao PDF podem ser preparados para
-    # envio ao importador do Teamcenter.
-    if ($sourceFile.Extension -ine ".pdf") {
-        throw "O arquivo de origem nao possui extensao PDF."
-    }
-
-    # Rejeita o arquivo antes da copia quando nenhum conteudo tiver
-    # sido encontrado no PDF de origem.
-    if ($sourceFile.Length -le 0) {
-        throw "O PDF de origem esta vazio."
-    }
-
-    # ============================================================
-    # 2. PREPARAR A PASTA TEMPORARIA
-    # ============================================================
-    #
-    # O caminho da pasta temporaria deve ser informado no arquivo
-    # .env por meio da variavel DCA_TEMP_FOLDER.
-
-    $temporaryFolder =
-        ([string]$env:DCA_TEMP_FOLDER).Trim()
-
-    if ([string]::IsNullOrWhiteSpace($temporaryFolder)) {
-        throw (
-            "DCA_TEMP_FOLDER deve ser configurado no arquivo .env."
-        )
-    }
-
-    # Quando a pasta ainda nao existir, cria toda a estrutura
-    # necessaria antes de preparar a copia do PDF.
-    if (-not (
-        Test-Path `
-            -LiteralPath $temporaryFolder `
-            -PathType Container
-    )) {
-
-        $null =
-            New-Item `
-                -Path $temporaryFolder `
-                -ItemType Directory `
-                -Force `
-                -ErrorAction Stop
-    }
-
-    $temporaryFolder =
-        [System.IO.Path]::GetFullPath(
-            $temporaryFolder
-        ).TrimEnd(
-            [System.IO.Path]::DirectorySeparatorChar,
-            [System.IO.Path]::AltDirectorySeparatorChar
-        )
-
-    # ============================================================
-    # 3. NORMALIZAR O NOME DO ARQUIVO TEMPORARIO
-    # ============================================================
-    #
-    # Remove espacos das extremidades e substitui os caracteres que
-    # nao podem fazer parte de um nome de arquivo no Windows.
-
-    $safeItemCode =
-        $ItemCode.Trim() -replace '[\\/:*?"<>|]', '_'
-
-    $safeItemCode =
-        $safeItemCode.Trim().TrimEnd(
-            ".",
-            " "
-        )
-
-    # O codigo precisa manter algum caractere utilizavel depois da
-    # substituicao dos caracteres invalidos.
-    if (
-        [string]::IsNullOrWhiteSpace(
-            $safeItemCode
-        )
-    ) {
-
-        throw (
-            "O codigo do Item ficou vazio depois da normalizacao " +
-            "do nome do arquivo."
-        )
-    }
-
-    # ============================================================
-    # 4. DEFINIR O CAMINHO DA COPIA
-    # ============================================================
-    #
-    # O PDF temporario utiliza o codigo normalizado do Item como
-    # nome e permanece dentro da pasta configurada para o lote.
-
-    $temporaryPdfPath =
-        Join-Path `
-            -Path $temporaryFolder `
-            -ChildPath "$safeItemCode.pdf"
-
-    $sourceFullPath =
-        [System.IO.Path]::GetFullPath(
-            $sourceFile.FullName
-        )
-
-    $temporaryFullPath =
-        [System.IO.Path]::GetFullPath(
-            $temporaryPdfPath
-        )
-
-    if (
-        $sourceFullPath.Equals(
-            $temporaryFullPath,
-            [System.StringComparison]::OrdinalIgnoreCase
-        )
-    ) {
-
-        throw (
-            "O PDF de origem ja corresponde ao caminho temporario: " +
-            "'$temporaryFullPath'."
-        )
-    }
-
-    # ============================================================
-    # 5. REMOVER UMA COPIA TEMPORARIA ANTERIOR
-    # ============================================================
-    #
-    # Quando ja existir um arquivo com o mesmo codigo, remove a copia
-    # anterior para impedir que o importador utilize um PDF antigo.
-
-    if (
-        Test-Path `
-            -LiteralPath $temporaryFullPath `
-            -PathType Leaf
-    ) {
-
-        Remove-Item `
-            -LiteralPath $temporaryFullPath `
-            -Force `
-            -ErrorAction Stop
-    }
-
-    # ============================================================
-    # 6. COPIAR O PDF PARA A PASTA TEMPORARIA
-    # ============================================================
-    #
-    # Cria uma copia independente do arquivo original para que o
-    # importador trabalhe somente com o arquivo temporario.
 
     Write-Info "Preparando o PDF para importacao..."
-
     try {
-
-        Copy-Item `
-            -LiteralPath $sourceFullPath `
-            -Destination $temporaryFullPath `
-            -Force `
-            -ErrorAction Stop
+        Remove-Item -LiteralPath $temporaryFullPath -Force -ErrorAction SilentlyContinue
+        Copy-Item -LiteralPath $sourceFullPath -Destination $temporaryFullPath -Force -ErrorAction Stop
     }
     catch {
-
-        if (
-            Test-Path `
-                -LiteralPath $temporaryFullPath `
-                -PathType Leaf
-        ) {
-
-            Remove-Item `
-                -LiteralPath $temporaryFullPath `
-                -Force `
-                -ErrorAction SilentlyContinue
-        }
-
-        throw (
-            "Nao foi possivel copiar o PDF para a pasta temporaria: " +
-            $_.Exception.Message
-        )
+        Remove-Item -LiteralPath $temporaryFullPath -Force -ErrorAction SilentlyContinue
+        throw "Nao foi possivel copiar o PDF para a pasta temporaria: $($_.Exception.Message)"
     }
 
-    # Confirma que a operacao de copia realmente criou o arquivo no
-    # caminho esperado antes de continuar a validacao.
-    if (-not (
-        Test-Path `
-            -LiteralPath $temporaryFullPath `
-            -PathType Leaf
-    )) {
+    $temporaryFile = Get-Item -LiteralPath $temporaryFullPath -ErrorAction SilentlyContinue
+    if ($null -eq $temporaryFile) { throw "O PDF nao foi criado na pasta temporaria." }
 
-        throw (
-            "O PDF nao foi criado na pasta temporaria."
-        )
-    }
-
-    # Recupera as informacoes da copia para comparar seu tamanho com
-    # o arquivo de origem.
-    $temporaryFile =
-        Get-Item `
-            -LiteralPath $temporaryFullPath `
-            -ErrorAction Stop
-
-    # ============================================================
-    # 7. VALIDAR O TAMANHO DA COPIA
-    # ============================================================
-    #
-    # A copia deve possuir exatamente o mesmo tamanho do arquivo de
-    # origem. Uma diferenca indica que o arquivo pode estar incompleto.
-
-    if (
-        $temporaryFile.Length -ne
-        $sourceFile.Length
-    ) {
-
+    # --- 5. Validar tamanho e assinatura ---
+    if ($temporaryFile.Length -ne $sourceFile.Length) {
         throw (
             "O tamanho da copia temporaria e diferente do original. " +
-            "Original: $($sourceFile.Length) bytes. " +
-            "Copia: $($temporaryFile.Length) bytes."
+            "Original: $($sourceFile.Length) bytes. Copia: $($temporaryFile.Length) bytes."
         )
     }
 
-    # ============================================================
-    # 8. CONFIRMAR O ACESSO DE LEITURA
-    # ============================================================
-    #
-    # A abertura em modo de leitura confirma que o arquivo pode ser
-    # acessado pelo processo antes da chamada ao Importar GD.
-    # O valor inicial permite fechar o fluxo com seguranca no bloco
-    # finally, mesmo quando a abertura do arquivo falhar.
-
-    $stream = $null
-
+    # Abrir em modo leitura confirma que o arquivo nao esta bloqueado.
+    $stream = [System.IO.File]::OpenRead($temporaryFullPath)
     try {
+        $header = [byte[]]::new(5)
+        if ($stream.Read($header, 0, 5) -lt 5) { throw "A copia temporaria e pequena demais para ser um PDF valido." }
 
-        # Abre o arquivo somente para leitura e permite o acesso
-        # simultaneo de outros processos tambem em modo de leitura.
-        $stream = [System.IO.File]::Open(
-            $temporaryFullPath,
-            [System.IO.FileMode]::Open,
-            [System.IO.FileAccess]::Read,
-            [System.IO.FileShare]::Read
-        )
-
-        # Confirma novamente o conteudo utilizando o fluxo realmente
-        # aberto pelo processo.
-        if ($stream.Length -le 0) {
-
-            throw (
-                "A copia temporaria do PDF esta vazia."
-            )
-        }
-
-        $headerBytes =
-            [byte[]]::new(5)
-
-        $bytesRead =
-            $stream.Read(
-                $headerBytes,
-                0,
-                $headerBytes.Length
-            )
-
-        if ($bytesRead -lt 5) {
-
-            throw (
-                "A copia temporaria e pequena demais para ser um PDF valido."
-            )
-        }
-
-        $pdfHeader =
-            [System.Text.Encoding]::ASCII.GetString(
-                $headerBytes
-            )
-
+        $pdfHeader = [System.Text.Encoding]::ASCII.GetString($header)
         if ($pdfHeader -ne "%PDF-") {
-
-            throw (
-                "A copia temporaria nao possui uma assinatura PDF valida. " +
-                "Cabecalho encontrado: '$pdfHeader'."
-            )
-        }
-
-    }
-    finally {
-
-        # ============================================================
-        # 9. FECHAR O FLUXO DE LEITURA
-        # ============================================================
-        #
-        # O fluxo deve ser liberado mesmo quando uma falha ocorrer
-        # durante a validacao do arquivo.
-
-        if ($null -ne $stream) {
-
-            # Libera o controle do arquivo para evitar que a copia
-            # temporaria permaneca bloqueada pelo processo.
-            $stream.Dispose()
+            throw "A copia temporaria nao possui uma assinatura PDF valida. Cabecalho encontrado: '$pdfHeader'."
         }
     }
+    finally { $stream.Dispose() }
 
-    # ============================================================
-    # 10. RETORNAR O PDF VALIDADO
-    # ============================================================
-    #
-    # Depois de todas as verificacoes, retorna o caminho completo
-    # da copia que sera enviada ao importador do Teamcenter.
-
-    if ($Details) {
-        Write-Success (
-            "PDF copiado e validado na pasta temporaria."
-        )
-    }
+    if ($Details) { Write-Success "PDF copiado e validado na pasta temporaria." }
 
     return [string]$temporaryFile.FullName
 }

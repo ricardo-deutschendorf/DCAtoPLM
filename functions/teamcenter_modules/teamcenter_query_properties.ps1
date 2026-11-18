@@ -1,615 +1,304 @@
 # ============================================================
-# LEITURA DAS PROPRIEDADES DOS OBJETOS DO TEAMCENTER
+# LEITURA E DIAGNOSTICO DE PROPRIEDADES DO TEAMCENTER
 # ============================================================
-#
-# Este arquivo recupera valores textuais dos objetos retornados
-# pela API SOA do Teamcenter.
-#
-# Responsabilidades:
-#   1. remover wrappers criados pelo PowerShell;
-#   2. localizar GetProperty ou getPropertyObject;
-#   3. ler StringValue, DisplayableValue ou StringArrayValue;
-#   4. transformar valores enumeraveis em texto;
-#   5. retornar uma string vazia quando a propriedade nao puder
-#      ser lida;
-#   6. apresentar diagnosticos adicionais quando Details estiver
-#      ativo.
-#
-# A funcao deste arquivo apenas le propriedades. Nenhum objeto
-# e criado ou alterado no Teamcenter.
+# Le propriedades textuais dos objetos SOA e lista as propriedades
+# disponiveis em revisoes. Nao cria nem altera objetos no Teamcenter.
 # ============================================================
-function Get-TeamcenterModelPropertyText {
 
-  # Recupera uma propriedade textual de um objeto retornado
-  # pela API do Teamcenter.
-  param(
-    [Parameter(Mandatory = $true)]
-    [ValidateNotNull()]
-    $ModelObject,
+# Remove o wrapper criado pelo PowerShell, quando presente.
+function Get-DcaModelBaseObject {
+    param($Object)
 
-    [Parameter(Mandatory = $true)]
-    [ValidateNotNullOrEmpty()]
-    [string]$PropertyName
-  )
-
-  $baseObject =
-  $ModelObject.PSObject.BaseObject
-
-  if ($null -ne $baseObject) {
-
-    $ModelObject =
-    $baseObject
-  }
-
-  $objectType =
-  $ModelObject.GetType()
-
-  # Algumas versoes da API expoem GetProperty e outras
-  # expoem getPropertyObject.
-  $getPropertyMethod =
-  $objectType.GetMethods() |
-    Where-Object {
-    $_.Name -match
-    "(?i)^(GetProperty|getPropertyObject)$" -and
-    $_.GetParameters().Count -eq 1
-  } |
-    Sort-Object {
-    if ($_.Name -ieq "GetProperty") {
-      0
-    }
-    else {
-      1
-    }
-  } |
-    Select-Object -First 1
-
-  if ($null -eq $getPropertyMethod) {
-
-    if ($Details) {
-
-      Write-Warn (
-        "Nenhum metodo GetProperty ou getPropertyObject " +
-        "foi encontrado no tipo '$($objectType.FullName)'."
-      )
-    }
-
-    return ""
-  }
-
-  try {
-
-    $propertyObject =
-    $getPropertyMethod.Invoke(
-      $ModelObject,
-      @(
-        [string]$PropertyName
-      )
-    )
-
-    if ($null -eq $propertyObject) {
-
-      return ""
-    }
-
-    $propertyType =
-    $propertyObject.GetType()
-
-       foreach (
-      $candidatePropertyName in @(
-        "StringValue",
-        "DisplayableValue",
-        "StringArrayValue"
-      )
-    ) {
-
-      $candidateProperty =
-      $propertyType.GetProperty(
-        $candidatePropertyName
-      )
-
-      if ($null -eq $candidateProperty) {
-        continue
-      }
-
-      try {
-
-        $candidateValue =
-        $candidateProperty.GetValue(
-          $propertyObject,
-          $null
-        )
-      }
-      catch {
-
-        # Algumas propriedades existem no tipo, mas nao podem ser
-        # lidas para todos os tipos de valor. Nesse caso, tenta a
-        # proxima representacao disponivel.
-        continue
-      }
-
-      if ($null -eq $candidateValue) {
-        continue
-      }
-
-      if (
-        $candidateValue -is
-        [System.Collections.IEnumerable] -and
-        $candidateValue -isnot [string]
-      ) {
-
-        $candidateText =
-        @(
-          $candidateValue |
-            ForEach-Object {
-              ([string]$_).Trim()
-            } |
-            Where-Object {
-              -not [string]::IsNullOrWhiteSpace(
-                [string]$_
-              )
-            }
-        ) -join ", "
-      }
-      else {
-
-        $candidateText =
-        ([string]$candidateValue).Trim()
-      }
-
-      if (-not (
-          [string]::IsNullOrWhiteSpace(
-            $candidateText
-          )
-        )) {
-
-        return $candidateText
-      }
-    }
-
-    return ""
-  }
-  catch {
-
-    if ($Details) {
-
-      $realException =
-      $_.Exception
-
-      while (
-        $null -ne $realException.InnerException
-      ) {
-
-        $realException =
-        $realException.InnerException
-      }
-
-      Write-Warn (
-        "Nao foi possivel ler a propriedade " +
-        "'$PropertyName' do tipo " +
-        "'$($objectType.FullName)': " +
-        $realException.Message
-      )
-    }
-
-    return ""
-  }
+    if ($null -eq $Object) { return $null }
+    if ($null -ne $Object.PSObject.BaseObject) { return $Object.PSObject.BaseObject }
+    return $Object
 }
 
-# ============================================================
-# DIAGNOSTICO DAS PROPRIEDADES DA REVISAO
-# ============================================================
-function Show-DcaTeamcenterRevisionProperties {
+# Retorna a excecao interna real.
+function Get-DcaRootException {
+    param([Parameter(Mandatory)]$Exception)
 
-  # Lista os nomes tecnicos e os valores exibidos das propriedades
-  # disponiveis no objeto de revisao.
-  #
-  # Esta funcao realiza somente consultas. Nenhuma propriedade
-  # do Teamcenter e alterada.
-  param(
-    [Parameter(Mandatory = $true)]
-    [ValidateNotNull()]
-    $Revision,
-
-    # Quando informado, mostra somente propriedades cujo nome ou
-    # valor contenha o texto pesquisado.
-    [string]$SearchText
-  )
-
-  # ============================================================
-  # 1. NORMALIZAR E VALIDAR A REVISAO
-  # ============================================================
-
-  $revisionBaseObject =
-  $Revision.PSObject.BaseObject
-
-  if ($null -ne $revisionBaseObject) {
-
-    $Revision =
-    $revisionBaseObject
-  }
-
-  if ($null -eq $Revision) {
-
-    throw (
-      "A revisao nao foi fornecida para o diagnostico " +
-      "das propriedades."
-    )
-  }
-
-  $revisionTypeName =
-  $Revision.GetType().FullName
-
-  if (
-    $revisionTypeName -notmatch
-    '(?i)(ItemRevision|Revision)$'
-  ) {
-
-    throw (
-      "O objeto recebido nao e uma revisao valida. " +
-      "Tipo recebido: '$revisionTypeName'."
-    )
-  }
-
-  # ============================================================
-  # 2. OBTER OS NOMES DAS PROPRIEDADES
-  # ============================================================
-
-  if (
-    -not $Revision.PSObject.Properties["PropertyNames"]
-  ) {
-
-    throw (
-      "O objeto de revisao '$revisionTypeName' nao disponibiliza " +
-      "a colecao PropertyNames."
-    )
-  }
-
-  $propertyNames =
-  @(
-    $Revision.PropertyNames |
-      ForEach-Object {
-      ([string]$_).Trim()
-    } |
-      Where-Object {
-      -not [string]::IsNullOrWhiteSpace(
-        [string]$_
-      )
-    } |
-      Sort-Object -Unique
-  )
-
-  if ($propertyNames.Count -eq 0) {
-
-    throw (
-      "A revisao nao retornou nomes de propriedades."
-    )
-  }
-
-  # ============================================================
-  # 3. CARREGAR AS PROPRIEDADES NO MODELO CLIENTE
-  # ============================================================
-
-  $dataManagementService =
-  Get-TeamcenterDataManagementService
-
-  $getPropertiesMethod =
-  $dataManagementService.GetType().GetMethods() |
-    Where-Object {
-    $_.Name -ieq "GetProperties" -and
-    $_.GetParameters().Count -eq 2
-  } |
-    Select-Object -First 1
-
-  if ($null -eq $getPropertiesMethod) {
-
-    throw (
-      "DataManagementService.GetProperties nao foi encontrado."
-    )
-  }
-
-  $revisionArrayType =
-  $getPropertiesMethod.GetParameters()[0].ParameterType
-
-  if (-not $revisionArrayType.IsArray) {
-
-    throw (
-      "O primeiro parametro de GetProperties nao e um array."
-    )
-  }
-
-  $modelObjectType =
-  $revisionArrayType.GetElementType()
-
-  if ($null -eq $modelObjectType) {
-
-    throw (
-      "O tipo dos objetos de GetProperties nao foi identificado."
-    )
-  }
-
-  $revisionArray =
-  [System.Array]::CreateInstance(
-    $modelObjectType,
-    1
-  )
-
-  $revisionArray.SetValue(
-    $Revision,
-    0
-  )
-
-  $propertyArguments =
-  [object[]]::new(2)
-
-  $propertyArguments[0] =
-  $revisionArray
-
-  $propertyArguments[1] =
-  [string[]]$propertyNames
-
-  try {
-
-    $propertyResponse =
-    $getPropertiesMethod.Invoke(
-      $dataManagementService,
-      $propertyArguments
-    )
-
-    if ($null -ne $propertyResponse) {
-
-      $propertyErrors =
-      @(
-        Get-TeamcenterServiceErrors `
-          -ServiceData $propertyResponse
-      )
-
-      if (
-        $propertyErrors.Count -gt 0 -and
-        $Details
-      ) {
-
-        Write-Warn (
-          "Algumas propriedades nao puderam ser carregadas: " +
-          ($propertyErrors -join " | ")
-        )
-      }
-    }
-  }
-  catch {
-
-    $realException =
-    $_.Exception
-
-    while (
-      $null -ne $realException.InnerException
-    ) {
-
-      $realException =
-      $realException.InnerException
+    while ($null -ne $Exception.InnerException) {
+        $Exception = $Exception.InnerException
     }
 
-    throw (
-      "Nao foi possivel carregar as propriedades da revisao: " +
-      $realException.Message
+    return $Exception
+}
+
+# Converte um valor simples ou enumeravel em texto.
+function ConvertTo-DcaPropertyText {
+    param(
+        $Value,
+        [string]$Separator = ", "
     )
-  }
 
-  # ============================================================
-  # 4. LOCALIZAR OS METODOS DE LEITURA
-  # ============================================================
+    if ($null -eq $Value) { return "" }
 
-  $getDisplayValueMethod =
-  $Revision.GetType().GetMethods() |
-    Where-Object {
-    $_.Name -eq "GetPropertyDisplayableValue" -and
-    $_.GetParameters().Count -eq 1 -and
-    $_.GetParameters()[0].ParameterType -eq [string]
-  } |
-    Select-Object -First 1
+    if ($Value -is [System.Collections.IEnumerable] -and $Value -isnot [string]) {
+        return @(
+            $Value |
+                ForEach-Object { ([string]$_).Trim() } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        ) -join $Separator
+    }
 
-  $getDisplayValuesMethod =
-  $Revision.GetType().GetMethods() |
-    Where-Object {
-    $_.Name -eq "GetPropertyDisplayableValues" -and
-    $_.GetParameters().Count -eq 1 -and
-    $_.GetParameters()[0].ParameterType -eq [string]
-  } |
-    Select-Object -First 1
+    return ([string]$Value).Trim()
+}
 
-  if (
-    $null -eq $getDisplayValueMethod -and
-    $null -eq $getDisplayValuesMethod
-  ) {
+# Le uma propriedade textual de um objeto retornado pela API SOA.
+function Get-TeamcenterModelPropertyText {
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNull()]
+        $ModelObject,
 
-    throw (
-      "Os metodos de leitura das propriedades nao foram " +
-      "encontrados no objeto de revisao."
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [string]$PropertyName
     )
-  }
 
-  # ============================================================
-  # 5. LER OS VALORES DAS PROPRIEDADES
-  # ============================================================
+    $ModelObject = Get-DcaModelBaseObject $ModelObject
+    $objectType = $ModelObject.GetType()
 
-  $searchTextClean =
-  ([string]$SearchText).Trim()
+    $getPropertyMethod = $objectType.GetMethods() |
+        Where-Object {
+            $_.Name -match '^(?i:GetProperty|getPropertyObject)$' -and
+            $_.GetParameters().Count -eq 1
+        } |
+        Sort-Object { if ($_.Name -ieq "GetProperty") { 0 } else { 1 } } |
+        Select-Object -First 1
 
-  $propertyResults =
-  [System.Collections.Generic.List[object]]::new()
+    if ($null -eq $getPropertyMethod) {
+        if ($Details) {
+            Write-Warn "Nenhum metodo GetProperty ou getPropertyObject foi encontrado no tipo '$($objectType.FullName)'."
+        }
 
-  foreach ($propertyName in $propertyNames) {
-
-    $propertyValue =
-    ""
+        return ""
+    }
 
     try {
-
-      if ($null -ne $getDisplayValuesMethod) {
-
-        $displayValues =
-        @(
-          $getDisplayValuesMethod.Invoke(
-            $Revision,
-            @(
-              [string]$propertyName
-            )
-          )
+        $propertyObject = $getPropertyMethod.Invoke(
+            $ModelObject,
+            @([string]$PropertyName)
         )
+        if ($null -eq $propertyObject) { return "" }
 
-        $propertyValue =
-        @(
-          $displayValues |
-            ForEach-Object {
-            ([string]$_).Trim()
-          } |
-            Where-Object {
-            -not [string]::IsNullOrWhiteSpace(
-              [string]$_
-            )
-          }
-        ) -join " | "
-      }
+        $propertyType = $propertyObject.GetType()
 
-      if (
-        [string]::IsNullOrWhiteSpace(
-          $propertyValue
-        ) -and
-        $null -ne $getDisplayValueMethod
-      ) {
+        foreach ($name in @("StringValue", "DisplayableValue", "StringArrayValue")) {
+            $property = $propertyType.GetProperty($name)
+            if ($null -eq $property) { continue }
 
-        $propertyValue =
-        [string]$getDisplayValueMethod.Invoke(
-          $Revision,
-          @(
-            [string]$propertyName
-          )
-        )
+            try {
+                $text = ConvertTo-DcaPropertyText (
+                    $property.GetValue($propertyObject, $null)
+                )
+            }
+            catch {
+                continue
+            }
 
-        $propertyValue =
-        $propertyValue.Trim()
-      }
+            if (-not [string]::IsNullOrWhiteSpace($text)) { return $text }
+        }
     }
     catch {
-
-      if ($Details) {
-
-        $propertyValue =
-        "<nao foi possivel ler>"
-      }
-      else {
-
-        continue
-      }
+        if ($Details) {
+            $error = Get-DcaRootException $_.Exception
+            Write-Warn "Nao foi possivel ler a propriedade '$PropertyName' do tipo '$($objectType.FullName)': $($error.Message)"
+        }
     }
 
-    $matchesSearch =
-    $true
+    return ""
+}
 
-    if (
-      -not [string]::IsNullOrWhiteSpace(
-        $searchTextClean
-      )
-    ) {
+# Lista os nomes tecnicos e valores exibidos das propriedades da revisao.
+function Show-DcaTeamcenterRevisionProperties {
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNull()]
+        $Revision,
 
-      $matchesSearch =
-      (
-        $propertyName.IndexOf(
-          $searchTextClean,
-          [System.StringComparison]::OrdinalIgnoreCase
-        ) -ge 0 -or
-        $propertyValue.IndexOf(
-          $searchTextClean,
-          [System.StringComparison]::OrdinalIgnoreCase
-        ) -ge 0
-      )
-    }
-
-    if (-not $matchesSearch) {
-      continue
-    }
-
-    $propertyResults.Add(
-      [PSCustomObject]@{
-        PropertyName = $propertyName
-        Value = $propertyValue
-      }
+        [string]$SearchText
     )
-  }
 
-  # ============================================================
-  # 6. APRESENTAR O RESULTADO
-  # ============================================================
+    $Revision = Get-DcaModelBaseObject $Revision
+    if ($null -eq $Revision) {
+        throw "A revisao nao foi fornecida para o diagnostico das propriedades."
+    }
 
-  Write-AnimatedLine ""
+    $revisionTypeName = $Revision.GetType().FullName
+    if ($revisionTypeName -notmatch '(?i)(ItemRevision|Revision)$') {
+        throw "O objeto recebido nao e uma revisao valida. Tipo recebido: '$revisionTypeName'."
+    }
 
-  Write-Host (
-    "  Propriedades da revisao do Teamcenter:"
-  ) -ForegroundColor Cyan
+    if (-not $Revision.PSObject.Properties["PropertyNames"]) {
+        throw "O objeto de revisao '$revisionTypeName' nao disponibiliza a colecao PropertyNames."
+    }
 
-  Write-Host (
-    "  Tipo tecnico: $revisionTypeName"
-  ) -ForegroundColor DarkGray
-
-  if (
-    -not [string]::IsNullOrWhiteSpace(
-      $SearchTextClean
+    $propertyNames = @(
+        $Revision.PropertyNames |
+            ForEach-Object { ([string]$_).Trim() } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Sort-Object -Unique
     )
-  ) {
-
-    Write-Host (
-      "  Filtro: '$SearchTextClean'"
-    ) -ForegroundColor DarkGray
-  }
-
-  Write-Host ""
-
-  if ($propertyResults.Count -eq 0) {
-
-    if (
-      [string]::IsNullOrWhiteSpace(
-        $searchTextClean
-      )
-    ) {
-
-      Write-Warn (
-        "Nenhuma propriedade com valor legivel foi encontrada " +
-        "na revisao."
-      )
-    }
-    else {
-
-      Write-Warn (
-        "Nenhuma propriedade corresponde ao filtro " +
-        "'$searchTextClean'."
-      )
+    if ($propertyNames.Count -eq 0) {
+        throw "A revisao nao retornou nomes de propriedades."
     }
 
-    return @()
-  }
+    # Carrega todas as propriedades no modelo cliente.
+    $service = Get-TeamcenterDataManagementService
+    $getPropertiesMethod = $service.GetType().GetMethods() |
+        Where-Object {
+            $_.Name -ieq "GetProperties" -and
+            $_.GetParameters().Count -eq 2
+        } |
+        Select-Object -First 1
 
-  foreach ($propertyResult in $propertyResults) {
-
-    $valueText =
-    [string]$propertyResult.Value
-
-    if (
-      [string]::IsNullOrWhiteSpace(
-        $valueText
-      )
-    ) {
-
-      $valueText =
-      "<vazio>"
+    if ($null -eq $getPropertiesMethod) {
+        throw "DataManagementService.GetProperties nao foi encontrado."
     }
 
-    Write-Host (
-      "    {0} = '{1}'" -f
-      $propertyResult.PropertyName,
-      $valueText
-    ) -ForegroundColor Gray
-  }
+    $arrayType = $getPropertiesMethod.GetParameters()[0].ParameterType
+    if (-not $arrayType.IsArray) {
+        throw "O primeiro parametro de GetProperties nao e um array."
+    }
 
-  Write-Host ""
+    $objectType = $arrayType.GetElementType()
+    if ($null -eq $objectType) {
+        throw "O tipo dos objetos de GetProperties nao foi identificado."
+    }
 
-  return $propertyResults.ToArray()
+    $revisionArray = [System.Array]::CreateInstance($objectType, 1)
+    $revisionArray.SetValue($Revision, 0)
+
+    try {
+        $response = $getPropertiesMethod.Invoke(
+            $service,
+            [object[]]@($revisionArray, [string[]]$propertyNames)
+        )
+
+        if ($null -ne $response) {
+            $errors = @(Get-TeamcenterServiceErrors -ServiceData $response)
+
+            if ($errors.Count -gt 0 -and $Details) {
+                Write-Warn "Algumas propriedades nao puderam ser carregadas: $($errors -join ' | ')"
+            }
+        }
+    }
+    catch {
+        $error = Get-DcaRootException $_.Exception
+        throw "Nao foi possivel carregar as propriedades da revisao: $($error.Message)"
+    }
+
+      # Localiza as formas de leitura disponibilizadas pela API.
+    $methods = $Revision.GetType().GetMethods() |
+        Where-Object {
+            $_.Name -match '^GetPropertyDisplayableValues?$' -and
+            $_.GetParameters().Count -eq 1 -and
+            $_.GetParameters()[0].ParameterType -eq [string]
+        }
+
+    $getDisplayValueMethod = $methods |
+        Where-Object { $_.Name -eq "GetPropertyDisplayableValue" } |
+        Select-Object -First 1
+
+    $getDisplayValuesMethod = $methods |
+        Where-Object { $_.Name -eq "GetPropertyDisplayableValues" } |
+        Select-Object -First 1
+
+    if ($null -eq $getDisplayValueMethod -and
+        $null -eq $getDisplayValuesMethod) {
+        throw "Os metodos de leitura das propriedades nao foram encontrados no objeto de revisao."
+    }
+
+    $searchTextClean = ([string]$SearchText).Trim()
+    $results = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($propertyName in $propertyNames) {
+        $value = ""
+
+        try {
+            if ($null -ne $getDisplayValuesMethod) {
+                $displayValues = $getDisplayValuesMethod.Invoke(
+                    $Revision,
+                    @([string]$propertyName)
+                )
+
+                $value = ConvertTo-DcaPropertyText `
+                    -Value $displayValues `
+                    -Separator " | "
+            }
+
+            if ([string]::IsNullOrWhiteSpace($value) -and
+                $null -ne $getDisplayValueMethod) {
+                $displayValue = $getDisplayValueMethod.Invoke(
+                    $Revision,
+                    @([string]$propertyName)
+                )
+
+                $value = ConvertTo-DcaPropertyText -Value $displayValue
+            }
+        }
+        catch {
+            if (-not $Details) { continue }
+            $value = "<nao foi possivel ler>"
+        }
+
+        if (
+            -not [string]::IsNullOrWhiteSpace($searchTextClean) -and
+            $propertyName.IndexOf(
+                $searchTextClean,
+                [System.StringComparison]::OrdinalIgnoreCase
+            ) -lt 0 -and
+            $value.IndexOf(
+                $searchTextClean,
+                [System.StringComparison]::OrdinalIgnoreCase
+            ) -lt 0
+        ) {
+            continue
+        }
+
+        $results.Add([PSCustomObject]@{
+            PropertyName = $propertyName
+            Value        = $value
+        })
+    }
+
+    Write-AnimatedLine ""
+    Write-Host "  Propriedades da revisao do Teamcenter:" -ForegroundColor Cyan
+    Write-Host "  Tipo tecnico: $revisionTypeName" -ForegroundColor DarkGray
+
+    if (-not [string]::IsNullOrWhiteSpace($searchTextClean)) {
+        Write-Host "  Filtro: '$searchTextClean'" -ForegroundColor DarkGray
+    }
+
+    Write-Host ""
+
+    if ($results.Count -eq 0) {
+        if ([string]::IsNullOrWhiteSpace($searchTextClean)) {
+            Write-Warn "Nenhuma propriedade com valor legivel foi encontrada na revisao."
+        }
+        else {
+            Write-Warn "Nenhuma propriedade corresponde ao filtro '$searchTextClean'."
+        }
+
+        return @()
+    }
+
+    foreach ($result in $results) {
+        $valueText = ([string]$result.Value).Trim()
+
+        if ([string]::IsNullOrWhiteSpace($valueText)) {
+            $valueText = "<vazio>"
+        }
+
+        Write-Host (
+            "    {0} = '{1}'" -f
+            $result.PropertyName,
+            $valueText
+        ) -ForegroundColor Gray
+    }
+
+    Write-Host ""
+    return $results.ToArray()
 }

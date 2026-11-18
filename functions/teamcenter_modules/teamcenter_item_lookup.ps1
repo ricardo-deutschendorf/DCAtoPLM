@@ -1,1820 +1,846 @@
 # ============================================================
 # LOCALIZACAO DE ITEMS E REVISOES NO TEAMCENTER
 # ============================================================
-#
-# Este arquivo localiza Items e revisoes existentes utilizados
-# principalmente pelo fluxo DatasetOnly.
-#
-# Estrategias de consulta:
-#   1. Load_Item para recuperar diretamente uma revisao;
-#   2. getItem utilizando os valores de empresa configurados;
-#   3. Saved Query Item_Name_or_ID quando as consultas anteriores
-#      nao localizarem o destino;
-#   4. selecao manual quando mais de um Item possuir o mesmo codigo.
-#
-# Antes de aceitar o destino, o fluxo valida:
-#   1. o codigo do Item;
-#   2. o tipo tecnico do objeto retornado;
-#   3. o item_revision_id;
-#   4. a correspondencia entre a revisao esperada e a revisao
-#      encontrada no Teamcenter.
-#
-# As funcoes deste arquivo nao criam Items, revisoes ou Datasets.
+# Localiza Items e revisoes existentes para o fluxo DatasetOnly:
+#   1. Load_Item;
+#   2. getItem com os valores de empresa configurados;
+#   3. Saved Query Item_Name_or_ID;
+#   4. selecao manual quando houver mais de um destino.
+# Nao cria Items, revisoes ou Datasets.
 # ============================================================
-function Test-DcaTeamcenterItemExists {
 
-  # Verifica se o codigo informado possui uma revisao acessivel
-  # pelo metodo Load_Item.
-  #
-  # Load_Item nao depende do filtro de empresa utilizado por getItem.
-  # O resultado e armazenado em cache para impedir consultas repetidas
-  # do mesmo codigo durante a execucao atual.
+# Remove o wrapper PSObject quando presente.
+function Get-DcaTeamcenterBaseObject {
+  param($Object)
+
+  if ($null -eq $Object) { return $null }
+  if ($null -ne $Object.PSObject.BaseObject) { return $Object.PSObject.BaseObject }
+  return $Object
+}
+
+# Retorna a excecao interna real.
+function Get-DcaTeamcenterRootException {
+  param([Parameter(Mandatory)]$Exception)
+
+  while ($null -ne $Exception.InnerException) { $Exception = $Exception.InnerException }
+  return $Exception
+}
+
+# Localiza um metodo publico pela quantidade de parametros.
+function Get-DcaTeamcenterObjectMethod {
   param(
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory)]$Object,
+    [Parameter(Mandatory)][string]$Name,
+    [Parameter(Mandatory)][int]$ParameterCount
+  )
+
+  return $Object.GetType().GetMethods() |
+    Where-Object { $_.Name -ieq $Name -and $_.GetParameters().Count -eq $ParameterCount } |
+    Select-Object -First 1
+}
+
+# Carrega propriedades de um objeto do modelo Teamcenter.
+function Update-DcaTeamcenterObjectProperties {
+  param(
+    [Parameter(Mandatory)]$ModelObject,
+    [Parameter(Mandatory)][string[]]$PropertyNames
+  )
+
+  $ModelObject = Get-DcaTeamcenterBaseObject $ModelObject
+  $service = Get-TeamcenterDataManagementService
+  $method = Get-DcaTeamcenterObjectMethod -Object $service -Name "GetProperties" -ParameterCount 2
+  if ($null -eq $method) { throw "DataManagementService.GetProperties nao foi encontrado." }
+
+  $arrayType = $method.GetParameters()[0].ParameterType
+  if (-not $arrayType.IsArray) { throw "O primeiro parametro de GetProperties nao e um array." }
+
+  $objectType = $arrayType.GetElementType()
+  if ($null -eq $objectType) { throw "O tipo de objeto aceito por GetProperties nao foi identificado." }
+
+  $objects = [System.Array]::CreateInstance($objectType, 1)
+  $objects.SetValue($ModelObject, 0)
+
+  $response = $method.Invoke($service, [object[]]@($objects, [string[]]$PropertyNames))
+  if ($null -eq $response) { return }
+
+  $errors = @(Get-TeamcenterServiceErrors -ServiceData $response)
+  if ($errors.Count -gt 0) {
+    throw "O Teamcenter nao carregou as propriedades solicitadas: $($errors -join ' | ')"
+  }
+}
+
+# Cria o retorno padrao da verificacao por Load_Item.
+function New-DcaTeamcenterItemExistsResult {
+  param(
+    [Parameter(Mandatory)][string]$Status,
+    [Parameter(Mandatory)][bool]$Exists,
+    [Parameter(Mandatory)][string]$ItemCode,
+    $Item,
+    $Revision,
+    [AllowNull()][string]$ErrorMessage
+  )
+
+  [PSCustomObject]@{
+    Status = $Status
+    Exists = $Exists
+    ItemCode = $ItemCode
+    Item = $Item
+    Revision = $Revision
+    ErrorMessage = $ErrorMessage
+  }
+}
+
+# Cria o retorno padrao da localizacao de Item e revisao.
+function New-DcaTeamcenterRevisionResult {
+  param(
+    [Parameter(Mandatory)][string]$Status,
+    [Parameter(Mandatory)][bool]$ItemExists,
+    [Parameter(Mandatory)][bool]$RevisionExists,
+    [Parameter(Mandatory)][string]$ItemCode,
+    [Parameter(Mandatory)][string]$ExpectedRevision,
+    [string]$FoundRevision = "",
+    $Item,
+    $Revision,
+    [AllowNull()][string]$ErrorMessage
+  )
+
+  [PSCustomObject]@{
+    Status = $Status
+    ItemExists = $ItemExists
+    RevisionExists = $RevisionExists
+    ItemCode = $ItemCode
+    ExpectedRevision = $ExpectedRevision
+    FoundRevision = $FoundRevision
+    Item = $Item
+    Revision = $Revision
+    ErrorMessage = $ErrorMessage
+  }
+}
+
+# Verifica se Load_Item retorna uma revisao valida para o codigo.
+function Test-DcaTeamcenterItemExists {
+  param(
+    [Parameter(Mandatory)]
     [ValidateNotNullOrEmpty()]
     [string]$ItemCode
   )
 
   if ($null -eq $script:TeamcenterFunctions) {
-
-    throw (
-      "As funcoes do Teamcenter nao foram carregadas. " +
-      "Execute Connect-Teamcenter primeiro."
-    )
+    throw "As funcoes do Teamcenter nao foram carregadas. Execute Connect-Teamcenter primeiro."
   }
 
-  $itemCodeClean =
-  $ItemCode.Trim().ToUpperInvariant()
-
-  if (
-    [string]::IsNullOrWhiteSpace(
-      $itemCodeClean
-    )
-  ) {
-
-    return [PSCustomObject]@{
-      Status = "Erro"
-      Exists = $false
-      ItemCode = ""
-      Item = $null
-      Revision = $null
-      ErrorMessage = "O codigo do Item ficou vazio."
-    }
+  $itemCodeClean = $ItemCode.Trim().ToUpperInvariant()
+  if ([string]::IsNullOrWhiteSpace($itemCodeClean)) {
+    return New-DcaTeamcenterItemExistsResult -Status "Erro" -Exists $false `
+      -ItemCode "" -ErrorMessage "O codigo do Item ficou vazio."
   }
 
-  $cacheKey =
-  "{0}|{1}" -f
-  ([string]$script:TeamcenterEnvironment).Trim(),
-  $itemCodeClean
-
-  if (
-    $null -ne $script:TeamcenterItemLookupCache -and
-    $script:TeamcenterItemLookupCache.ContainsKey(
-      $cacheKey
-    )
-  ) {
-
-    return $script:TeamcenterItemLookupCache[
-    $cacheKey
-    ]
+  $cacheKey = "{0}|{1}" -f ([string]$script:TeamcenterEnvironment).Trim(), $itemCodeClean
+  if ($null -ne $script:TeamcenterItemLookupCache -and
+    $script:TeamcenterItemLookupCache.ContainsKey($cacheKey)) {
+    return $script:TeamcenterItemLookupCache[$cacheKey]
   }
 
-  $loadItemMethod =
-  Get-TeamcenterMethod `
-    -MethodName "Load_Item" `
-    -ParameterCount 1
-
-  $result =
-  $null
+  $method = Get-TeamcenterMethod -MethodName "Load_Item" -ParameterCount 1
 
   try {
-
     if ($Details) {
-
-      Write-Host (
-        "  Consultando Item '$itemCodeClean'..."
-      ) -ForegroundColor DarkGray
+      Write-Host "  Consultando Item '$itemCodeClean'..." -ForegroundColor DarkGray
     }
 
-    $revision =
-    $loadItemMethod.Invoke(
-      $null,
-      @(
-        [string]$itemCodeClean
-      )
-    )
-
-    if ($null -ne $revision) {
-
-      $revisionBaseObject =
-      $revision.PSObject.BaseObject
-
-      if ($null -ne $revisionBaseObject) {
-
-        $revision =
-        $revisionBaseObject
-      }
-    }
+    $revision = Get-DcaTeamcenterBaseObject ($method.Invoke($null, @([string]$itemCodeClean)))
 
     if ($null -eq $revision) {
-
-      $result =
-      [PSCustomObject]@{
-        Status = "Nao"
-        Exists = $false
-        ItemCode = $itemCodeClean
-        Item = $null
-        Revision = $null
-        ErrorMessage = $null
-      }
+      $result = New-DcaTeamcenterItemExistsResult -Status "Nao" -Exists $false `
+        -ItemCode $itemCodeClean
     }
     else {
+      $typeName = $revision.GetType().FullName
 
-      $revisionTypeName =
-      $revision.GetType().FullName
-
-      # O Teamcenter pode retornar revisoes especializadas, como:
-      # Design_Revision, DocumentRevision e ItemRevision.
-      $isRevisionObject =
-      $revisionTypeName -match
-      '(?i)(ItemRevision|Revision)$'
-
-      if (-not $isRevisionObject) {
-
-        $result =
-        [PSCustomObject]@{
-          Status = "Erro"
-          Exists = $false
-          ItemCode = $itemCodeClean
-          Item = $null
-          Revision = $revision
-          ErrorMessage = (
-            "Load_Item retornou um objeto que nao e revisao: " +
-            "'$revisionTypeName'."
-          )
-        }
+      if ($typeName -notmatch '(?i)(ItemRevision|Revision)$') {
+        $result = New-DcaTeamcenterItemExistsResult -Status "Erro" -Exists $false `
+          -ItemCode $itemCodeClean -Revision $revision `
+          -ErrorMessage "Load_Item retornou um objeto que nao e revisao: '$typeName'."
       }
       else {
-
-        $result =
-        [PSCustomObject]@{
-          Status = "Sim"
-          Exists = $true
-          ItemCode = $itemCodeClean
-          Item = $null
-          Revision = $revision
-          ErrorMessage = $null
-        }
+        $result = New-DcaTeamcenterItemExistsResult -Status "Sim" -Exists $true `
+          -ItemCode $itemCodeClean -Revision $revision
       }
     }
   }
   catch {
+    $rootException = Get-DcaTeamcenterRootException $_.Exception
+    $message = ([string]$rootException.Message).Trim()
 
-    $realException =
-    $_.Exception
-
-    while (
-      $null -ne $realException.InnerException
-    ) {
-
-      $realException =
-      $realException.InnerException
-    }
-
-    $errorMessage =
-    ([string]$realException.Message).Trim()
-
-    if (
-      $errorMessage -match
-      "(?i)not found|nao encontrado|não encontrado|" +
-      "does not exist|cannot find|unable to find"
-    ) {
-
-      $result =
-      [PSCustomObject]@{
-        Status = "Nao"
-        Exists = $false
-        ItemCode = $itemCodeClean
-        Item = $null
-        Revision = $null
-        ErrorMessage = $null
-      }
+    if ($message -match '(?i)not found|nao encontrado|não encontrado|does not exist|cannot find|unable to find') {
+      $result = New-DcaTeamcenterItemExistsResult -Status "Nao" -Exists $false `
+        -ItemCode $itemCodeClean
     }
     else {
-
-      $result =
-      [PSCustomObject]@{
-        Status = "Erro"
-        Exists = $false
-        ItemCode = $itemCodeClean
-        Item = $null
-        Revision = $null
-        ErrorMessage = $errorMessage
-      }
+      $result = New-DcaTeamcenterItemExistsResult -Status "Erro" -Exists $false `
+        -ItemCode $itemCodeClean -ErrorMessage $message
     }
   }
 
-  if (
-    $null -ne $script:TeamcenterItemLookupCache -and
-    $null -ne $result
-  ) {
-
-    $script:TeamcenterItemLookupCache[
-    $cacheKey
-    ] =
-    $result
+  if ($null -ne $script:TeamcenterItemLookupCache) {
+    $script:TeamcenterItemLookupCache[$cacheKey] = $result
   }
 
   return $result
 }
 
+# Executa Item_Name_or_ID e retorna todos os Items cujo item_id confere.
 function Find-DcaTeamcenterItemBySavedQuery {
-
-  # Executa a Saved Query Item_Name_or_ID para localizar todos
-  # os Items que possuem o codigo informado.
-  #
-  # A consulta retorna UIDs. Cada UID e carregado pelo
-  # DataManagementService e validado pela propriedade item_id.
-  #
-  # A funcao pode retornar mais de um Item porque ambientes
-  # diferentes ou empresas diferentes podem possuir o mesmo codigo.
   param(
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory)]
     [ValidateNotNullOrEmpty()]
     [string]$ItemCode
   )
 
-  $itemCodeClean =
-  $ItemCode.Trim().ToUpperInvariant()
+  $itemCodeClean = $ItemCode.Trim().ToUpperInvariant()
+  $connection = Get-TeamcenterConnection
 
-  $connection =
-  Get-TeamcenterConnection
-
-  $queryAssembly =
-  @(
-    $script:TeamcenterQueryAssemblies |
-      Where-Object {
-      [System.IO.Path]::GetFileName(
-        [string]$_.Location
-      ) -ieq "TcSoaQueryStrong.dll"
-    }
-  ) |
+  $queryAssembly = $script:TeamcenterQueryAssemblies |
+    Where-Object { [System.IO.Path]::GetFileName([string]$_.Location) -ieq "TcSoaQueryStrong.dll" } |
     Select-Object -First 1
+  if ($null -eq $queryAssembly) { throw "TcSoaQueryStrong.dll nao esta carregada." }
 
-  if ($null -eq $queryAssembly) {
-
-    throw (
-      "TcSoaQueryStrong.dll nao esta carregada."
-    )
-  }
-
-  $savedQueryServiceType =
-  $queryAssembly.GetType(
-    "Teamcenter.Services.Strong.Query.SavedQueryService",
-    $false,
-    $false
+  $serviceType = $queryAssembly.GetType(
+    "Teamcenter.Services.Strong.Query.SavedQueryService", $false, $false
   )
+  if ($null -eq $serviceType) { throw "O tipo SavedQueryService nao foi encontrado." }
 
-  if ($null -eq $savedQueryServiceType) {
+  $getService = $serviceType.GetMethods() |
+    Where-Object { $_.Name -eq "getService" -and $_.GetParameters().Count -eq 1 } |
+    Select-Object -First 1
+  if ($null -eq $getService) { throw "SavedQueryService.getService nao foi encontrado." }
 
-    throw (
-      "O tipo SavedQueryService nao foi encontrado."
-    )
+  $service = $getService.Invoke($null, @($connection))
+  if ($null -eq $service) { throw "SavedQueryService retornou NULL." }
+
+  $getQueries = $serviceType.GetMethods() |
+    Where-Object { $_.Name -eq "GetSavedQueries" -and $_.GetParameters().Count -eq 0 } |
+    Select-Object -First 1
+  if ($null -eq $getQueries) { throw "SavedQueryService.GetSavedQueries nao foi encontrado." }
+
+  $queries = $getQueries.Invoke($service, @())
+  if ($null -eq $queries -or $null -eq $queries.Queries) {
+    throw "GetSavedQueries nao retornou a lista de consultas."
   }
 
-  $getServiceMethod =
-  $savedQueryServiceType.GetMethods() |
-    Where-Object {
-    $_.Name -eq "getService" -and
-    $_.GetParameters().Count -eq 1
-  } |
+  $savedQuery = $queries.Queries |
+    Where-Object { $_.Name -eq "Item_Name_or_ID" } |
     Select-Object -First 1
 
-  if ($null -eq $getServiceMethod) {
-
-    throw (
-      "SavedQueryService.getService nao foi encontrado."
-    )
+  if ($null -eq $savedQuery) {
+    throw "A saved query 'Item_Name_or_ID' nao foi encontrada."
+  }
+  if ($null -eq $savedQuery.Query) {
+    throw "A saved query 'Item_Name_or_ID' foi encontrada, mas o objeto Query esta vazio."
   }
 
-  $savedQueryService =
-  $getServiceMethod.Invoke(
-    $null,
-    @($connection)
-  )
-
-  if ($null -eq $savedQueryService) {
-
-    throw (
-      "SavedQueryService retornou NULL."
-    )
-  }
-
-  $getSavedQueriesMethod =
-  $savedQueryServiceType.GetMethods() |
-    Where-Object {
-    $_.Name -eq "GetSavedQueries" -and
-    $_.GetParameters().Count -eq 0
-  } |
-    Select-Object -First 1
-
-  if ($null -eq $getSavedQueriesMethod) {
-
-    throw (
-      "SavedQueryService.GetSavedQueries nao foi encontrado."
-    )
-  }
-
-  $savedQueriesResponse =
-  $getSavedQueriesMethod.Invoke(
-    $savedQueryService,
-    @()
-  )
-
-  if (
-    $null -eq $savedQueriesResponse -or
-    $null -eq $savedQueriesResponse.Queries
-  ) {
-
-    throw (
-      "GetSavedQueries nao retornou a lista de consultas."
-    )
-  }
-
-  $savedQueryObject =
-  $savedQueriesResponse.Queries |
-    Where-Object {
-    $_.Name -eq "Item_Name_or_ID"
-  } |
-    Select-Object -First 1
-
-  if ($null -eq $savedQueryObject) {
-
-    throw (
-      "A saved query 'Item_Name_or_ID' nao foi encontrada."
-    )
-  }
-
-  if ($null -eq $savedQueryObject.Query) {
-
-    throw (
-      "A saved query 'Item_Name_or_ID' foi encontrada, " +
-      "mas o objeto Query esta vazio."
-    )
-  }
-
-  $executeSavedQueriesMethod =
-  $savedQueryServiceType.GetMethods() |
-    Where-Object {
-
-    if (
-      $_.Name -ne "ExecuteSavedQueries" -or
-      $_.GetParameters().Count -ne 1
-    ) {
+  $execute = $serviceType.GetMethods() | Where-Object {
+    if ($_.Name -ne "ExecuteSavedQueries" -or $_.GetParameters().Count -ne 1) {
       return $false
     }
 
-    $parameterType =
-    $_.GetParameters()[0].ParameterType
-
-    $parameterType.IsArray -and
-    $parameterType.GetElementType().FullName -eq
+    $type = $_.GetParameters()[0].ParameterType
+    $type.IsArray -and $type.GetElementType().FullName -eq
     "Teamcenter.Services.Strong.Query._2008_06.SavedQuery.QueryInput"
-  } |
-    Select-Object -First 1
+  } | Select-Object -First 1
 
-  if ($null -eq $executeSavedQueriesMethod) {
-
-    throw (
-      "ExecuteSavedQueries da versao 2008_06 " +
-      "nao foi encontrado."
-    )
+  if ($null -eq $execute) {
+    throw "ExecuteSavedQueries da versao 2008_06 nao foi encontrado."
   }
 
-  $queryInputArrayType =
-  $executeSavedQueriesMethod.GetParameters()[0].ParameterType
-
-  $queryInputType =
-  $queryInputArrayType.GetElementType()
-
-  if ($null -eq $queryInputType) {
-
-    throw (
-      "O tipo QueryInput aceito por ExecuteSavedQueries " +
-      "nao foi identificado."
-    )
+  $inputType = $execute.GetParameters()[0].ParameterType.GetElementType()
+  if ($null -eq $inputType) {
+    throw "O tipo QueryInput aceito por ExecuteSavedQueries nao foi identificado."
   }
 
-  $queryInput =
-  [System.Activator]::CreateInstance(
-    $queryInputType
-  )
+  $input = [System.Activator]::CreateInstance($inputType)
+  if ($null -eq $input) { throw "Nao foi possivel criar QueryInput." }
 
-  if ($null -eq $queryInput) {
+  $input.Query = $savedQuery.Query
+  $input.Entries = [string[]]@("Item ID")
+  $input.Values = [string[]]@($itemCodeClean)
+  $input.MaxNumToReturn = 50
+  $input.LimitList = $null
+  $input.ClientId = "DcaExistingItemLookup"
+  $input.RequestId = "DcaExistingItemLookup_$([guid]::NewGuid().ToString('N'))"
 
-    throw (
-      "Nao foi possivel criar QueryInput."
-    )
-  }
-
-  $queryInput.Query =
-  $savedQueryObject.Query
-
-  $queryInput.Entries =
-  [string[]]@(
-    "Item ID"
-  )
-
-  $querySearchValue =
-  $itemCodeClean
-
-  $queryInput.Values =
-  [string[]]@(
-    $querySearchValue
-  )
-
-  $queryInput.MaxNumToReturn =
-  [int]50
-
-  $queryInput.LimitList =
-  $null
-
-  $queryInput.ClientId =
-  [string]"DcaExistingItemLookup"
-
-  $queryInput.RequestId =
-  [string](
-    "DcaExistingItemLookup_" +
-    [System.Guid]::NewGuid().ToString("N")
-  )
-
-  $queryInputArray =
-  [System.Array]::CreateInstance(
-    $queryInputType,
-    1
-  )
-
-  $queryInputArray.SetValue(
-    $queryInput,
-    0
-  )
-
-  $executeArguments =
-  [object[]]::new(1)
-
-  $executeArguments[0] =
-  $queryInputArray
+  $inputArray = [System.Array]::CreateInstance($inputType, 1)
+  $inputArray.SetValue($input, 0)
 
   if ($Details) {
-
-    Write-Host (
-      "  Executando saved query Item_Name_or_ID:"
-    ) -ForegroundColor Cyan
-
-    Write-Host (
-      "    Campo: Item ID"
-    ) -ForegroundColor DarkGray
-
-    Write-Host (
-      "    Valor: '$querySearchValue'"
-    ) -ForegroundColor DarkGray
+    Write-Host "  Executando saved query Item_Name_or_ID:" -ForegroundColor Cyan
+    Write-Host "    Campo: Item ID" -ForegroundColor DarkGray
+    Write-Host "    Valor: '$itemCodeClean'" -ForegroundColor DarkGray
   }
-
-  $queryResponse =
-  $null
-
-  # Acumula os UIDs retornados pelas quatro tentativas.
-  # Algumas execucoes da Saved Query podem devolver somente parte
-  # dos Items que possuem o mesmo item_id.
-  $collectedObjectUids =
-  [System.Collections.Generic.HashSet[string]]::new(
-    [System.StringComparer]::OrdinalIgnoreCase
-  )
 
   try {
-
-    for (
-      $queryAttempt = 1
-      $queryAttempt -le 1
-      $queryAttempt++
-    ) {
-
-      $queryResponse =
-      $executeSavedQueriesMethod.Invoke(
-        $savedQueryService,
-        $executeArguments
-      )
-
-      $attemptObjectUids =
-      @(
-        if (
-          $null -ne $queryResponse -and
-          $null -ne $queryResponse.ArrayOfResults
-        ) {
-
-          $queryResponse.ArrayOfResults |
-            ForEach-Object {
-            $_.ObjectUIDS
-          } |
-            ForEach-Object {
-            ([string]$_).Trim()
-          } |
-            Where-Object {
-            -not [string]::IsNullOrWhiteSpace(
-              [string]$_
-            )
-          } |
-            Sort-Object -Unique
-        }
-      )
-
-      foreach ($attemptObjectUid in $attemptObjectUids) {
-        $null =
-        $collectedObjectUids.Add(
-          [string]$attemptObjectUid
-        )
-      }
-
-      if ($Details) {
-
-        Write-Host (
-          "  Tentativa $queryAttempt da saved query: " +
-          "$($attemptObjectUids.Count) UID(s); " +
-          "$($collectedObjectUids.Count) UID(s) acumulado(s)."
-        ) -ForegroundColor DarkGray
-      }
-    }
+    $response = $execute.Invoke($service, [object[]]@(,$inputArray))
   }
-
   catch {
-    $realException =
-    $_.Exception
-
-    while (
-      $null -ne $realException.InnerException
-    ) {
-
-      $realException =
-      $realException.InnerException
-    }
-
-    throw (
-      "Falha ao executar Item_Name_or_ID para " +
-      "'$itemCodeClean': " +
-      $realException.Message
-    )
+    $rootError = Get-DcaTeamcenterRootException $_.Exception
+    throw "Falha ao executar Item_Name_or_ID para '$itemCodeClean': $($rootError.Message)"
   }
 
- $objectUids =
-@(
-  $collectedObjectUids |
-    Sort-Object
-)
+  $objectUids = @(
+    if ($null -ne $response -and $null -ne $response.ArrayOfResults) {
+      $response.ArrayOfResults.ObjectUIDS |
+        ForEach-Object { ([string]$_).Trim() } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        Sort-Object -Unique
+    }
+  )
 
   if ($Details) {
+    Write-Host "  UIDs retornados pela saved query: $($objectUids.Count)" -ForegroundColor DarkGray
+  }
+  if ($objectUids.Count -eq 0) { return @() }
 
-    Write-Host (
-      "  UIDs retornados pela saved query: " +
-      $objectUids.Count
-    ) -ForegroundColor DarkGray
+  $dataService = Get-TeamcenterDataManagementService
+  $getProperties = Get-DcaTeamcenterObjectMethod -Object $dataService -Name "GetProperties" -ParameterCount 2
+  $loadObjects = Get-DcaTeamcenterObjectMethod -Object $dataService -Name "LoadObjects" -ParameterCount 1
+
+  if ($null -eq $getProperties) {
+    throw "DataManagementService.GetProperties nao foi encontrado."
+  }
+  if ($null -eq $loadObjects) {
+    throw "DataManagementService.LoadObjects nao foi encontrado."
   }
 
-  if ($objectUids.Count -eq 0) {
-
-    return $null
+  $modelArrayType = $getProperties.GetParameters()[0].ParameterType
+  if (-not $modelArrayType.IsArray) {
+    throw "O primeiro parametro de GetProperties nao e um array."
   }
 
-  $dataManagementService =
-  Get-TeamcenterDataManagementService
-
-  $matchingItems =
-  [System.Collections.Generic.List[object]]::new()
-
-  $getPropertiesMethod =
-  $dataManagementService.GetType().GetMethods() |
-    Where-Object {
-    $_.Name -ieq "GetProperties" -and
-    $_.GetParameters().Count -eq 2
-  } |
-    Select-Object -First 1
-
-  if ($null -eq $getPropertiesMethod) {
-
-    throw (
-      "DataManagementService.GetProperties nao foi encontrado."
-    )
+  $modelType = $modelArrayType.GetElementType()
+  if ($null -eq $modelType) {
+    throw "O tipo de objeto de GetProperties nao foi identificado."
   }
 
-  $modelObjectArrayType =
-  $getPropertiesMethod.GetParameters()[0].ParameterType
-
-  if (-not $modelObjectArrayType.IsArray) {
-
-    throw (
-      "O primeiro parametro de GetProperties nao e um array."
-    )
-  }
-
-  $modelObjectType =
-  $modelObjectArrayType.GetElementType()
-
-  if ($null -eq $modelObjectType) {
-
-    throw (
-      "O tipo de objeto de GetProperties nao foi identificado."
-    )
-  }
-
-  $loadObjectsMethod =
-  $dataManagementService.GetType().GetMethods() |
-    Where-Object {
-    $_.Name -ieq "LoadObjects" -and
-    $_.GetParameters().Count -eq 1
-  } |
-    Select-Object -First 1
-
-  if ($null -eq $loadObjectsMethod) {
-
-    throw (
-      "DataManagementService.LoadObjects nao foi encontrado."
-    )
-  }
-
-  $plainObjectMethod =
-  $null
+  $matches = [System.Collections.Generic.List[object]]::new()
+  $plainObjectMethod = $null
 
   foreach ($objectUid in $objectUids) {
-
-    $uidArray =
-    [string[]]@(
-      [string]$objectUid
+    $serviceData = $loadObjects.Invoke(
+      $dataService,
+      [object[]]@(,[string[]]@([string]$objectUid))
     )
-
-    $loadArguments =
-    [object[]]::new(1)
-
-    $loadArguments[0] =
-    $uidArray
-
-    $serviceData =
-    $loadObjectsMethod.Invoke(
-      $dataManagementService,
-      $loadArguments
-    )
-
-    if ($null -eq $serviceData) {
-      continue
-    }
+    if ($null -eq $serviceData) { continue }
 
     if ($null -eq $plainObjectMethod) {
-
-      $plainObjectMethod =
-      $serviceData.GetType().GetMethods() |
-        Where-Object {
-        $_.Name -ieq "GetPlainObject" -and
-        $_.GetParameters().Count -eq 1
-      } |
-        Select-Object -First 1
+      $plainObjectMethod = Get-DcaTeamcenterObjectMethod `
+        -Object $serviceData -Name "GetPlainObject" -ParameterCount 1
 
       if ($null -eq $plainObjectMethod) {
-
-        throw (
-          "ServiceData.GetPlainObject nao foi encontrado."
-        )
+        throw "ServiceData.GetPlainObject nao foi encontrado."
       }
     }
 
-    $plainObject =
-    $plainObjectMethod.Invoke(
-      $serviceData,
-      @([int]0)
+    $item = Get-DcaTeamcenterBaseObject (
+      $plainObjectMethod.Invoke($serviceData, @([int]0))
     )
-
-    if ($null -eq $plainObject) {
-      continue
-    }
-
-    $plainObjectBase =
-    $plainObject.PSObject.BaseObject
-
-    if ($null -ne $plainObjectBase) {
-
-      $plainObject =
-      $plainObjectBase
-    }
+    if ($null -eq $item) { continue }
 
     try {
-
-      $objectArray =
-      [System.Array]::CreateInstance(
-        $modelObjectType,
-        1
-      )
-
-      $objectArray.SetValue(
-        $plainObject,
-        0
-      )
-
-      $propertyNames =
-      [string[]]@(
-        "item_id",
-        "object_name"
-      )
-
-      $propertyArguments =
-      [object[]]::new(2)
-
-      $propertyArguments[0] =
-      $objectArray
-
-      $propertyArguments[1] =
-      $propertyNames
-
-      $null =
-      $getPropertiesMethod.Invoke(
-        $dataManagementService,
-        $propertyArguments
+      $objects = [System.Array]::CreateInstance($modelType, 1)
+      $objects.SetValue($item, 0)
+      $null = $getProperties.Invoke(
+        $dataService,
+        [object[]]@($objects, [string[]]@("item_id", "object_name"))
       )
     }
     catch {
-
       if ($Details) {
-
-        Write-Warn (
-          "Nao foi possivel carregar as propriedades " +
-          "do objeto '$objectUid': " +
-          $_.Exception.Message
-        )
+        $rootException = Get-DcaTeamcenterRootException $_.Exception
+        Write-Warn "Nao foi possivel carregar as propriedades do objeto '$objectUid': $($rootException.Message)"
       }
     }
 
-    $foundItemCode =
-    Get-TeamcenterModelPropertyText `
-      -ModelObject $plainObject `
-      -PropertyName "item_id"
-
-    $foundItemName =
-    Get-TeamcenterModelPropertyText `
-      -ModelObject $plainObject `
-      -PropertyName "object_name"
-
-    $itemTypeName =
-    $plainObject.GetType().Name
+    $foundCode = Get-TeamcenterModelPropertyText -ModelObject $item -PropertyName "item_id"
+    $foundName = Get-TeamcenterModelPropertyText -ModelObject $item -PropertyName "object_name"
 
     if ($Details) {
-
-      Write-Host (
-        "  Objeto retornado pela saved query:"
-      ) -ForegroundColor DarkGray
-
-      Write-Host (
-        "    UID:  $objectUid"
-      ) -ForegroundColor DarkGray
-
-      Write-Host (
-        "    Tipo: $($plainObject.GetType().FullName)"
-      ) -ForegroundColor DarkGray
-
-      Write-Host (
-        "    Nome: '$foundItemName'"
-      ) -ForegroundColor DarkGray
+      Write-Host "  Objeto retornado pela saved query:" -ForegroundColor DarkGray
+      Write-Host "    UID:  $objectUid" -ForegroundColor DarkGray
+      Write-Host "    Tipo: $($item.GetType().FullName)" -ForegroundColor DarkGray
+      Write-Host "    Nome: '$foundName'" -ForegroundColor DarkGray
     }
 
-    if ($foundItemCode -ieq $itemCodeClean) {
-
-      $matchingItems.Add(
-        [PSCustomObject]@{
-          ItemCode = $foundItemCode
-          ItemName = $foundItemName
-          ItemType = $itemTypeName
+    if ($foundCode -ieq $itemCodeClean) {
+      $matches.Add([PSCustomObject]@{
+          ItemCode = [string]$foundCode
+          ItemName = [string]$foundName
+          ItemType = $item.GetType().Name
           ObjectUid = [string]$objectUid
-          Item = $plainObject
+          Item = $item
+        })
+    }
+    elseif ($Details) {
+      Write-Warn "O objeto foi descartado porque o item_id '$foundCode' difere de '$itemCodeClean'."
+    }
+  }
+
+  return $matches.ToArray()
+}
+
+# Converte os Items da Saved Query em destinos com revisao identificada.
+function Get-DcaTeamcenterRevisionCandidates {
+  param(
+    [Parameter(Mandatory)]
+    [object[]]$Candidates,
+
+    [Parameter(Mandatory)]
+    $GetRevisionMethod
+  )
+
+  $results = [System.Collections.Generic.List[object]]::new()
+
+  foreach ($candidate in $Candidates) {
+    if ($null -eq $candidate.Item) {
+      continue
+    }
+
+    try {
+      $revision = Get-DcaTeamcenterBaseObject (
+        $GetRevisionMethod.Invoke(
+          $null,
+          @($candidate.Item)
+        )
+      )
+
+      if ($null -eq $revision) {
+        if ($Details) {
+          Write-Warn (
+            "Nenhuma revisao foi retornada para " +
+            "'$($candidate.ItemCode)' com UID " +
+            "'$($candidate.ObjectUid)'."
+          )
         }
+
+        continue
+      }
+
+      Update-DcaTeamcenterObjectProperties `
+        -ModelObject $revision `
+        -PropertyNames @(
+        "item_revision_id",
+        "object_name"
+      )
+
+      $revisionId = Get-TeamcenterModelPropertyText `
+        -ModelObject $revision `
+        -PropertyName "item_revision_id"
+
+      $results.Add(
+        [PSCustomObject]@{
+          ItemCode = [string]$candidate.ItemCode
+          ItemName = [string]$candidate.ItemName
+          ItemType = [string]$candidate.ItemType
+          ObjectUid = [string]$candidate.ObjectUid
+          RevisionId = ([string]$revisionId).Trim().ToUpperInvariant()
+          Item = $candidate.Item
+          Revision = $revision
+        }
+      )
+    }
+    catch {
+      if ($Details) {
+        $rootException = Get-DcaTeamcenterRootException $_.Exception
+
+        Write-Warn (
+          "Nao foi possivel recuperar a revisao do candidato " +
+          "'$($candidate.ObjectUid)': $($rootException.Message)"
+        )
+      }
+    }
+  }
+
+  return $results.ToArray()
+}
+
+# Exibe os destinos encontrados e solicita a selecao quando necessario.
+function Select-DcaTeamcenterRevisionCandidate {
+  param(
+    [Parameter(Mandatory)]
+    [object[]]$Candidates,
+
+    [Parameter(Mandatory)]
+    [string]$ItemCode,
+
+    [Parameter(Mandatory)]
+    [string]$ExpectedRevision
+  )
+
+  $matching = @(
+    $Candidates |
+      Where-Object {
+      $_.RevisionId -ieq $ExpectedRevision
+    }
+  )
+
+  if ($Candidates.Count -eq 1 -and $matching.Count -eq 1) {
+    $selected = $matching[0]
+
+    Write-Success (
+      "Destino localizado pela saved query: " +
+      "$($selected.ItemCode)/$($selected.RevisionId) | " +
+      "$($selected.ItemName)"
+    )
+
+    return $selected
+  }
+
+  Write-AnimatedLine ""
+  Write-Host (
+    "  Foram encontrados varios destinos com o codigo " +
+    "'$ItemCode':"
+  ) -ForegroundColor Cyan
+  Write-Host ""
+
+  for ($index = 0; $index -lt $Candidates.Count; $index++) {
+    $candidate = $Candidates[$index]
+
+    $name = ([string]$candidate.ItemName).Trim()
+    if ([string]::IsNullOrWhiteSpace($name)) {
+      $name = "nome nao informado"
+    }
+
+    $revision = ([string]$candidate.RevisionId).Trim()
+    if ([string]::IsNullOrWhiteSpace($revision)) {
+      $revision = "nao identificada"
+    }
+
+    $isExpected = $revision -ieq $ExpectedRevision
+    $color = if ($isExpected) {
+      [System.ConsoleColor]::Green
+    }
+    else {
+      [System.ConsoleColor]::Gray
+    }
+
+    $suffix = if ($isExpected) {
+      "  <- revisao esperada"
+    }
+    else {
+      ""
+    }
+
+    Write-Host (
+      "  [{0}] {1} | {2} | revisao {3} | {4}{5}" -f
+      ($index + 1),
+      $candidate.ItemCode,
+      $name,
+      $revision,
+      $candidate.ItemType,
+      $suffix
+    ) -ForegroundColor $color
+
+    if ($Details) {
+      Write-Host (
+        "      UID: $($candidate.ObjectUid)"
+      ) -ForegroundColor DarkGray
+    }
+  }
+
+  Write-Host ""
+
+  $suggestedNumber = $null
+
+  if ($matching.Count -eq 1) {
+    for ($index = 0; $index -lt $Candidates.Count; $index++) {
+      if ($Candidates[$index].ObjectUid -eq $matching[0].ObjectUid) {
+        $suggestedNumber = $index + 1
+        break
+      }
+    }
+  }
+
+  while ($true) {
+    $prompt = if ($null -ne $suggestedNumber) {
+      "Digite o numero do destino ou pressione Enter para usar [$suggestedNumber]"
+    }
+    else {
+      "Digite o numero do destino"
+    }
+
+    $text = Read-Host $prompt
+
+    if (
+      [string]::IsNullOrWhiteSpace($text) -and
+      $null -ne $suggestedNumber
+    ) {
+      return $Candidates[$suggestedNumber - 1]
+    }
+
+    $number = 0
+    $validNumber = [System.Int32]::TryParse(
+      $text,
+      [ref]$number
+    )
+
+    if (
+      -not $validNumber -or
+      $number -lt 1 -or
+      $number -gt $Candidates.Count
+    ) {
+      Write-Warn (
+        "Destino invalido. Digite um numero entre 1 e " +
+        "$($Candidates.Count)."
       )
 
       continue
     }
 
-    if ($Details) {
-
-      Write-Warn (
-        "O objeto retornado foi descartado porque o item_id " +
-        "'$foundItemCode' e diferente do codigo esperado " +
-        "'$itemCodeClean'."
-      )
-    }
+    return $Candidates[$number - 1]
   }
-
-  if ($matchingItems.Count -eq 0) {
-
-    return @()
-  }
-
-  return $matchingItems.ToArray()
 }
 
+# Localiza o Item e valida se a revisao corresponde ao documento.
 function Find-DcaTeamcenterItemRevision {
-
-  # Localiza o Item e a revisao esperada utilizando ate tres
-  # estrategias de consulta:
-  #
-  #   1. Load_Item;
-  #   2. getItem com os valores de empresa conhecidos;
-  #   3. Saved Query Item_Name_or_ID.
-  #
-  # A revisao somente e aceita quando item_revision_id corresponde
-  # exatamente a revisao esperada pelo documento.
-
   param(
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory)]
     [ValidateNotNullOrEmpty()]
     [string]$ItemCode,
 
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory)]
     [ValidateNotNullOrEmpty()]
     [string]$ExpectedRevision
   )
 
   if ($null -eq $script:TeamcenterFunctions) {
-
-    throw (
-      "As funcoes do Teamcenter nao foram carregadas. " +
-      "Execute Connect-Teamcenter primeiro."
-    )
+    throw "As funcoes do Teamcenter nao foram carregadas. Execute Connect-Teamcenter primeiro."
   }
 
-  $itemCodeClean =
-  $ItemCode.Trim().ToUpperInvariant()
+  $itemCodeClean = $ItemCode.Trim().ToUpperInvariant()
+  $expectedClean = $ExpectedRevision.Trim().ToUpperInvariant()
+  $item = $null
+  $revision = $null
 
-  $expectedRevisionClean =
-  $ExpectedRevision.Trim().ToUpperInvariant()
-
-  $item =
-  $null
-
-  $revision =
-  $null
-
-  # ============================================================
-  # 1. TENTAR A CONSULTA DIRETA COM LOAD_ITEM
-  # ============================================================
-  $loadItemMethod =
-  Get-TeamcenterMethod `
-    -MethodName "Load_Item" `
-    -ParameterCount 1
+  # 1. Load_Item
+  $loadItem = Get-TeamcenterMethod -MethodName "Load_Item" -ParameterCount 1
 
   try {
-
-    $revision =
-    $loadItemMethod.Invoke(
-      $null,
-      @(
-        [string]$itemCodeClean
-      )
+    $revision = Get-DcaTeamcenterBaseObject (
+      $loadItem.Invoke($null, @([string]$itemCodeClean))
     )
   }
   catch {
-
     if ($Details) {
-
-      $loadException =
-      $_.Exception
-
-      while (
-        $null -ne $loadException.InnerException
-      ) {
-
-        $loadException =
-        $loadException.InnerException
-      }
-
-      Write-Warn (
-        "Load_Item falhou para '$itemCodeClean': " +
-        $loadException.Message
-      )
+      $rootError = Get-DcaTeamcenterRootException $_.Exception
+      Write-Warn "Load_Item falhou para '$itemCodeClean': $($rootError.Message)"
     }
   }
 
-  if ($null -ne $revision) {
-
-    $revisionBaseObject =
-    $revision.PSObject.BaseObject
-
-    if ($null -ne $revisionBaseObject) {
-
-      $revision =
-      $revisionBaseObject
-    }
-  }
-
-  # ============================================================
-  # 2. TENTAR GETITEM COM OS VALORES DE EMPRESA
-  # ============================================================
-  #
-  # Cada valor de empresa e testado separadamente. Um valor vazio
-  # tambem e incluido para ambientes que nao exigem esse filtro.
+  # 2. getItem com os valores de empresa.
   if ($null -eq $revision) {
+    $getItem = Get-TeamcenterMethod -MethodName "getItem" -ParameterCount 2
+    $getRevision = Get-TeamcenterMethod -MethodName "getItemRevisionfromItem" -ParameterCount 1
 
-    $getItemMethod =
-    Get-TeamcenterMethod `
-      -MethodName "getItem" `
-      -ParameterCount 2
-
-    $getRevisionMethod =
-    Get-TeamcenterMethod `
-      -MethodName "getItemRevisionfromItem" `
-      -ParameterCount 1
-
-    $companyCandidates =
-    @(
-      ([string]$env:DCA_TC_DATASET_COMPANY).Trim(),
-      ([string]$env:DCA_TC_TEST_PROCESS_CLIENT_VALUE).Trim(),
-      ([string]$env:DCA_TC_TEST_ORIGINAL_CLIENT_VALUE).Trim(),
-      ([string]$env:DCA_TC_PROCESS_PROCESS_CLIENT_VALUE).Trim(),
+    $companies = @(
+      ([string]$env:DCA_TC_DATASET_COMPANY).Trim()
+      ([string]$env:DCA_TC_TEST_PROCESS_CLIENT_VALUE).Trim()
+      ([string]$env:DCA_TC_TEST_ORIGINAL_CLIENT_VALUE).Trim()
+      ([string]$env:DCA_TC_PROCESS_PROCESS_CLIENT_VALUE).Trim()
       ""
-    ) |
-      Select-Object -Unique
+    ) | Select-Object -Unique
 
-    foreach ($companyCandidate in $companyCandidates) {
-
-      $companyDisplay =
-      $companyCandidate
-
-      if (
-        [string]::IsNullOrWhiteSpace(
-          $companyDisplay
-        )
-      ) {
-
-        $companyDisplay =
-        "(vazio)"
-      }
+    foreach ($company in $companies) {
+      $display = if ([string]::IsNullOrWhiteSpace($company)) { "(vazio)" } else { $company }
 
       if ($Details) {
-
-        Write-Host (
-          "  Tentando getItem para '$itemCodeClean', " +
-          "empresa '$companyDisplay'..."
-        ) -ForegroundColor DarkGray
+        Write-Host "  Tentando getItem para '$itemCodeClean', empresa '$display'..." -ForegroundColor DarkGray
       }
 
       try {
-
-        $item =
-        $getItemMethod.Invoke(
-          $null,
-          @(
-            [string]$itemCodeClean,
-            [string]$companyCandidate
-          )
+        $item = Get-DcaTeamcenterBaseObject (
+          $getItem.Invoke($null, @([string]$itemCodeClean, [string]$company))
         )
 
         if ($null -eq $item) {
-
           if ($Details) {
-
-            Write-Host (
-              "  Nenhum Item retornado com empresa " +
-              "'$companyDisplay'."
-            ) -ForegroundColor DarkGray
+            Write-Host "  Nenhum Item retornado com empresa '$display'." -ForegroundColor DarkGray
           }
-
           continue
         }
 
-        $itemBaseObject =
-        $item.PSObject.BaseObject
-
-        if ($null -ne $itemBaseObject) {
-
-          $item =
-          $itemBaseObject
-        }
-
         if ($Details) {
-
-          Write-Host (
-            "  Item localizado com empresa " +
-            "'$companyDisplay'."
-          ) -ForegroundColor Green
+          Write-Host "  Item localizado com empresa '$display'." -ForegroundColor Green
         }
 
-        $revision =
-        $getRevisionMethod.Invoke(
-          $null,
-          @($item)
+        $revision = Get-DcaTeamcenterBaseObject (
+          $getRevision.Invoke($null, @($item))
         )
 
         if ($null -eq $revision) {
-
           if ($Details) {
-
-            Write-Warn (
-              "O Item foi localizado com empresa " +
-              "'$companyDisplay', mas nenhuma revisao foi retornada."
-            )
+            Write-Warn "O Item foi localizado com empresa '$display', mas nenhuma revisao foi retornada."
           }
 
-          $item =
-          $null
-
+          $item = $null
           continue
         }
 
-        $revisionBaseObject =
-        $revision.PSObject.BaseObject
-
-        if ($null -ne $revisionBaseObject) {
-
-          $revision =
-          $revisionBaseObject
-        }
-
         if ($Details) {
-
-          Write-Host (
-            "  Revisao localizada com empresa " +
-            "'$companyDisplay'."
-          ) -ForegroundColor Green
+          Write-Host "  Revisao localizada com empresa '$display'." -ForegroundColor Green
         }
 
         break
       }
       catch {
-
-        $realException =
-        $_.Exception
-
-        while (
-          $null -ne $realException.InnerException
-        ) {
-
-          $realException =
-          $realException.InnerException
-        }
-
         if ($Details) {
-
-          Write-Warn (
-            "getItem falhou com empresa " +
-            "'$companyDisplay': " +
-            $realException.Message
-          )
+          $rootError = Get-DcaTeamcenterRootException $_.Exception
+          Write-Warn "getItem falhou com empresa '$display': $($rootError.Message)"
         }
 
-        $item =
-        $null
-
-        $revision =
-        $null
+        $item = $null
+        $revision = $null
       }
     }
   }
 
-  # ============================================================
-  # 3. TENTAR A SAVED QUERY ITEM_NAME_OR_ID
-  # ============================================================
-  #
-  # A Saved Query pode localizar varios Items com o mesmo codigo.
-  # Cada candidato tem sua revisao carregada e comparada com a
-  # revisao esperada antes da selecao.
-
+  # 3. Saved Query.
   if ($null -eq $revision) {
-
     try {
+      $queryCandidates = @(Find-DcaTeamcenterItemBySavedQuery -ItemCode $itemCodeClean)
 
-      $savedQueryCandidates =
-      @(
-        Find-DcaTeamcenterItemBySavedQuery `
-          -ItemCode $itemCodeClean
-      )
-
-      if ($savedQueryCandidates.Count -gt 0) {
-
-        $getRevisionMethod =
-        Get-TeamcenterMethod `
+      if ($queryCandidates.Count -gt 0) {
+        $getRevision = Get-TeamcenterMethod `
           -MethodName "getItemRevisionfromItem" `
           -ParameterCount 1
 
-        $destinationCandidates =
-        [System.Collections.Generic.List[object]]::new()
+        $destinations = @(
+          Get-DcaTeamcenterRevisionCandidates `
+            -Candidates $queryCandidates `
+            -GetRevisionMethod $getRevision
+        )
 
-        foreach ($savedQueryCandidate in $savedQueryCandidates) {
+        if ($destinations.Count -gt 0) {
+          $selected = Select-DcaTeamcenterRevisionCandidate `
+            -Candidates $destinations `
+            -ItemCode $itemCodeClean `
+            -ExpectedRevision $expectedClean
 
-          $candidateItem =
-          $savedQueryCandidate.Item
-
-          if ($null -eq $candidateItem) {
-            continue
+          if ($selected.RevisionId -ine $expectedClean) {
+            throw "O destino selecionado possui revisao '$($selected.RevisionId)', mas o documento informa '$expectedClean'. A importacao foi bloqueada."
           }
 
-          try {
+          $item = $selected.Item
+          $revision = $selected.Revision
 
-            $candidateRevision =
-            $getRevisionMethod.Invoke(
-              $null,
-              @($candidateItem)
-            )
-
-            if ($null -eq $candidateRevision) {
-
-              if ($Details) {
-
-                Write-Warn (
-                  "Nenhuma revisao foi retornada para o Item " +
-                  "'$($savedQueryCandidate.ItemCode)' com UID " +
-                  "'$($savedQueryCandidate.ObjectUid)'."
-                )
-              }
-
-              continue
-            }
-
-            $candidateRevisionBaseObject =
-            $candidateRevision.PSObject.BaseObject
-
-            if ($null -ne $candidateRevisionBaseObject) {
-
-              $candidateRevision =
-              $candidateRevisionBaseObject
-            }
-
-            # Carrega explicitamente o ID da revisao antes da leitura.
-            $dataManagementService =
-            Get-TeamcenterDataManagementService
-
-            $getPropertiesMethod =
-            $dataManagementService.GetType().GetMethods() |
-              Where-Object {
-              $_.Name -ieq "GetProperties" -and
-              $_.GetParameters().Count -eq 2
-            } |
-              Select-Object -First 1
-
-            if ($null -eq $getPropertiesMethod) {
-
-              throw (
-                "DataManagementService.GetProperties nao foi encontrado."
-              )
-            }
-
-            $revisionObjectArrayType =
-            $getPropertiesMethod.GetParameters()[0].ParameterType
-
-            if (-not $revisionObjectArrayType.IsArray) {
-
-              throw (
-                "O primeiro parametro de GetProperties nao e um array."
-              )
-            }
-
-            $revisionObjectType =
-            $revisionObjectArrayType.GetElementType()
-
-            if ($null -eq $revisionObjectType) {
-
-              throw (
-                "O tipo de objeto aceito por GetProperties " +
-                "nao foi identificado."
-              )
-            }
-
-            $revisionObjectArray =
-            [System.Array]::CreateInstance(
-              $revisionObjectType,
-              1
-            )
-
-            $revisionObjectArray.SetValue(
-              $candidateRevision,
-              0
-            )
-
-            $revisionPropertyNames =
-            [string[]]@(
-              "item_revision_id",
-              "object_name"
-            )
-
-            $getRevisionPropertiesArguments =
-            [object[]]::new(2)
-
-            $getRevisionPropertiesArguments[0] =
-            $revisionObjectArray
-
-            $getRevisionPropertiesArguments[1] =
-            $revisionPropertyNames
-
-            $revisionPropertyResponse =
-            $getPropertiesMethod.Invoke(
-              $dataManagementService,
-              $getRevisionPropertiesArguments
-            )
-
-            if ($null -ne $revisionPropertyResponse) {
-
-              $revisionPropertyErrors =
-              @(
-                Get-TeamcenterServiceErrors `
-                  -ServiceData $revisionPropertyResponse
-              )
-
-              if ($revisionPropertyErrors.Count -gt 0) {
-
-                throw (
-                  "O Teamcenter nao carregou as propriedades da revisao: " +
-                  ($revisionPropertyErrors -join " | ")
-                )
-              }
-            }
-
-            $candidateRevisionId =
-            Get-TeamcenterModelPropertyText `
-              -ModelObject $candidateRevision `
-              -PropertyName "item_revision_id"
-
-            $candidateRevisionId =
-            ([string]$candidateRevisionId).Trim().ToUpperInvariant()
-
-            $destinationCandidates.Add(
-              [PSCustomObject]@{
-                ItemCode = [string]$savedQueryCandidate.ItemCode
-                ItemName = [string]$savedQueryCandidate.ItemName
-                ItemType = [string]$savedQueryCandidate.ItemType
-                ObjectUid = [string]$savedQueryCandidate.ObjectUid
-                RevisionId = $candidateRevisionId
-                Item = $candidateItem
-                Revision = $candidateRevision
-              }
-            )
-          }
-          catch {
-
-            $candidateException =
-            $_.Exception
-
-            while (
-              $null -ne $candidateException.InnerException
-            ) {
-
-              $candidateException =
-              $candidateException.InnerException
-            }
-
-            if ($Details) {
-
-              Write-Warn (
-                "Nao foi possivel recuperar a revisao do candidato " +
-                "'$($savedQueryCandidate.ObjectUid)': " +
-                $candidateException.Message
-              )
-            }
-          }
-        }
-
-        if ($destinationCandidates.Count -gt 0) {
-
-          $matchingRevisionCandidates =
-          @(
-            $destinationCandidates |
-              Where-Object {
-              $_.RevisionId -ieq $expectedRevisionClean
-            }
-          )
-
-          $selectedDestination =
-          $null
-
-          # Se existe somente um Item e a revisao confere,
-          # nao e necessario perguntar.
-          if (
-            $destinationCandidates.Count -eq 1 -and
-            $matchingRevisionCandidates.Count -eq 1
-          ) {
-
-            $selectedDestination =
-            $matchingRevisionCandidates[0]
-
-            Write-Success (
-              "Destino localizado pela saved query: " +
-              "$($selectedDestination.ItemCode)/" +
-              "$($selectedDestination.RevisionId) | " +
-              "$($selectedDestination.ItemName)"
-            )
-          }
-          else {
-
-            Write-AnimatedLine ""
-
-            Write-Host (
-              "  Foram encontrados varios destinos com o codigo " +
-              "'$itemCodeClean':"
-            ) -ForegroundColor Cyan
-
-            Write-Host ""
-
-            for (
-              $candidateIndex = 0
-              $candidateIndex -lt $destinationCandidates.Count
-              $candidateIndex++
-            ) {
-
-              $destinationCandidate =
-              $destinationCandidates[$candidateIndex]
-
-              $candidateNumber =
-              $candidateIndex + 1
-
-              $candidateName =
-              [string]$destinationCandidate.ItemName
-
-              if (
-                [string]::IsNullOrWhiteSpace(
-                  $candidateName
-                )
-              ) {
-
-                $candidateName =
-                "nome nao informado"
-              }
-
-              $candidateRevisionText =
-              [string]$destinationCandidate.RevisionId
-
-              if (
-                [string]::IsNullOrWhiteSpace(
-                  $candidateRevisionText
-                )
-              ) {
-
-                $candidateRevisionText =
-                "nao identificada"
-              }
-
-              $candidateColor =
-              [System.ConsoleColor]::Gray
-
-              $candidateSuffix =
-              ""
-
-              if (
-                $candidateRevisionText -ieq
-                $expectedRevisionClean
-              ) {
-
-                $candidateColor =
-                [System.ConsoleColor]::Green
-
-                $candidateSuffix =
-                "  <- revisao esperada"
-              }
-
-              Write-Host (
-                "  [{0}] {1} | {2} | revisao {3} | {4}{5}" -f
-                $candidateNumber,
-                $destinationCandidate.ItemCode,
-                $candidateName,
-                $candidateRevisionText,
-                $destinationCandidate.ItemType,
-                $candidateSuffix
-              ) -ForegroundColor $candidateColor
-
-              if ($Details) {
-
-                Write-Host (
-                  "      UID: " +
-                  $destinationCandidate.ObjectUid
-                ) -ForegroundColor DarkGray
-              }
-            }
-
-            Write-Host ""
-
-            $suggestedCandidateNumber =
-            $null
-
-            if ($matchingRevisionCandidates.Count -eq 1) {
-
-              for (
-                $candidateIndex = 0
-                $candidateIndex -lt $destinationCandidates.Count
-                $candidateIndex++
-              ) {
-
-                if (
-                  $destinationCandidates[$candidateIndex].ObjectUid -eq
-                  $matchingRevisionCandidates[0].ObjectUid
-                ) {
-
-                  $suggestedCandidateNumber =
-                  $candidateIndex + 1
-
-                  break
-                }
-              }
-            }
-
-            while ($null -eq $selectedDestination) {
-
-              $selectionPrompt =
-              if ($null -ne $suggestedCandidateNumber) {
-
-                "Digite o numero do destino ou pressione Enter " +
-                "para usar [$suggestedCandidateNumber]"
-              }
-              else {
-
-                "Digite o numero do destino"
-              }
-
-              $selectedDestinationText =
-              Read-Host $selectionPrompt
-
-              if (
-                [string]::IsNullOrWhiteSpace(
-                  $selectedDestinationText
-                ) -and
-                $null -ne $suggestedCandidateNumber
-              ) {
-
-                $selectedCandidate =
-                $destinationCandidates[
-                $suggestedCandidateNumber - 1
-                ]
-
-                if (
-                  $selectedCandidate.RevisionId -ine
-                  $expectedRevisionClean
-                ) {
-
-                  Write-Warn (
-                    "O destino sugerido possui revisao " +
-                    "'$($selectedCandidate.RevisionId)'. " +
-                    "Escolha um destino com revisao " +
-                    "'$expectedRevisionClean'."
-                  )
-
-                  continue
-                }
-
-                $selectedDestination =
-                $selectedCandidate
-
-                break
-              }
-
-              $selectedDestinationNumber =
-              0
-
-              $validDestinationNumber =
-              [System.Int32]::TryParse(
-                $selectedDestinationText,
-                [ref]$selectedDestinationNumber
-              )
-
-              if (
-                -not $validDestinationNumber -or
-                $selectedDestinationNumber -lt 1 -or
-                $selectedDestinationNumber -gt
-                $destinationCandidates.Count
-              ) {
-
-                Write-Warn (
-                  "Destino invalido. Digite um numero entre 1 e " +
-                  "$($destinationCandidates.Count)."
-                )
-
-                continue
-              }
-
-              $selectedDestination =
-              $destinationCandidates[
-              $selectedDestinationNumber - 1
-              ]
-            }
-          }
-
-          if ($null -ne $selectedDestination) {
-
-            if (
-              $selectedDestination.RevisionId -ine
-              $expectedRevisionClean
-            ) {
-
-              throw (
-                "O destino selecionado possui revisao " +
-                "'$($selectedDestination.RevisionId)', mas o documento " +
-                "informa a revisao '$expectedRevisionClean'. " +
-                "A importacao foi bloqueada."
-              )
-            }
-
-            $item =
-            $selectedDestination.Item
-
-            $revision =
-            $selectedDestination.Revision
-
-            Write-Success (
-              "Destino selecionado: " +
-              "$($selectedDestination.ItemCode)/" +
-              "$($selectedDestination.RevisionId) | " +
-              "$($selectedDestination.ItemName)"
-            )
-          }
+          Write-Success "Destino selecionado: $($selected.ItemCode)/$($selected.RevisionId) | $($selected.ItemName)"
         }
       }
     }
     catch {
-
-      $realException =
-      $_.Exception
-
-      while (
-        $null -ne $realException.InnerException
-      ) {
-
-        $realException =
-        $realException.InnerException
-      }
+      $rootError = Get-DcaTeamcenterRootException $_.Exception
 
       if ($Details) {
-
-        Write-Warn (
-          "Falha ao obter informacoes do destino pela saved query: " +
-          $realException.Message
-        )
+        Write-Warn "Falha ao obter informacoes do destino pela saved query: $($rootError.Message)"
       }
 
-      return [PSCustomObject]@{
-        Status = "Erro"
-        ItemExists = $false
-        RevisionExists = $false
-        ItemCode = $itemCodeClean
-        ExpectedRevision = $expectedRevisionClean
-        FoundRevision = ""
-        Item = $null
-        Revision = $null
-        ErrorMessage = (
-          "Nenhuma revisao foi localizada pelas consultas diretas e " +
-          "a Saved Query falhou: " +
-          $realException.Message
-        )
-      }
+      return New-DcaTeamcenterRevisionResult `
+        -Status "Erro" `
+        -ItemExists $false `
+        -RevisionExists $false `
+        -ItemCode $itemCodeClean `
+        -ExpectedRevision $expectedClean `
+        -ErrorMessage "Nenhuma revisao foi localizada pelas consultas diretas e a Saved Query falhou: $($rootError.Message)"
     }
   }
 
-  # ============================================================
-  # 4. VALIDAR O RESULTADO FINAL DA CONSULTA
-  # ============================================================
+  # 4. Validar o objeto encontrado.
   if ($null -eq $revision) {
-
-    return [PSCustomObject]@{
-      Status = "Nao"
-      ItemExists = ($null -ne $item)
-      RevisionExists = $false
-      ItemCode = $itemCodeClean
-      ExpectedRevision = $expectedRevisionClean
-      FoundRevision = ""
-      Item = $item
-      Revision = $null
-      ErrorMessage = (
-        "Load_Item, getItem e a saved query Item_Name_or_ID " +
-        "nao localizaram uma revisao compativel para " +
-        "'$itemCodeClean/$expectedRevisionClean' no ambiente " +
-        "'$script:TeamcenterEnvironment'."
-      )
-    }
+    return New-DcaTeamcenterRevisionResult `
+      -Status "Nao" `
+      -ItemExists ($null -ne $item) `
+      -RevisionExists $false `
+      -ItemCode $itemCodeClean `
+      -ExpectedRevision $expectedClean `
+      -Item $item `
+      -ErrorMessage "Load_Item, getItem e a saved query Item_Name_or_ID nao localizaram uma revisao compativel para '$itemCodeClean/$expectedClean' no ambiente '$script:TeamcenterEnvironment'."
   }
 
-  $revisionBaseObject =
-  $revision.PSObject.BaseObject
+  $revision = Get-DcaTeamcenterBaseObject $revision
+  $revisionType = $revision.GetType().FullName
 
-  if ($null -ne $revisionBaseObject) {
-
-    $revision =
-    $revisionBaseObject
+  if ($revisionType -notmatch '(?i)(ItemRevision|Revision)$') {
+    return New-DcaTeamcenterRevisionResult `
+      -Status "Erro" `
+      -ItemExists $true `
+      -RevisionExists $false `
+      -ItemCode $itemCodeClean `
+      -ExpectedRevision $expectedClean `
+      -Item $item `
+      -Revision $revision `
+      -ErrorMessage "O destino selecionado nao retornou uma revisao valida. Tipo recebido: '$revisionType'."
   }
 
-  $revisionTypeName =
-  $revision.GetType().FullName
-
-  $isRevisionObject =
-  $revisionTypeName -match
-  '(?i)(ItemRevision|Revision)$'
-
-  if (-not $isRevisionObject) {
-
-    return [PSCustomObject]@{
-      Status = "Erro"
-      ItemExists = $true
-      RevisionExists = $false
-      ItemCode = $itemCodeClean
-      ExpectedRevision = $expectedRevisionClean
-      FoundRevision = ""
-      Item = $item
-      Revision = $revision
-      ErrorMessage = (
-        "O destino selecionado nao retornou uma revisao valida. " +
-        "Tipo recebido: '$revisionTypeName'."
-      )
-    }
-  }
-
-  # ============================================================
-  # 5. CARREGAR AS PROPRIEDADES DA REVISAO
-  # ============================================================
-  #
-  # Load_Item e getItemRevisionfromItem podem retornar o objeto
-  # de revisao sem carregar item_revision_id no modelo cliente.
-  # A propriedade deve ser solicitada explicitamente antes da
-  # leitura e da comparacao com a revisao esperada.
+  # 5. Carregar e conferir item_revision_id.
   try {
-
-    $dataManagementService =
-    Get-TeamcenterDataManagementService
-
-    $getPropertiesMethod =
-    $dataManagementService.GetType().GetMethods() |
-      Where-Object {
-      $_.Name -ieq "GetProperties" -and
-      $_.GetParameters().Count -eq 2
-    } |
-      Select-Object -First 1
-
-    if ($null -eq $getPropertiesMethod) {
-
-      throw (
-        "DataManagementService.GetProperties nao foi encontrado."
-      )
-    }
-
-    $revisionArrayType =
-    $getPropertiesMethod.GetParameters()[0].ParameterType
-
-    if (-not $revisionArrayType.IsArray) {
-
-      throw (
-        "O primeiro parametro de GetProperties nao e um array."
-      )
-    }
-
-    $revisionObjectType =
-    $revisionArrayType.GetElementType()
-
-    if ($null -eq $revisionObjectType) {
-
-      throw (
-        "O tipo de objeto aceito por GetProperties nao foi " +
-        "identificado."
-      )
-    }
-
-    $revisionArray =
-    [System.Array]::CreateInstance(
-      $revisionObjectType,
-      1
-    )
-
-    $revisionArray.SetValue(
-      $revision,
-      0
-    )
-
-    $revisionPropertyNames =
-    [string[]]@(
-      "item_revision_id",
-      "object_name",
-      "object_string"
-    )
-
-    $propertyArguments =
-    [object[]]::new(2)
-
-    $propertyArguments[0] =
-    $revisionArray
-
-    $propertyArguments[1] =
-    $revisionPropertyNames
-
-    $propertyResponse =
-    $getPropertiesMethod.Invoke(
-      $dataManagementService,
-      $propertyArguments
-    )
-
-    if ($null -ne $propertyResponse) {
-
-      $propertyErrors =
-      @(
-        Get-TeamcenterServiceErrors `
-          -ServiceData $propertyResponse
-      )
-
-      if ($propertyErrors.Count -gt 0) {
-
-        throw (
-          "O Teamcenter nao carregou as propriedades da revisao: " +
-          ($propertyErrors -join " | ")
-        )
-      }
-    }
+    Update-DcaTeamcenterObjectProperties `
+      -ModelObject $revision `
+      -PropertyNames @("item_revision_id", "object_name", "object_string")
 
     if ($Details) {
-
-      Write-Host (
-        "  Propriedades da revisao carregadas para validacao."
-      ) -ForegroundColor DarkGray
+      Write-Host "  Propriedades da revisao carregadas para validacao." -ForegroundColor DarkGray
     }
   }
   catch {
+    $rootError = Get-DcaTeamcenterRootException $_.Exception
 
-    $propertyException =
-    $_.Exception
-
-    while (
-      $null -ne $propertyException.InnerException
-    ) {
-
-      $propertyException =
-      $propertyException.InnerException
-    }
-
-    return [PSCustomObject]@{
-      Status = "Erro"
-      ItemExists = $true
-      RevisionExists = $false
-      ItemCode = $itemCodeClean
-      ExpectedRevision = $expectedRevisionClean
-      FoundRevision = ""
-      Item = $item
-      Revision = $revision
-      ErrorMessage = (
-        "Nao foi possivel carregar item_revision_id da revisao: " +
-        $propertyException.Message
-      )
-    }
+    return New-DcaTeamcenterRevisionResult `
+      -Status "Erro" `
+      -ItemExists $true `
+      -RevisionExists $false `
+      -ItemCode $itemCodeClean `
+      -ExpectedRevision $expectedClean `
+      -Item $item `
+      -Revision $revision `
+      -ErrorMessage "Nao foi possivel carregar item_revision_id da revisao: $($rootError.Message)"
   }
 
-  $foundRevision =
-  Get-TeamcenterModelPropertyText `
+  $foundRevision = Get-TeamcenterModelPropertyText `
     -ModelObject $revision `
     -PropertyName "item_revision_id"
 
-  $foundRevision =
-  ([string]$foundRevision).Trim().ToUpperInvariant()
+  $foundRevision = ([string]$foundRevision).Trim().ToUpperInvariant()
 
-  if (
-    [string]::IsNullOrWhiteSpace(
-      $foundRevision
-    )
-  ) {
-
-    return [PSCustomObject]@{
-      Status = "Erro"
-      ItemExists = $true
-      RevisionExists = $false
-      ItemCode = $itemCodeClean
-      ExpectedRevision = $expectedRevisionClean
-      FoundRevision = ""
-      Item = $item
-      Revision = $revision
-      ErrorMessage = (
-        "A revisao foi encontrada, mas nao foi possivel " +
-        "ler item_revision_id."
-      )
-    }
+  if ([string]::IsNullOrWhiteSpace($foundRevision)) {
+    return New-DcaTeamcenterRevisionResult `
+      -Status "Erro" `
+      -ItemExists $true `
+      -RevisionExists $false `
+      -ItemCode $itemCodeClean `
+      -ExpectedRevision $expectedClean `
+      -Item $item `
+      -Revision $revision `
+      -ErrorMessage "A revisao foi encontrada, mas nao foi possivel ler item_revision_id."
   }
 
-  if ($foundRevision -ine $expectedRevisionClean) {
-
-    return [PSCustomObject]@{
-      Status = "Revisao diferente"
-      ItemExists = $true
-      RevisionExists = $false
-      ItemCode = $itemCodeClean
-      ExpectedRevision = $expectedRevisionClean
-      FoundRevision = $foundRevision
-      Item = $item
-      Revision = $revision
-      ErrorMessage = (
-        "O destino selecionado possui revisao " +
-        "'$foundRevision', mas o documento informa " +
-        "'$expectedRevisionClean'."
-      )
-    }
+  if ($foundRevision -ine $expectedClean) {
+    return New-DcaTeamcenterRevisionResult `
+      -Status "Revisao diferente" `
+      -ItemExists $true `
+      -RevisionExists $false `
+      -ItemCode $itemCodeClean `
+      -ExpectedRevision $expectedClean `
+      -FoundRevision $foundRevision `
+      -Item $item `
+      -Revision $revision `
+      -ErrorMessage "O destino selecionado possui revisao '$foundRevision', mas o documento informa '$expectedClean'."
   }
 
-  return [PSCustomObject]@{
-    Status = "Sim"
-    ItemExists = $true
-    RevisionExists = $true
-    ItemCode = $itemCodeClean
-    ExpectedRevision = $expectedRevisionClean
-    FoundRevision = $foundRevision
-    Item = $item
-    Revision = $revision
-    ErrorMessage = $null
-  }
+  return New-DcaTeamcenterRevisionResult `
+    -Status "Sim" `
+    -ItemExists $true `
+    -RevisionExists $true `
+    -ItemCode $itemCodeClean `
+    -ExpectedRevision $expectedClean `
+    -FoundRevision $foundRevision `
+    -Item $item `
+    -Revision $revision
 }

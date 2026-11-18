@@ -1,751 +1,245 @@
-
 # ============================================================
 # MONTAGEM E APRESENTACAO DO PLANO DE IMPORTACAO
 # ============================================================
-#
-# Este arquivo prepara e apresenta o plano do lote antes da
-# criacao de objetos no Teamcenter.
-#
-# Responsabilidades:
-#   1. identificar o ambiente configurado;
-#   2. validar a configuracao de cada documento;
-#   3. determinar os tipos do Item e da revisao;
-#   4. calcular os workflows aplicaveis;
-#   5. apresentar a configuracao agrupada por tipo;
-#   6. listar os documentos do lote;
-#   7. destacar erros e workflows nao configurados.
-#
-# A apresentacao do plano nao cria Items, revisoes, Datasets
-# nem workflows no Teamcenter.
+# Monta e exibe o plano do lote antes de criar qualquer objeto
+# no Teamcenter (nenhum Item, revisao, Dataset ou workflow e criado aqui).
+#   1. identifica o ambiente (Teste/Processo);
+#   2. valida a configuracao de cada documento;
+#   3. calcula o workflow previsto pelo estado do PDM;
+#   4. exibe configuracao por tipo, workflows e lista do lote.
 # ============================================================
 
 function Get-DcaConfiguredEnvironmentName {
-
-    # ============================================================
-    # 1. UTILIZAR O AMBIENTE CONFIRMADO PELA CONEXAO
-    # ============================================================
-    #
-    # Quando a conexao com o Teamcenter ja tiver sido realizada,
-    # utiliza o ambiente identificado durante essa conexao.
-
-    if (
-        -not [string]::IsNullOrWhiteSpace(
-            $script:TeamcenterEnvironment
-        )
-    ) {
-
+    # Depois da conexao, vale o ambiente confirmado por ela.
+    if (-not [string]::IsNullOrWhiteSpace($script:TeamcenterEnvironment)) {
         return [string]$script:TeamcenterEnvironment
     }
 
-    # ============================================================
-    # 2. LER O AMBIENTE CONFIGURADO
-    # ============================================================
-    #
-    # Antes da conexao, utiliza o valor informado no arquivo .env.
-    # Somente os ambientes Teste e Processo sao reconhecidos.
-
+    # Antes da conexao, vale o .env (somente Teste ou Processo).
     $configuredValue = ([string]$env:DCA_TC_ENV).Trim()
-
-    if ($configuredValue -ieq "Teste") {
-
-        return "Teste"
+    foreach ($name in "Teste", "Processo") {
+        if ($configuredValue -ieq $name) { return $name }
     }
 
-    if ($configuredValue -ieq "Processo") {
-
-        return "Processo"
-    }
-
-    # Impede a montagem do plano quando o ambiente estiver vazio
-    # ou possuir um valor diferente dos ambientes permitidos.
-
-    throw (
-        "DCA_TC_ENV nao foi configurado. " +
-        "Use Teste ou Processo."
-    )
+    throw "DCA_TC_ENV nao foi configurado. Use Teste ou Processo."
 }
 
 function Show-DcaImportPlan {
+    param([Parameter(Mandatory)][ValidateNotNull()][object[]]$Documents)
 
-    # Consolida a configuracao dos documentos, tipos, revisoes,
-    # estados e workflows antes da etapa que cria os objetos.
-    param(
-        [Parameter(Mandatory = $true)]
-        [ValidateNotNull()]
-        [object[]]$Documents
-    )
+    if ($Documents.Count -eq 0) { throw "Nenhum documento foi fornecido para montar o plano de importacao." }
 
-    # ============================================================
-    # 1. VALIDAR OS DOCUMENTOS RECEBIDOS
-    # ============================================================
-    #
-    # O plano precisa receber pelo menos um documento para calcular
-    # as configuracoes e apresentar as operacoes previstas.
-
-    if ($Documents.Count -eq 0) {
-
-        throw (
-            "Nenhum documento foi fornecido para montar o plano " +
-            "de importacao."
-        )
-    }
-
-    # ============================================================
-    # 2. PREPARAR A CONFIGURACAO DO AMBIENTE
-    # ============================================================
-    #
-    # Identifica o ambiente utilizado no plano e seleciona a URL
-    # correspondente para apresentacao no modo Details.
-
-    $environmentName = Get-DcaConfiguredEnvironmentName
-
-    # Teste e utilizado como configuracao inicial. Quando o ambiente
-    # for Processo, a URL e a cor serao substituidas abaixo.
-
-    $serverUrl = ([string]$env:DCA_TC_TEST_URL).Trim()
-    $environmentColor = [System.ConsoleColor]::Cyan
-
-    # O ambiente de Processo utiliza uma URL propria e recebe uma
-    # cor de destaque para chamar a atencao antes da importacao.
-
-    if ($environmentName -eq "Processo") {
-
-        $serverUrl = ([string]$env:DCA_TC_PROCESS_URL).Trim()
-        $environmentColor = [System.ConsoleColor]::Yellow
-    }
-
-    # ============================================================
-    # 3. LER OS WORKFLOWS CONFIGURADOS
-    # ============================================================
-    #
-    # Os templates sao utilizados somente para montar e apresentar
-    # o plano. Nenhum workflow e iniciado nesta funcao.
+    # --- Ambiente e workflows configurados ---
+    $environmentName  = Get-DcaConfiguredEnvironmentName
+    $isProcess        = $environmentName -eq "Processo"
+    $serverUrl        = ([string]$(if ($isProcess) { $env:DCA_TC_PROCESS_URL } else { $env:DCA_TC_TEST_URL })).Trim()
+    $environmentColor = if ($isProcess) { "Yellow" } else { "Cyan" }
 
     $approvedTemplate = ([string]$env:DCA_TC_APPROVED_WORKFLOW).Trim()
     $obsoleteTemplate = ([string]$env:DCA_TC_OBSOLETE_WORKFLOW).Trim()
 
-    # ============================================================
-    # 4. MONTAR O PLANO DE CADA DOCUMENTO
-    # ============================================================
-    #
-    # Consolida tipo, estado, revisao, configuracao do Teamcenter e
-    # workflow previsto para cada documento recebido.
-    # A lista mantem somente as informacoes necessarias para a
-    # apresentacao e validacao do plano de importacao.
+    # --- Plano de cada documento (entradas nulas sao ignoradas) ---
+    $planItems = @(
+        foreach ($document in $Documents) {
+            if ($null -eq $document) { continue }
 
-    $planItems = [System.Collections.Generic.List[object]]::new()
-
-    foreach ($document in $Documents) {
-
-        # Entradas nulas sao ignoradas para que nao interrompam a
-        # montagem dos demais documentos do lote.
-
-        if ($null -eq $document) {
-
-            continue
-        }
-
-        # ========================================================
-        # A. DETERMINAR O WORKFLOW PREVISTO
-        # ========================================================
-        #
-        # O estado atual do PDM define se o documento recebera um
-        # workflow de aprovacao, obsolescencia ou nenhum workflow.
-
-        $pdmState = ([string]$document.PdmState).Trim()
-
-        # Os valores permanecem nulos quando o estado nao possuir
-        # um workflow associado.
-
-        $workflowLabel = $null
-        $workflowTemplate = $null
-
-        if (
-            $document.DocumentType -ne "DatasetOnly" -and
-            $pdmState -in @("Aprovado", "Verificado")
-        ) {
-
-            $workflowLabel = "aprovacao"
-            $workflowTemplate = $approvedTemplate
-        }
-        elseif (
-            $document.DocumentType -ne "DatasetOnly" -and
-            $pdmState -ieq "Obsoleto"
-        ) {
-
-            $workflowLabel = "obsolescencia"
-            $workflowTemplate = $obsoleteTemplate
-        }
-
-        # ========================================================
-        # B. OBTER A CONFIGURACAO DO TIPO DE DOCUMENTO
-        # ========================================================
-        #
-        # A configuracao informa os tipos do Item e da revisao, as
-        # propriedades adicionais e a revisao usada no Teamcenter.
-
-        $documentType = ([string]$document.DocumentType).Trim()
-        $documentCode = ([string]$document.ItemCode).Trim()
-        $documentRevision = ([string]$document.ClientRevision).Trim()
-
-        if (
-            [string]::IsNullOrWhiteSpace(
-                $documentType
-            )
-        ) {
-
-            $configurationError = "O tipo do documento ficou vazio."
-        }
-        elseif (
-            [string]::IsNullOrWhiteSpace(
-                $documentCode
-            )
-        ) {
-
-            $configurationError = "O codigo do Item ficou vazio."
-        }
-        elseif (
-            [string]::IsNullOrWhiteSpace(
-                $documentRevision
-            )
-        ) {
-
-            $configurationError = "A revisao do documento ficou vazia."
-        }
-
-        $configuration = $null
-        $configurationError = $null
-
-        # DatasetOnly reutiliza um Item e uma revisao existentes.
-        # Por isso, nao precisa consultar uma configuracao de criacao.
-
-        if (
-            [string]::IsNullOrWhiteSpace(
-                $configurationError
-            ) -and
-            $documentType -eq "DatasetOnly"
-        ) {
-
-            $configuration = [PSCustomObject]@{
-                Environment           = $environmentName
-                ItemType              = "Item existente"
-                RevisionType          = "Revisao existente"
-                ClientProperty        = ""
-                ClientValue            = ""
-                TeamcenterRevisionId = [string]$document.ClientRevision
-                RevisionProperties    = @{}
-            }
-        }
-        else {
-
-            try {
-
-                # Os demais tipos precisam de uma configuracao valida
-                # para criar o Item e sua revisao no ambiente selecionado.
-
-                $configuration = Get-DcaTypeConfiguration `
-                    -DocumentType $document.DocumentType `
-                    -ClientRevision $document.ClientRevision `
-                    -TeamcenterEnvironment $environmentName
-            }
-            catch {
-
-                # A falha e registrada no plano sem interromper a
-                # analise dos demais documentos do lote.
-
-                $configurationError = $_.Exception.Message
-            }
-        }
-
-        # ========================================================
-        # C. PREPARAR OS DADOS DA REVISAO
-        # ========================================================
-        #
-        # O identificador permanece como "?" quando a configuracao
-        # do documento nao puder ser determinada.
-
-        $teamcenterRevisionId = "?"
-        $revisionText = ""
-
-        if ($null -ne $configuration) {
-
-            $teamcenterRevisionId = [string]$configuration.TeamcenterRevisionId
-
-            # As propriedades adicionais da revisao sao convertidas
-            # em um texto unico para apresentacao no modo Details.
-
-            $revisionParts = [System.Collections.Generic.List[string]]::new()
-            $revisionProperties = $configuration.RevisionProperties
-
-            if ($null -ne $revisionProperties) {
-
-                foreach (
-                    $propertyName in (
-                        $revisionProperties.Keys |
-                            Sort-Object
-                    )
-                ) {
-
-                    $revisionParts.Add(
-                        (
-                            "{0}={1}" -f
-                            $propertyName,
-                            $revisionProperties[$propertyName]
-                        )
-                    )
+            # Workflow previsto pelo estado do PDM.
+            $pdmState = ([string]$document.PdmState).Trim()
+            $workflowLabel = $workflowTemplate = $null
+            if ($document.DocumentType -ne "DatasetOnly") {
+                if ($pdmState -in "Aprovado", "Verificado") {
+                    $workflowLabel = "aprovacao";     $workflowTemplate = $approvedTemplate
+                }
+                elseif ($pdmState -ieq "Obsoleto") {
+                    $workflowLabel = "obsolescencia"; $workflowTemplate = $obsoleteTemplate
                 }
             }
 
-            $revisionText = @(
-                $revisionParts
-            ) -join "; "
-        }
+            # Validacao basica e configuracao do tipo.
+            $documentType = ([string]$document.DocumentType).Trim()
+            $configuration = $null
+            $configurationError =
+                if     (-not $documentType)                                     { "O tipo do documento ficou vazio." }
+                elseif (-not ([string]$document.ItemCode).Trim())               { "O codigo do Item ficou vazio." }
+                elseif (-not ([string]$document.ClientRevision).Trim())         { "A revisao do documento ficou vazia." }
 
-        # ========================================================
-        # D. REGISTRAR O DOCUMENTO NO PLANO
-        # ========================================================
-        #
-        # Consolida os dados originais do documento com a
-        # configuracao calculada e o workflow previsto.
-
-        $planItems.Add(
-            [PSCustomObject]@{
-                ItemCode              = ([string]$document.ItemCode).Trim().ToUpper()
-                ItemName              = [string]$document.ItemName
-                DocumentType          = [string]$document.DocumentType
-                DisplayType           = [string]$document.DisplayType
-                PdmState              = $pdmState
-                Configuration         = $configuration
-                ConfigurationError    = $configurationError
-                TeamcenterRevisionId  = $teamcenterRevisionId
-                RevisionText          = $revisionText
-                WorkflowLabel         = $workflowLabel
-                WorkflowTemplate      = $workflowTemplate
-                FilePath              = [string]$document.SelectedPdf.File.FullName
+            if ($configurationError) { }
+            elseif ($documentType -eq "DatasetOnly") {
+                # Reutiliza Item e revisao existentes: nao ha configuracao de criacao.
+                $configuration = [PSCustomObject]@{
+                    Environment          = $environmentName
+                    ItemType             = "Item existente"
+                    RevisionType         = "Revisao existente"
+                    ClientProperty       = ""
+                    ClientValue          = ""
+                    TeamcenterRevisionId = [string]$document.ClientRevision
+                    RevisionProperties   = @{}
+                }
             }
-        )
-    }
+            else {
+                try {
+                    $configuration = Get-DcaTypeConfiguration `
+                        -DocumentType $document.DocumentType `
+                        -ClientRevision $document.ClientRevision `
+                        -TeamcenterEnvironment $environmentName
+                }
+                catch { $configurationError = $_.Exception.Message }
+            }
 
-    # Depois da remocao das entradas nulas, pelo menos um documento
-    # deve permanecer disponivel para apresentacao.
+            # Dados da revisao ("?" quando a configuracao nao pode ser determinada).
+            $teamcenterRevisionId = "?"
+            $revisionText = ""
+            if ($null -ne $configuration) {
+                $teamcenterRevisionId = [string]$configuration.TeamcenterRevisionId
+                $revisionProperties = $configuration.RevisionProperties
+                if ($null -ne $revisionProperties) {
+                    $revisionText = (
+                        $revisionProperties.Keys | Sort-Object |
+                            ForEach-Object { "{0}={1}" -f $_, $revisionProperties[$_] }
+                    ) -join "; "
+                }
+            }
 
-    if ($planItems.Count -eq 0) {
+            [PSCustomObject]@{
+                ItemCode             = ([string]$document.ItemCode).Trim().ToUpper()
+                ItemName             = [string]$document.ItemName
+                DocumentType         = [string]$document.DocumentType
+                DisplayType          = [string]$document.DisplayType
+                PdmState             = $pdmState
+                Configuration        = $configuration
+                ConfigurationError   = $configurationError
+                TeamcenterRevisionId = $teamcenterRevisionId
+                RevisionText         = $revisionText
+                WorkflowLabel        = $workflowLabel
+                WorkflowTemplate     = $workflowTemplate
+                FilePath             = [string]$document.SelectedPdf.File.FullName
+            }
+        }
+    )
 
-        throw (
-            "Nenhum documento valido ficou disponivel para montar " +
-            "o plano de importacao."
-        )
-    }
+    if ($planItems.Count -eq 0) { throw "Nenhum documento valido ficou disponivel para montar o plano de importacao." }
 
-    # ============================================================
-    # 5. APRESENTAR O CABECALHO DO PLANO
-    # ============================================================
-    #
-    # Informa o ambiente e a quantidade de documentos antes de
-    # apresentar os detalhes calculados para o lote.
-
-    Write-Section `
-        -Title "Plano antes da importacao"
-
+    # --- Cabecalho ---
+    Write-Section -Title "Plano antes da importacao"
     Write-Host ""
-
-    Write-Host (
-        "  Nada foi criado ainda. Confira as informacoes abaixo."
-    ) -ForegroundColor DarkGray
-
+    Write-Host "  Nada foi criado ainda. Confira as informacoes abaixo." -ForegroundColor DarkGray
     Write-Host ""
+    Write-Host "  Ambiente:   $environmentName" -ForegroundColor $environmentColor
+    if ($Details) { Write-Host "  Servidor:   $serverUrl" -ForegroundColor Gray }
+    Write-Host "  Documentos: $($planItems.Count)" -ForegroundColor White
 
-    Write-Host (
-        "  Ambiente:   {0}" -f $environmentName
-    ) -ForegroundColor $environmentColor
-
-    # A URL do servidor e exibida somente no modo Details para
-    # confirmar tecnicamente o destino selecionado.
-
-    if ($Details) {
-
-        Write-Host (
-            "  Servidor:   {0}" -f
-            $serverUrl
-        ) -ForegroundColor Gray
-    }
-
-    Write-Host (
-        "  Documentos: {0}" -f $planItems.Count
-    ) -ForegroundColor White
-
-    # ============================================================
-    # 6. APRESENTAR A CONFIGURACAO POR TIPO
-    # ============================================================
-    #
-    # Agrupa os documentos para evitar repetir a mesma configuracao
-    # de Item, revisao e cliente em cada linha do plano.
-
+    # --- Configuracao por tipo (um bloco por tipo de documento) ---
     Write-Host ""
     Write-Host "  Configuracao por tipo:" -ForegroundColor Cyan
 
-    # Cada grupo representa um tipo interno de documento presente
-    # no lote atual.
+    foreach ($typeGroup in @($planItems | Group-Object -Property DocumentType)) {
+        Write-Host ("    {0}  ({1} documento(s))" -f $typeGroup.Group[0].DisplayType, $typeGroup.Count) -ForegroundColor White
 
-    foreach (
-        $typeGroup in @(
-            $planItems |
-                Group-Object -Property DocumentType
-        )
-    ) {
-
-        $groupLabel = [string]$typeGroup.Group[0].DisplayType
-
-        Write-Host (
-            "    {0}  ({1} documento(s))" -f
-            $groupLabel,
-            $typeGroup.Count
-        ) -ForegroundColor White
-
-        # Seleciona o primeiro documento com configuracao valida
-        # para representar os dados comuns do grupo.
-
-        $sampleItem = $typeGroup.Group |
-            Where-Object {
-                $null -ne $_.Configuration
-            } |
-            Select-Object -First 1
-
-        # Quando nenhum documento do grupo possuir configuracao
-        # valida, os erros individuais serao apresentados mais abaixo.
-
-        if ($null -eq $sampleItem) {
-
-            Write-Host (
-                "      Configuracao invalida. Veja os erros abaixo."
-            ) -ForegroundColor Red
-
+        # O primeiro documento com configuracao valida representa o grupo.
+        $sample = $typeGroup.Group | Where-Object { $null -ne $_.Configuration } | Select-Object -First 1
+        if ($null -eq $sample) {
+            Write-Host "      Configuracao invalida. Veja os erros abaixo." -ForegroundColor Red
             continue
         }
 
-        $typeConfiguration = $sampleItem.Configuration
-
-        # O texto permanece como "nenhum" quando o tipo nao exige
-        # uma propriedade adicional para identificar o cliente.
-
+        $typeConfiguration = $sample.Configuration
         $clientText = "nenhum"
-
         if (
-            -not [string]::IsNullOrWhiteSpace(
-                [string]$typeConfiguration.ClientProperty
-            ) -and
-            -not [string]::IsNullOrWhiteSpace(
-                [string]$typeConfiguration.ClientValue
-            )
+            -not [string]::IsNullOrWhiteSpace([string]$typeConfiguration.ClientProperty) -and
+            -not [string]::IsNullOrWhiteSpace([string]$typeConfiguration.ClientValue)
         ) {
-
-            $clientText = "{0} = {1}" -f
-                $typeConfiguration.ClientProperty,
-                $typeConfiguration.ClientValue
+            $clientText = "$($typeConfiguration.ClientProperty) = $($typeConfiguration.ClientValue)"
         }
 
-        Write-Host (
-            "      Tipo do Item:    {0}" -f
-            $typeConfiguration.ItemType
-        ) -ForegroundColor Gray
-
-        Write-Host (
-            "      Tipo da Revisao: {0}" -f
-            $typeConfiguration.RevisionType
-        ) -ForegroundColor Gray
-
-        Write-Host (
-            "      Cliente:         {0}" -f
-            $clientText
-        ) -ForegroundColor Gray
+        @(
+            "      Tipo do Item:    $($typeConfiguration.ItemType)"
+            "      Tipo da Revisao: $($typeConfiguration.RevisionType)"
+            "      Cliente:         $clientText"
+        ) | ForEach-Object { Write-Host $_ -ForegroundColor Gray }
     }
 
-    # ============================================================
-    # 7. CALCULAR E APRESENTAR OS WORKFLOWS
-    # ============================================================
-    #
-    # Conta os documentos de aprovacao, obsolescencia e aqueles
-    # que permanecerao sem workflow.
+    # --- Workflows ---
+    $approvedCount        = @($planItems | Where-Object { $_.WorkflowLabel -eq "aprovacao" }).Count
+    $obsoleteCount        = @($planItems | Where-Object { $_.WorkflowLabel -eq "obsolescencia" }).Count
+    $withoutWorkflowCount = @($planItems | Where-Object { -not $_.WorkflowLabel }).Count
 
-    $approvedCount = @(
-        $planItems |
-            Where-Object {
-                $_.WorkflowLabel -eq "aprovacao"
-            }
-    ).Count
-
-    $obsoleteCount = @(
-        $planItems |
-            Where-Object {
-                $_.WorkflowLabel -eq "obsolescencia"
-            }
-    ).Count
-
-    # Todo documento que nao estiver associado aos dois workflows
-    # conhecidos sera contabilizado como sem workflow.
-
-    $withoutWorkflowCount = @(
-        $planItems |
-            Where-Object {
-                [string]::IsNullOrWhiteSpace(
-                    [string]$_.WorkflowLabel
-                )
-            }
-    ).Count
-
-    # Os nomes configurados sao preparados para apresentacao.
-    # Um valor vazio recebe o texto NAO CONFIGURADO.
-
-    $approvedText = $approvedTemplate
-
-    if (
-        [string]::IsNullOrWhiteSpace(
-            $approvedText
-        )
-    ) {
-
-        $approvedText = "NAO CONFIGURADO"
-    }
-
-    $obsoleteText = $obsoleteTemplate
-
-    if (
-        [string]::IsNullOrWhiteSpace(
-            $obsoleteText
-        )
-    ) {
-
-        $obsoleteText = "NAO CONFIGURADO"
-    }
+    $approvedText = if ($approvedTemplate) { $approvedTemplate } else { "NAO CONFIGURADO" }
+    $obsoleteText = if ($obsoleteTemplate) { $obsoleteTemplate } else { "NAO CONFIGURADO" }
 
     Write-Host ""
     Write-Host "  Workflows:" -ForegroundColor Cyan
+    Write-Host ("    Aprovacao:     {0,3}  ({1})" -f $approvedCount, $approvedText) -ForegroundColor Green
+    Write-Host ("    Obsolescencia: {0,3}  ({1})" -f $obsoleteCount, $obsoleteText) -ForegroundColor Red
+    Write-Host ("    Sem workflow:  {0,3}" -f $withoutWorkflowCount) -ForegroundColor Yellow
 
-    Write-Host (
-        "    Aprovacao:     {0,3}  ({1})" -f
-        $approvedCount,
-        $approvedText
-    ) -ForegroundColor Green
-
-    Write-Host (
-        "    Obsolescencia: {0,3}  ({1})" -f
-        $obsoleteCount,
-        $obsoleteText
-    ) -ForegroundColor Red
-
-    Write-Host (
-        "    Sem workflow:  {0,3}" -f
-        $withoutWorkflowCount
-    ) -ForegroundColor Yellow
-
-    # ============================================================
-    # 8. APRESENTAR OS DOCUMENTOS DO LOTE
-    # ============================================================
-    #
-    # Exibe a revisao prevista, o estado do PDM, o workflow e os
-    # erros encontrados durante a montagem da configuracao.
-
+    # --- Documentos do lote ---
     Write-Host ""
     Write-Host "  Documentos:" -ForegroundColor Cyan
-
-    # Os contadores permitem apresentar avisos consolidados
-    # depois da lista individual dos documentos.
 
     $errorCount = 0
     $missingWorkflowCount = 0
 
-    for (
-        $index = 0
-        $index -lt $planItems.Count
-        $index++
-    ) {
-
-        # ========================================================
-        # A. PREPARAR A LINHA DO DOCUMENTO
-        # ========================================================
-
+    for ($index = 0; $index -lt $planItems.Count; $index++) {
         $planItem = $planItems[$index]
 
-        # A linha utiliza inicialmente o estado sem workflow e a cor
-        # neutra. Esses valores sao alterados conforme a configuracao.
-
+        # Texto e cor da linha: erro > workflow ausente > tipo de workflow.
         $workflowText = "sem workflow"
+        $lineColor = "Gray"
 
         if ($planItem.DocumentType -eq "DatasetOnly") {
-
             $workflowText = "somente Dataset"
-            $lineColor = [System.ConsoleColor]::Cyan
         }
-
-        $lineColor = [System.ConsoleColor]::Gray
-
-        # ========================================================
-        # B. DEFINIR O TEXTO E A COR DO WORKFLOW
-        # ========================================================
-        #
-        # Workflows configurados recebem a cor correspondente.
-        # Quando o template estiver ausente, a linha recebe um aviso
-        # amarelo.
-
-        if (
-            $planItem.DocumentType -ne "DatasetOnly" -and
-            $null -ne $planItem.WorkflowLabel
-        ) {
-
-            if (
-                [string]::IsNullOrWhiteSpace(
-                    $planItem.WorkflowTemplate
-                )
-            ) {
-
+        elseif ($planItem.WorkflowLabel) {
+            if (-not $planItem.WorkflowTemplate) {
                 $workflowText = "workflow de $($planItem.WorkflowLabel) NAO CONFIGURADO"
-                $lineColor = [System.ConsoleColor]::Yellow
-
+                $lineColor = "Yellow"
                 $missingWorkflowCount++
             }
             elseif ($planItem.WorkflowLabel -eq "aprovacao") {
-
                 $workflowText = "workflow de aprovacao"
-                $lineColor = [System.ConsoleColor]::Green
+                $lineColor = "Green"
             }
             else {
-
                 $workflowText = "workflow de obsolescencia"
-                $lineColor = [System.ConsoleColor]::Red
+                $lineColor = "Red"
             }
         }
 
-        # Um erro de configuracao possui prioridade visual sobre o
-        # estado do workflow e deixa a linha em vermelho.
-
-        if (
-            -not [string]::IsNullOrWhiteSpace(
-                [string]$planItem.ConfigurationError
-            )
-        ) {
-
-            $lineColor = [System.ConsoleColor]::Red
+        if ($planItem.ConfigurationError) {
+            $lineColor = "Red"
             $errorCount++
         }
 
-        # ========================================================
-        # C. NORMALIZAR O ESTADO DO PDM
-        # ========================================================
-        #
-        # Quando o estado nao tiver sido identificado, utiliza um
-        # texto explicito em vez de apresentar uma coluna vazia.
+        $stateText = if ($planItem.PdmState) { $planItem.PdmState } else { "sem estado" }
 
-        $stateText = $planItem.PdmState
-
-        if (
-            [string]::IsNullOrWhiteSpace(
-                $stateText
-            )
-        ) {
-
-            $stateText = "sem estado"
-        }
-
-        # ========================================================
-        # D. EXIBIR O RESULTADO DO DOCUMENTO
-        # ========================================================
-
-        Write-Host (
-            "  [{0}] {1} | rev {2} | {3} | {4}" -f
-            ($index + 1),
-            $planItem.ItemCode,
-            $planItem.TeamcenterRevisionId,
-            $stateText,
-            $workflowText
+        Write-Host ("  [{0}] {1} | rev {2} | {3} | {4}" -f
+            ($index + 1), $planItem.ItemCode, $planItem.TeamcenterRevisionId, $stateText, $workflowText
         ) -ForegroundColor $lineColor
 
-        # O motivo completo da configuracao invalida e apresentado
-        # imediatamente abaixo do documento correspondente.
-
-        if (
-            -not [string]::IsNullOrWhiteSpace(
-                [string]$planItem.ConfigurationError
-            )
-        ) {
-
-            Write-Host (
-                "       ERRO: {0}" -f
-                $planItem.ConfigurationError
-            ) -ForegroundColor Red
+        if ($planItem.ConfigurationError) {
+            Write-Host "       ERRO: $($planItem.ConfigurationError)" -ForegroundColor Red
         }
-
-        # No modo Details, apresenta nome, propriedades da revisao,
-        # template do workflow e caminho completo do arquivo.
 
         if ($Details) {
-
-            Write-Host (
-                "       Nome:     {0}" -f
-                $planItem.ItemName
-            ) -ForegroundColor DarkGray
-
-            if (
-                -not [string]::IsNullOrWhiteSpace(
-                    $planItem.RevisionText
-                )
-            ) {
-
-                Write-Host (
-                    "       Revisao:  {0}" -f
-                    $planItem.RevisionText
-                ) -ForegroundColor DarkGray
-            }
-
-            if (
-                -not [string]::IsNullOrWhiteSpace(
-                    $planItem.WorkflowTemplate
-                )
-            ) {
-
-                Write-Host (
-                    "       Template: {0}" -f
-                    $planItem.WorkflowTemplate
-                ) -ForegroundColor DarkGray
-            }
-
-            Write-Host (
-                "       Arquivo:  {0}" -f
-                $planItem.FilePath
-            ) -ForegroundColor DarkGray
+            Write-Host "       Nome:     $($planItem.ItemName)" -ForegroundColor DarkGray
+            if ($planItem.RevisionText)     { Write-Host "       Revisao:  $($planItem.RevisionText)" -ForegroundColor DarkGray }
+            if ($planItem.WorkflowTemplate) { Write-Host "       Template: $($planItem.WorkflowTemplate)" -ForegroundColor DarkGray }
+            Write-Host "       Arquivo:  $($planItem.FilePath)" -ForegroundColor DarkGray
         }
     }
 
-    # ============================================================
-    # 9. APRESENTAR OS AVISOS FINAIS
-    # ============================================================
-    #
-    # Consolida os erros de configuracao e os workflows ausentes
-    # encontrados durante a montagem do plano.
-    #
-    # Erros de configuracao impedem a criacao dos documentos
-    # correspondentes no Teamcenter.
-
+    # --- Avisos finais ---
     if ($errorCount -gt 0) {
-
         Write-Host ""
-
-        Write-Warn (
-            "$errorCount documento(s) possuem erro de configuracao " +
-            "e nao poderao ser criados."
-        )
+        Write-Warn "$errorCount documento(s) possuem erro de configuracao e nao poderao ser criados."
     }
 
-    # A ausencia do template nao impede a criacao do Item e a
-    # importacao do PDF, mas deixa o documento sem workflow.
-
+    # Template ausente nao impede criar Item e importar PDF; so deixa sem workflow.
     if ($missingWorkflowCount -gt 0) {
-
         Write-Host ""
-
         Write-Warn (
-            "$missingWorkflowCount documento(s) com workflow nao " +
-            "configurado no .env. O Item e o PDF serao criados " +
-            "sem workflow."
+            "$missingWorkflowCount documento(s) com workflow nao configurado no .env. " +
+            "O Item e o PDF serao criados sem workflow."
         )
     }
 
