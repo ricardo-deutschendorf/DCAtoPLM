@@ -130,7 +130,7 @@ function ConvertFrom-PdfFileName {
 
         # Formato de revisao valido para cada tipo (NDT nao tem: a revisao vem do cartao).
         $revisionRegex = switch ($DocumentType) {
-            { $_ -in "Processo", "DatasetOnly" } { '^[A-Z0-9-]{1,3}\d$' }   # A1, BA4, AA4, --4
+            { $_ -in "Processo", "DatasetOnly" } { '^[A-Z0-9-]{1,4}\d$' }   # A1, BA4, AA4, --4, 03033
             "Original"                           { '^[A-Z0-9]{1,2}$' }
             "NormaExterna"                       { '^[A-Z0-9.-]{1,10}$' }   # o cartao ainda tem prioridade
             default                              { $null }

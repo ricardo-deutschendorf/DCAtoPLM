@@ -83,7 +83,10 @@ function Get-DcaTypeConfiguration {
     }
 
     # --- 5. Ficha de Processo: ultimo caractere = revisao interna (1 digito); o restante,
-    #        ate 2 caracteres e podendo ter hifen (ex.: C-4), = revisao cliente. ---
+    #        ate 2 caracteres e podendo ter hifen (ex.: C-4), = revisao cliente.
+    #        Para revisoes compostas de prototipo (ex.: 03033), os 2 primeiros
+    #        caracteres sao gravados em gd5revcliente e o ultimo em gd5revinterna.
+    #        O item_revision_id conserva a revisao completa da FP. ---
     if ($DocumentType -eq "Processo") {
         $raw = ([string]$ClientRevision).Trim().ToUpperInvariant()
 
@@ -93,16 +96,32 @@ function Get-DcaTypeConfiguration {
         }
 
         $internalRevision = $raw.Substring($raw.Length - 1, 1).Trim()
-        $clientRevision   = $raw.Substring(0, $raw.Length - 1).Trim().ToUpperInvariant()
+        $clientRevision   = if ($raw.Length -in @(3, 4, 5)) {
+            $raw.Substring(0, 2).Trim().ToUpperInvariant()
+        } else {
+            $raw.Substring(0, $raw.Length - 1).Trim().ToUpperInvariant()
+        }
 
-        if ($clientRevision -notmatch '^[A-Z0-9-]{1,2}$') {
+        if ($raw.Length -eq 5) {
+            if ($raw -notmatch '^[A-Z0-9-]{4}[0-9]$') {
+                throw "A revisao composta '$raw' possui formato invalido. Era esperado 4 caracteres seguidos de um digito interno."
+            }
+        }
+        elseif ($raw.Length -in @(3, 4)) {
+            if ($raw -notmatch '^[A-Z0-9-]{2}[A-Z0-9-]*[0-9]$') {
+                throw "A revisao '$raw' possui formato invalido."
+            }
+        }
+
+        if ($clientRevision.Length -gt 2 -or $clientRevision -notmatch '^[A-Z0-9-]{1,2}$') {
             throw "A revisao cliente '$clientRevision' extraida de '$raw' nao pode ser enviada ao Teamcenter. O campo Revisao Cliente aceita no maximo 2 caracteres."
         }
         if ($internalRevision -notmatch '^[0-9]$') {
             throw "A revisao interna '$internalRevision' e invalida. Era esperado exatamente um digito."
         }
 
-        $revisionId = $clientRevision + $internalRevision   # item_revision_id
+        # As revisoes completas, como 03033 ou --0, sao o identificador da revisao.
+        $revisionId = $raw
 
         if ($Details) {
             Write-Host "  Revisao recebida do cartao: [$raw]" -ForegroundColor DarkGray

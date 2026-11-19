@@ -230,7 +230,8 @@ function New-DcaTeamcenterItem {
 
     # --- 8. Validar as propriedades antes da criacao (ja separadas em StringProps e IntProps) ---
     if ($DocumentType -eq "Processo") {
-        # Processo exige gd5revcliente (1 ou 2 caracteres), gd5revinterna (1 digito) e item_revision_id.
+        # Processo exige gd5revcliente (1 ou 2 caracteres), gd5revinterna (1 digito) e
+        # item_revision_id com a revisao completa da FP (ex.: 03033 ou --0).
         $revisionClient   = ([string]$revisionInput.StringProps["gd5revcliente"]).Trim()
         $revisionInternal = Get-DcaCreateInputPropertyText -InputObject $revisionInput -PropertyName "gd5revinterna"
         $finalRevisionId  = ([string]$revisionInput.StringProps["item_revision_id"]).Trim()

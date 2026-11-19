@@ -870,15 +870,37 @@ A4
 BA4
 AA4
 --4
+03033
+--0
 ```
 
-O último caractere representa a revisão interna. Por exemplo, `BA4` é interpretado
-como:
+O último caractere representa a revisão interna. Nas revisões compostas de 3 a 5
+caracteres, os dois primeiros caracteres representam a revisão de cliente/desenho
+e o `item_revision_id` conserva a revisão completa da FP.
+
+Por exemplo, `BA4` é interpretado como:
 
 ```text
 Revisão completa: BA4
 Revisão cliente:  BA
 Revisão interna:  4
+```
+
+Para `03033`, o valor completo fica em `item_revision_id`; os campos existentes
+do Teamcenter são preenchidos como:
+
+```text
+gd5revcliente (cliente/desenho): 03
+gd5revinterna:                    3
+item_revision_id:                03033
+```
+
+Para `--0`, a interpretação é:
+
+```text
+gd5revcliente (cliente/desenho): --
+gd5revinterna:                    0
+item_revision_id:                --0
 ```
 
 Texto entre colchetes só é aceito como revisão quando corresponde ao formato
